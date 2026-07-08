@@ -15,14 +15,6 @@ venv/
 # Claude Code settings
 .claude/
 
-# Large raw reference/data files (not source code)
-data/
-
-# Quote/estimate sample files (potentially sensitive)
-견적서/
-
-# Previous work archive
-_이전작업물/
 
 # OS
 .DS_Store

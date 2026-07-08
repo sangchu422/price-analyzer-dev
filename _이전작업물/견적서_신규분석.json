@@ -1,0 +1,26 @@
+{
+  "4-1. 견적서 (RQ-B25-002).xlsx": {
+    "ok": false,
+    "error": "Can't find workbook in OLE2 compound document"
+  },
+  "4-2. 견적서 (RQ-D25-017).xlsx": {
+    "ok": false,
+    "error": "Can't find workbook in OLE2 compound document"
+  },
+  "5. 견적서 (1).xlsx": {
+    "ok": false,
+    "error": "Can't find workbook in OLE2 compound document"
+  },
+  "5. 견적서.xlsx": {
+    "ok": false,
+    "error": "Can't find workbook in OLE2 compound document"
+  },
+  "9. 견적서_메인조립기.xlsx": {
+    "ok": false,
+    "error": "Can't find workbook in OLE2 compound document"
+  },
+  "9. 견적서_헤드서브조립기.xlsx": {
+    "ok": false,
+    "error": "Can't find workbook in OLE2 compound document"
+  }
+}
