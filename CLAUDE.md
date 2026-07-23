@@ -1,7 +1,5 @@
 # 협력사 견적 단가 AI 분석 시스템 — 작업 규칙
 
-## 프로젝트 개요
-
 협력사 견적서(Excel/PDF)를 파싱해 품목별 표준단가 DB를 구축하고, 신규 견적서의 단가 적정성을 AI로 자동 검토하는 시스템.
 
 **핵심 파이프라인**
@@ -11,63 +9,19 @@
 
 ---
 
-## 1. 견적서 파싱 작업 규칙
-
-견적서 파싱·수정·규칙 추가 작업을 수행할 때는 반드시 **[견적서_파싱규칙.md](견적서_파싱규칙.md)** 를 먼저 확인한다.
-
-### 파싱 관련 핵심 파일
-
-| 파일 | 역할 |
-|------|------|
-| `parse_all.py` | 견적서 파일 목록 관리, xlsx/pdf 분기 처리, 중복 제거 및 집계 |
-| `parse_pdf.py` | PDF 견적서 전용 파서 (pdfplumber 사용) |
-| `apply_rules.py` | 파싱 후처리 규칙 구현체 |
-| `견적서_파싱규칙.md` | 규칙 명세서 (사람이 읽는 문서) |
-
-### 규칙 추가/수정 절차
-
-1. `견적서_파싱규칙.md`에 규칙 명세를 먼저 작성한다 (조건·처리·근거 포함)
-2. `apply_rules.py`의 `_RULES` 리스트에 구현 함수를 추가한다
-3. 규칙 번호는 `_rule_NN_이름` 형식으로 순서대로 부여한다
-4. 파이프라인을 재실행해서 결과를 검증한다
-
-### 새 견적서 추가 절차
-
-1. `parse_all.py`의 `file_meta` 딕셔너리에 파일명과 메타 정보를 등록한다
-2. 파일 형식에 따라 `ASSEMBLY_FILES` 또는 `INSTALLATION_FILES`에 추가하거나, 기본 `parse_standard`가 적용된다
-3. SKIP_KW, STANDARD_SH_KW 등 키워드 목록을 해당 견적서 형식에 맞게 조정한다
-
-### 파서 종류 (xlsx)
-
-| 파서 | 함수 | 적용 기준 |
-|------|------|-----------|
-| Standard | `parse_standard()` | 시트명이 `STANDARD_SH_KW` 키워드를 포함하는 경우 (기본) |
-| Assembly | `parse_assembly()` | `ASSEMBLY_FILES`에 등록된 파일 |
-| Installation | `parse_installation()` | `INSTALLATION_FILES`에 등록된 파일 |
-
----
-
-## 2. 데이터 품질 규칙
-
-- 단가 ≤ 0 또는 금액 < 1,000원인 행은 자동 제외한다
-- 품명이 2글자 미만이거나 `SKIP_KW` 키워드를 포함하면 제외한다
-- 동일 `품명||규격||단위` 조합이 복수이면 중복 제거 후 단가 최저·평균·최고를 산출한다
-- 기존 DB 품목의 `데이터입력일자`는 재파싱 시 유지한다 (신규 품목만 오늘 날짜)
-
----
-
-## 3. 출력 파일
-
-| 파일 | 내용 |
-|------|------|
-| `표준단가DB_전체원본.json` | 중복 포함 전체 파싱 결과 |
-| `표준단가DB_집계.json` | 중복 제거 후 표준단가 집계 결과 |
-| `표준단가DB.xlsx` | 사람이 보는 최종 Excel 산출물 |
-
----
-
-## 4. 개발 환경
+## 개발 환경
 
 - Python 3.x, openpyxl, pdfplumber
 - 실행: `python parse_all.py` → `python build_db.py`
 - 플랫폼: Windows (경로 구분자 주의)
+
+---
+
+## 참조 문서
+
+| 문서 | 내용 |
+|------|------|
+| [`docs/PARSING_RULES.md`](docs/PARSING_RULES.md) | 견적서 파싱 규칙 상세 명세 (파서 종류, 규칙 절차, 데이터 품질, 출력 파일) |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | 시스템 설계 문서 |
+| [`docs/TODO.md`](docs/TODO.md) | 작업 목록 |
+| [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | AI 작업 행동 지침 |
