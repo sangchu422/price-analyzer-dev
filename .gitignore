@@ -16,6 +16,9 @@ venv/
 # Claude Code settings
 .claude/
 
+# Local isolated development worktrees
+.worktrees/
+
 
 # OS
 .DS_Store
