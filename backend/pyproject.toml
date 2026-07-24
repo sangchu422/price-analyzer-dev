@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "price-analyzer-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "SQLAlchemy>=2,<3",
+    "alembic",
+    "pydantic-settings",
+    "python-multipart",
+    "openpyxl",
+    "xlrd",
+    "pypdf",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx",
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
