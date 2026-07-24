@@ -52,6 +52,7 @@
 
 - 외부 `sentence-transformers + FAISS` 구성 **취소**.
 - 사내 **hChat API (OpenAI 호환)** 사용 확정.
-- 클라이언트: `AzureOpenAI`, 모델: `text-embedding-3-small` (1536차원, 256 축소 가능).
+- 클라이언트: `AzureOpenAI`, 모델: `text-embedding-3-large` (3072차원).
+- `small` 아닌 `large` 선택 이유: 품목명·규격 유사도 매칭은 정밀도가 핵심, 오매칭 시 잘못된 표준단가 적용 위험. 현재 DB 규모(1,852건)에서 비용 차이 무의미.
 - 환경변수: `H_CHAT_API_KEY`, `H_CHAT_BASE_URL`, `H_CHAT_PROJECT_ID`.
 - API Key는 사용자가 별도 제공 예정.
