@@ -3,10 +3,9 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import Settings
+from app.core.config import settings
 
 
-settings = Settings()
 settings.database_path.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(

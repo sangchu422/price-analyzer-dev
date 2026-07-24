@@ -7,22 +7,22 @@ name = "price-analyzer-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi",
-    "uvicorn",
-    "SQLAlchemy>=2,<3",
-    "alembic",
-    "pydantic-settings",
-    "python-multipart",
-    "openpyxl",
-    "xlrd",
-    "pypdf",
+    "fastapi>=0.116,<1",
+    "uvicorn[standard]>=0.35,<1",
+    "sqlalchemy>=2.0.41,<3",
+    "alembic>=1.16,<2",
+    "pydantic-settings>=2.10,<3",
+    "python-multipart>=0.0.20,<1",
+    "openpyxl>=3.1.5,<4",
+    "xlrd>=2.0.2,<3",
+    "pypdf>=5.8,<6",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "httpx",
-    "pytest",
-    "pytest-cov",
+    "httpx>=0.28,<1",
+    "pytest>=8.4,<9",
+    "pytest-cov>=6.2,<7",
 ]
 
 [tool.pytest.ini_options]

@@ -7,7 +7,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=("../.env", ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     project_root: Path = PROJECT_ROOT
     quote_folder: Path = Path("견적서")
@@ -23,3 +28,6 @@ class Settings(BaseSettings):
 
     def _resolve_from_project_root(self, path: Path) -> Path:
         return path if path.is_absolute() else self.project_root / path
+
+
+settings = Settings()
