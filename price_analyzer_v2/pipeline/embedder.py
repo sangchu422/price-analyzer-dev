@@ -5,13 +5,13 @@ hChat 임베딩 어댑터 + 유사도 검색
   embed(text)            -> List[float]          단일 텍스트 → 3072차원 벡터
   embed_batch(texts)     -> List[List[float]]    배치 처리
   build_index(items)     -> dict                 표준단가 항목 리스트 → 검색 인덱스
-  search(query, index)   -> List[dict]           하이브리드 검색 (임베딩 코사인 유사도)
+  save_index(index, dir) -> None                 인덱스 저장 (vectors.npy + items.json)
+  load_index(dir)        -> dict                 인덱스 로드
+  search(query, index)   -> List[dict]           코사인 유사도 검색
 
-인덱스 구조:
-  {
-    "vectors": [[float, ...], ...],   # 각 항목의 임베딩 벡터
-    "items":   [{...}, ...],          # 원본 항목 (표준품목ID, 품명, 규격, 단가_평균, ...)
-  }
+저장 포맷 (price_analyzer_v2/):
+  embed_vectors.npy  — float32 numpy 배열 (1852, 3072) ~22MB
+  embed_items.json   — 원본 항목 메타데이터 리스트 ~638KB
 """
 from __future__ import annotations
 
@@ -57,6 +57,27 @@ def _search_text(item: dict) -> str:
 def build_index(items: list[dict]) -> dict[str, Any]:
     texts = [_search_text(i) for i in items]
     vectors = embed_batch(texts)
+    return {"vectors": vectors, "items": items}
+
+
+def save_index(index: dict, directory: "str | Path" = None) -> None:
+    import json, numpy as np
+    from pathlib import Path
+    from config import EMBED_INDEX_PATH
+    d = Path(directory) if directory else EMBED_INDEX_PATH.parent
+    np.save(d / "embed_vectors.npy", np.array(index["vectors"], dtype=np.float32))
+    with open(d / "embed_items.json", "w", encoding="utf-8") as f:
+        json.dump(index["items"], f, ensure_ascii=False)
+
+
+def load_index(directory: "str | Path" = None) -> dict:
+    import json, numpy as np
+    from pathlib import Path
+    from config import EMBED_INDEX_PATH
+    d = Path(directory) if directory else EMBED_INDEX_PATH.parent
+    vectors = np.load(d / "embed_vectors.npy").tolist()
+    with open(d / "embed_items.json", encoding="utf-8") as f:
+        items = json.load(f)
     return {"vectors": vectors, "items": items}
 
 

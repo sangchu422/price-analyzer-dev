@@ -21,3 +21,4 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+price_analyzer_v2/embed_index.json
