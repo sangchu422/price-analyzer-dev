@@ -59,6 +59,12 @@ def upgrade() -> None:
         sa.UniqueConstraint("path"),
     )
     op.create_index(
+        "ix_source_variant_document_id",
+        "source_variant",
+        ["document_id"],
+        unique=False,
+    )
+    op.create_index(
         "ux_source_variant_sha256",
         "source_variant",
         ["sha256"],
@@ -67,7 +73,6 @@ def upgrade() -> None:
     op.create_table(
         "raw_quote_item",
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("document_id", sa.Integer(), nullable=False),
         sa.Column("source_variant_id", sa.Integer(), nullable=False),
         sa.Column("source_sheet", sa.String(length=255), nullable=True),
         sa.Column("source_page", sa.Integer(), nullable=True),
@@ -89,20 +94,10 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
-            ["document_id"],
-            ["source_document.id"],
-        ),
-        sa.ForeignKeyConstraint(
             ["source_variant_id"],
             ["source_variant.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        "ix_raw_quote_item_document_id",
-        "raw_quote_item",
-        ["document_id"],
-        unique=False,
     )
     op.create_index(
         "ix_raw_quote_item_source_variant_id",
@@ -133,9 +128,9 @@ def upgrade() -> None:
         sa.Column("spec_norm", sa.Text(), nullable=True),
         sa.Column("unit_norm", sa.String(length=100), nullable=True),
         sa.Column("maker_norm", sa.Text(), nullable=True),
-        sa.Column("quantity", sa.Text(), nullable=True),
-        sa.Column("unit_price", sa.Text(), nullable=True),
-        sa.Column("amount", sa.Text(), nullable=True),
+        sa.Column("quantity", sa.BigInteger(), nullable=True),
+        sa.Column("unit_price", sa.BigInteger(), nullable=True),
+        sa.Column("amount", sa.BigInteger(), nullable=True),
         sa.Column("rule_version", sa.String(length=100), nullable=False),
         sa.Column(
             "decided_by",
@@ -173,13 +168,13 @@ def downgrade() -> None:
         "ix_raw_quote_item_source_variant_id",
         table_name="raw_quote_item",
     )
-    op.drop_index(
-        "ix_raw_quote_item_document_id",
-        table_name="raw_quote_item",
-    )
     op.drop_table("raw_quote_item")
     op.drop_index(
         "ux_source_variant_sha256",
+        table_name="source_variant",
+    )
+    op.drop_index(
+        "ix_source_variant_document_id",
         table_name="source_variant",
     )
     op.drop_table("source_variant")

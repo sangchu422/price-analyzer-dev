@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from sqlalchemy import (
     Boolean,
-    DateTime,
     ForeignKey,
     Index,
     String,
@@ -15,19 +14,27 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.time import utc_now
+from app.db.types import NaiveUTCDateTime
 
 if TYPE_CHECKING:
     from app.quotes.models import RawQuoteItem
 
 
+def _raw_quote_item_model() -> type[RawQuoteItem]:
+    from app.quotes.models import RawQuoteItem
+
+    return RawQuoteItem
+
+
 class SourceDocument(Base):
     __tablename__ = "source_document"
+    __table_args__ = {"info": {"evidence_immutable": True}}
     __evidence_immutable__: ClassVar[bool] = True
 
     id: Mapped[int] = mapped_column(primary_key=True)
     logical_name: Mapped[str] = mapped_column(String(500), unique=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False),
+        NaiveUTCDateTime(),
         default=utc_now,
         server_default=text("CURRENT_TIMESTAMP"),
     )
@@ -37,8 +44,14 @@ class SourceDocument(Base):
         back_populates="document",
     )
     raw_items: Mapped[list[RawQuoteItem]] = relationship(
-        "RawQuoteItem",
-        back_populates="document",
+        _raw_quote_item_model,
+        secondary=lambda: SourceVariant.__table__,
+        primaryjoin=lambda: SourceDocument.id == SourceVariant.document_id,
+        secondaryjoin=lambda: (
+            SourceVariant.id
+            == _raw_quote_item_model().source_variant_id
+        ),
+        viewonly=True,
     )
 
 
@@ -46,6 +59,7 @@ class SourceVariant(Base):
     __tablename__ = "source_variant"
     __table_args__ = (
         Index("ux_source_variant_sha256", "sha256", unique=True),
+        {"info": {"evidence_immutable": True}},
     )
     __evidence_immutable__: ClassVar[bool] = True
 
@@ -53,6 +67,7 @@ class SourceVariant(Base):
     document_id: Mapped[int] = mapped_column(
         ForeignKey("source_document.id"),
         nullable=False,
+        index=True,
     )
     path: Mapped[str] = mapped_column(String(1024), unique=True)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -64,7 +79,7 @@ class SourceVariant(Base):
         server_default=text("0"),
     )
     registered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False),
+        NaiveUTCDateTime(),
         default=utc_now,
         server_default=text("CURRENT_TIMESTAMP"),
     )
@@ -74,6 +89,6 @@ class SourceVariant(Base):
         back_populates="variants",
     )
     raw_items: Mapped[list[RawQuoteItem]] = relationship(
-        "RawQuoteItem",
+        _raw_quote_item_model,
         back_populates="source_variant",
     )

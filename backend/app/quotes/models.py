@@ -9,21 +9,29 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.cleansing.models import CleanDecision
-    from app.documents.models import SourceDocument, SourceVariant
+    from app.documents.models import SourceVariant
+
+
+def _clean_decision_model() -> type[CleanDecision]:
+    from app.cleansing.models import CleanDecision
+
+    return CleanDecision
+
+
+def _source_variant_model() -> type[SourceVariant]:
+    from app.documents.models import SourceVariant
+
+    return SourceVariant
 
 
 class RawQuoteItem(Base):
     """Append-only parser output; cleansing writes separate decisions."""
 
     __tablename__ = "raw_quote_item"
+    __table_args__ = {"info": {"evidence_immutable": True}}
     __evidence_immutable__: ClassVar[bool] = True
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[int] = mapped_column(
-        ForeignKey("source_document.id"),
-        nullable=False,
-        index=True,
-    )
     source_variant_id: Mapped[int] = mapped_column(
         ForeignKey("source_variant.id"),
         nullable=False,
@@ -48,15 +56,11 @@ class RawQuoteItem(Base):
         server_default=text("'[]'"),
     )
 
-    document: Mapped[SourceDocument] = relationship(
-        "SourceDocument",
-        back_populates="raw_items",
-    )
     source_variant: Mapped[SourceVariant] = relationship(
-        "SourceVariant",
+        _source_variant_model,
         back_populates="raw_items",
     )
     decisions: Mapped[list[CleanDecision]] = relationship(
-        "CleanDecision",
+        _clean_decision_model,
         back_populates="raw_item",
     )

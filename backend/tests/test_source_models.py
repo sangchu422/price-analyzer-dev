@@ -62,8 +62,6 @@ def test_raw_quote_text_remains_unchanged_after_cleaning_decision() -> None:
             rule_version="clean-v1",
         )
     )
-    document.raw_items.append(raw_item)
-
     with Session(engine) as session:
         session.add(document)
         session.commit()
@@ -77,7 +75,11 @@ def test_raw_quote_text_remains_unchanged_after_cleaning_decision() -> None:
         assert saved is not None
         assert saved.item_name_raw == "  네트워크 스위치  "
         assert saved.unit_price_raw == "1,250,000"
-        assert saved.document.logical_name == "1차 학습/재검토/5. 견적서"
+        assert (
+            saved.source_variant.document.logical_name
+            == "1차 학습/재검토/5. 견적서"
+        )
+        assert saved in saved.source_variant.document.raw_items
         assert saved.decisions[0].status is CleanStatus.INCLUDED
         assert saved.decisions[0].reason_code == "VALID"
         assert saved.decisions[0].rule_version == "clean-v1"
@@ -164,7 +166,6 @@ def test_initial_migration_creates_source_and_cleansing_tables(
         for name, column in raw_columns.items()
     } == {
         "id": False,
-        "document_id": False,
         "source_variant_id": False,
         "source_sheet": True,
         "source_page": True,
@@ -187,9 +188,9 @@ def test_initial_migration_creates_source_and_cleansing_tables(
         column["name"]: column
         for column in inspector.get_columns("clean_decision")
     }
-    assert str(decision_columns["quantity"]["type"]) == "TEXT"
-    assert str(decision_columns["unit_price"]["type"]) == "TEXT"
-    assert str(decision_columns["amount"]["type"]) == "TEXT"
+    assert str(decision_columns["quantity"]["type"]) == "BIGINT"
+    assert str(decision_columns["unit_price"]["type"]) == "BIGINT"
+    assert str(decision_columns["amount"]["type"]) == "BIGINT"
     assert {
         name: column["nullable"]
         for name, column in decision_columns.items()
@@ -227,10 +228,6 @@ def test_initial_migration_creates_source_and_cleansing_tables(
         "source_document",
         ("id",),
     )
-    assert foreign_keys["raw_quote_item"][("document_id",)] == (
-        "source_document",
-        ("id",),
-    )
     assert foreign_keys["raw_quote_item"][("source_variant_id",)] == (
         "source_variant",
         ("id",),
@@ -265,7 +262,7 @@ def test_initial_migration_creates_source_and_cleansing_tables(
     ) == 1
     assert ["document_id"] in [
         index["column_names"]
-        for index in inspector.get_indexes("raw_quote_item")
+        for index in inspector.get_indexes("source_variant")
     ]
     assert ["source_variant_id"] in [
         index["column_names"]

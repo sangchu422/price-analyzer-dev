@@ -5,15 +5,21 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, text
+from sqlalchemy import Enum, ForeignKey, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.time import utc_now
-from app.db.types import ExactDecimal
+from app.db.types import ExactDecimal, NaiveUTCDateTime
 
 if TYPE_CHECKING:
     from app.quotes.models import RawQuoteItem
+
+
+def _raw_quote_item_model() -> type[RawQuoteItem]:
+    from app.quotes.models import RawQuoteItem
+
+    return RawQuoteItem
 
 
 class CleanStatus(StrEnum):
@@ -24,6 +30,7 @@ class CleanStatus(StrEnum):
 
 class CleanDecision(Base):
     __tablename__ = "clean_decision"
+    __table_args__ = {"info": {"evidence_immutable": True}}
     __evidence_immutable__: ClassVar[bool] = True
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -57,12 +64,12 @@ class CleanDecision(Base):
         server_default=text("'SYSTEM'"),
     )
     decided_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False),
+        NaiveUTCDateTime(),
         default=utc_now,
         server_default=text("CURRENT_TIMESTAMP"),
     )
 
     raw_item: Mapped[RawQuoteItem] = relationship(
-        "RawQuoteItem",
+        _raw_quote_item_model,
         back_populates="decisions",
     )
