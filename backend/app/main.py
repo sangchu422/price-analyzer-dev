@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 
+from app.db import models as _models
+
 
 app = FastAPI(title="Price Analyzer", version="0.1.0")
 

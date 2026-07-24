@@ -24,7 +24,7 @@ def upgrade() -> None:
         sa.Column("logical_name", sa.String(length=500), nullable=False),
         sa.Column(
             "created_at",
-            sa.DateTime(timezone=True),
+            sa.DateTime(),
             server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
@@ -47,7 +47,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "registered_at",
-            sa.DateTime(timezone=True),
+            sa.DateTime(),
             server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
@@ -57,18 +57,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("path"),
-        sa.UniqueConstraint("sha256"),
     )
     op.create_index(
-        "ix_source_variant_sha256",
+        "ux_source_variant_sha256",
         "source_variant",
         ["sha256"],
-        unique=False,
+        unique=True,
     )
     op.create_table(
         "raw_quote_item",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("document_id", sa.Integer(), nullable=False),
+        sa.Column("source_variant_id", sa.Integer(), nullable=False),
         sa.Column("source_sheet", sa.String(length=255), nullable=True),
         sa.Column("source_page", sa.Integer(), nullable=True),
         sa.Column("source_row", sa.Integer(), nullable=True),
@@ -80,8 +80,8 @@ def upgrade() -> None:
         sa.Column("unit_price_raw", sa.Text(), nullable=True),
         sa.Column("amount_raw", sa.Text(), nullable=True),
         sa.Column("maker_raw", sa.Text(), nullable=True),
-        sa.Column("parser_name", sa.String(length=100), nullable=True),
-        sa.Column("parser_version", sa.String(length=100), nullable=True),
+        sa.Column("parser_name", sa.String(length=100), nullable=False),
+        sa.Column("parser_version", sa.String(length=100), nullable=False),
         sa.Column(
             "parse_warnings_json",
             sa.Text(),
@@ -92,12 +92,22 @@ def upgrade() -> None:
             ["document_id"],
             ["source_document.id"],
         ),
+        sa.ForeignKeyConstraint(
+            ["source_variant_id"],
+            ["source_variant.id"],
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
         "ix_raw_quote_item_document_id",
         "raw_quote_item",
         ["document_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_raw_quote_item_source_variant_id",
+        "raw_quote_item",
+        ["source_variant_id"],
         unique=False,
     )
     op.create_table(
@@ -110,8 +120,10 @@ def upgrade() -> None:
                 "INCLUDED",
                 "EXCLUDED",
                 "REVIEW_REQUIRED",
-                name="cleanstatus",
+                name="clean_status",
                 native_enum=False,
+                create_constraint=True,
+                validate_strings=True,
             ),
             nullable=False,
         ),
@@ -121,9 +133,9 @@ def upgrade() -> None:
         sa.Column("spec_norm", sa.Text(), nullable=True),
         sa.Column("unit_norm", sa.String(length=100), nullable=True),
         sa.Column("maker_norm", sa.Text(), nullable=True),
-        sa.Column("quantity", sa.Numeric(precision=20, scale=6), nullable=True),
-        sa.Column("unit_price", sa.Numeric(precision=20, scale=6), nullable=True),
-        sa.Column("amount", sa.Numeric(precision=20, scale=6), nullable=True),
+        sa.Column("quantity", sa.Text(), nullable=True),
+        sa.Column("unit_price", sa.Text(), nullable=True),
+        sa.Column("amount", sa.Text(), nullable=True),
         sa.Column("rule_version", sa.String(length=100), nullable=False),
         sa.Column(
             "decided_by",
@@ -133,7 +145,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "decided_at",
-            sa.DateTime(timezone=True),
+            sa.DateTime(),
             server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
@@ -158,12 +170,16 @@ def downgrade() -> None:
     )
     op.drop_table("clean_decision")
     op.drop_index(
+        "ix_raw_quote_item_source_variant_id",
+        table_name="raw_quote_item",
+    )
+    op.drop_index(
         "ix_raw_quote_item_document_id",
         table_name="raw_quote_item",
     )
     op.drop_table("raw_quote_item")
     op.drop_index(
-        "ix_source_variant_sha256",
+        "ux_source_variant_sha256",
         table_name="source_variant",
     )
     op.drop_table("source_variant")

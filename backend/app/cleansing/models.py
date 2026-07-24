@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.time import utc_now
+from app.db.types import ExactDecimal
 
 if TYPE_CHECKING:
     from app.quotes.models import RawQuoteItem
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class CleanStatus(StrEnum):
@@ -26,6 +24,7 @@ class CleanStatus(StrEnum):
 
 class CleanDecision(Base):
     __tablename__ = "clean_decision"
+    __evidence_immutable__: ClassVar[bool] = True
 
     id: Mapped[int] = mapped_column(primary_key=True)
     raw_item_id: Mapped[int] = mapped_column(
@@ -34,7 +33,13 @@ class CleanDecision(Base):
         index=True,
     )
     status: Mapped[CleanStatus] = mapped_column(
-        Enum(CleanStatus, native_enum=False),
+        Enum(
+            CleanStatus,
+            name="clean_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+        ),
     )
     reason_code: Mapped[str] = mapped_column(String(100))
     reason_detail: Mapped[str | None] = mapped_column(Text)
@@ -42,14 +47,19 @@ class CleanDecision(Base):
     spec_norm: Mapped[str | None] = mapped_column(Text)
     unit_norm: Mapped[str | None] = mapped_column(String(100))
     maker_norm: Mapped[str | None] = mapped_column(Text)
-    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
-    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    quantity: Mapped[Decimal | None] = mapped_column(ExactDecimal())
+    unit_price: Mapped[Decimal | None] = mapped_column(ExactDecimal())
+    amount: Mapped[Decimal | None] = mapped_column(ExactDecimal())
     rule_version: Mapped[str] = mapped_column(String(100))
-    decided_by: Mapped[str] = mapped_column(String(100), default="SYSTEM")
+    decided_by: Mapped[str] = mapped_column(
+        String(100),
+        default="SYSTEM",
+        server_default=text("'SYSTEM'"),
+    )
     decided_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=_utc_now,
+        DateTime(timezone=False),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
     )
 
     raw_item: Mapped[RawQuoteItem] = relationship(

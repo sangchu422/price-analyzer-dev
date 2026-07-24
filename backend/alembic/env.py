@@ -3,11 +3,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import URL, create_engine, pool
 
-from app.cleansing import models as cleansing_models
 from app.core.config import settings
 from app.db.base import Base
-from app.documents import models as document_models
-from app.quotes import models as quote_models
+from app.db import models as _models
+from app.db.sqlite import configure_sqlite
 
 
 config = context.config
@@ -26,6 +25,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        compare_server_default=True,
     )
 
     with context.begin_transaction():
@@ -33,13 +33,17 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = create_engine(database_url, poolclass=pool.NullPool)
+    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    connectable = configure_sqlite(
+        create_engine(database_url, poolclass=pool.NullPool)
+    )
 
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            compare_server_default=True,
         )
 
         with context.begin_transaction():
