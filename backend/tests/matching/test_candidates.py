@@ -199,6 +199,24 @@ def test_digit_leading_complex_industrial_model_is_strong(model: str) -> None:
     assert result.final_score >= Decimal("0.900000")
 
 
+@pytest.mark.parametrize("measurement", ["400VAC-3PH", "24VDC-5A"])
+def test_hyphenated_measurement_is_not_a_strong_model(
+    measurement: str,
+) -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="SERVO MOTOR", spec=measurement, unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="HEATER",
+                spec=measurement,
+                unit="EA",
+            )
+        ],
+    )
+    assert result == []
+
+
 def test_rating_only_match_stays_below_model_token_minimum() -> None:
     result = rank_candidates(
         query=MatchQuery(name="SERVO MOTOR", spec="400W", unit="EA"),

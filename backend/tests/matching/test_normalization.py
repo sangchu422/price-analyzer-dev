@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.matching.normalization import model_tokens, normalize_search_text
+from app.matching.normalization import (
+    is_rating_token,
+    model_tokens,
+    normalize_search_text,
+)
 
 
 @pytest.mark.parametrize(
@@ -43,6 +47,7 @@ def test_industrial_ratings_are_tokens_but_not_model_identifiers() -> None:
         "400VAC",
         "5HP",
     )
+    assert is_rating_token("3PH")
 
 
 def test_model_separator_is_preserved_only_inside_explicit_model_token() -> None:

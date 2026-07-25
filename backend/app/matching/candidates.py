@@ -145,10 +145,14 @@ def _strong_identifier_tokens(tokens: tuple[str, ...]) -> set[str]:
         mixed_prefix = any(character.isalpha() for character in prefix) and any(
             character.isdigit() for character in prefix
         )
-        hyphenated_model = "-" in token and (
-            prefix[0].isalpha()
-            or (prefix.isdigit() and len(prefix) >= 4)
-            or mixed_prefix
+        hyphenated_model = (
+            "-" in token
+            and not is_rating_token(prefix)
+            and (
+                prefix[0].isalpha()
+                or (prefix.isdigit() and len(prefix) >= 4)
+                or mixed_prefix
+            )
         )
         alpha_numeric_model = (
             len(token) >= 5

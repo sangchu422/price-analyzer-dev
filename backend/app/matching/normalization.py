@@ -10,7 +10,7 @@ _NUMERIC_SUFFIX = re.compile(r"\b(\d{3,})\s+([A-Z0-9]{1,4})\b")
 _RATING_TOKEN = re.compile(
     r"^\d+(?:\.\d+)?(?:"
     r"W|KW|MW|V|VAC|VDC|KV|KVAC|KVDC|A|AAC|ADC|MA|KA|"
-    r"VA|KVA|MVA|HP|NM|NMM|BAR|MBAR|PSI|PA|KPA|MPA|"
+    r"VA|KVA|MVA|HP|PH|NM|NMM|BAR|MBAR|PSI|PA|KPA|MPA|"
     r"HZ|KHZ|MHZ|GHZ|RPM|MM|CM|M|KM|UM|KG|G|MG|L|ML|"
     r"OHM|KOHM|MOHM|C|F"
     r")$"
