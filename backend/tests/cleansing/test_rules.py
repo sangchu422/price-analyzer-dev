@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -8,6 +9,7 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.cleansing.rules import evaluate, normalize_text, parse_number
 from app.cleansing.service import apply_rules, current_decision
 from app.db.immutability import ImmutableEvidenceError
+from app.db.types import EXACT_DECIMAL_MAX
 from app.documents.models import SourceDocument
 
 
@@ -55,6 +57,19 @@ def test_missing_name_has_priority_over_invalid_price(make_raw) -> None:
         "이 윤",
         "(이윤)",
         "노 무 비",
+        "부 가 세",
+        "부가 가치세",
+        "(V.A.T)",
+        "공급 가액",
+        "총 액",
+        "총 합계",
+        "합계 금액",
+        "합계 액",
+        "운반 비",
+        "운송 비",
+        "배송 비",
+        "설치 비",
+        "시공 비",
     ],
 )
 def test_summary_and_fee_variants_are_excluded(
@@ -75,7 +90,18 @@ def test_invalid_price_has_priority_over_summary_line(make_raw) -> None:
 
 @pytest.mark.parametrize(
     "item_name",
-    ["이윤조정기", "노무비계산기", "경비행기"],
+    [
+        "이윤조정기",
+        "노무비계산기",
+        "경비행기",
+        "부가세표시기",
+        "VAT SENSOR",
+        "공급가액계산기",
+        "총액계",
+        "합계금액표",
+        "운반비용",
+        "설치비계산기",
+    ],
 )
 def test_summary_terms_do_not_match_legitimate_item_substrings(
     make_raw,
@@ -283,6 +309,88 @@ def test_apply_rules_persists_exact_decimals_without_committing(
     assert session.scalar(select(func.count(CleanDecision.id))) == 0
 
 
+def test_exact_decimal_max_boundary_persists(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw(
+        quantity="1",
+        unit_price=str(EXACT_DECIMAL_MAX),
+        amount=str(EXACT_DECIMAL_MAX),
+    )
+
+    decision = apply_rules(session, raw)
+
+    assert decision.status is CleanStatus.INCLUDED
+    assert decision.unit_price == EXACT_DECIMAL_MAX
+    assert decision.amount == EXACT_DECIMAL_MAX
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("unit_price", "9223372036854.775808"),
+        ("quantity", "9223372036854.775808"),
+        ("amount", "9223372036854.775808"),
+        ("unit_price", "1.0000001"),
+        ("amount", "9" * 10_000),
+    ],
+)
+def test_unsupported_exact_decimal_values_require_review_without_overflow(
+    session: Session,
+    make_raw,
+    field: str,
+    value: str,
+) -> None:
+    raw = make_raw(**{field: value})
+
+    decision = apply_rules(session, raw)
+
+    assert decision.status is CleanStatus.REVIEW_REQUIRED
+    assert decision.reason_code == "NUMERIC_OUT_OF_RANGE"
+    assert field in decision.reason_detail
+    assert getattr(decision, field) is None
+    session.flush()
+
+
+def test_pathological_negative_unit_price_keeps_invalid_price_priority(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw(unit_price="-" + ("9" * 10_000))
+
+    decision = apply_rules(session, raw)
+
+    assert decision.status is CleanStatus.EXCLUDED
+    assert decision.reason_code == "INVALID_UNIT_PRICE"
+    assert decision.unit_price is None
+    session.flush()
+
+
+@pytest.mark.parametrize(
+    "unit_price",
+    [
+        "-9223372036854.775808",
+        "-0.0000001",
+        "0" * 10_000,
+    ],
+)
+def test_unsupported_negative_price_stays_invalid_without_overflow(
+    session: Session,
+    make_raw,
+    unit_price: str,
+) -> None:
+    decision = apply_rules(
+        session,
+        make_raw(unit_price=unit_price),
+    )
+
+    assert decision.status is CleanStatus.EXCLUDED
+    assert decision.reason_code == "INVALID_UNIT_PRICE"
+    assert decision.unit_price is None
+    session.flush()
+
+
 def test_repeated_rule_run_is_idempotent_but_changed_raw_version_appends(
     session: Session,
     make_raw,
@@ -316,7 +424,59 @@ def test_current_decision_returns_latest_chronological_row(
     session.flush()
 
     assert current_decision(session, raw.id) is manual
+    assert apply_rules(session, raw) is manual
+    assert session.scalar(select(func.count(CleanDecision.id))) == 2
     assert automatic.id < manual.id
+
+
+def test_current_decision_uses_insertion_order_not_backdated_display_time(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw()
+    apply_rules(session, raw)
+    manual = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.EXCLUDED,
+        reason_code="MANUAL_REVIEW",
+        rule_version="manual-v1",
+        decided_by="reviewer",
+        decided_at=datetime(2000, 1, 1),
+    )
+    session.add(manual)
+    session.flush()
+
+    assert current_decision(session, raw.id) is manual
+
+
+def test_future_dated_older_decision_cannot_shadow_later_insertion(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw()
+    future = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.REVIEW_REQUIRED,
+        reason_code="FUTURE_IMPORT",
+        rule_version="manual-v0",
+        decided_by="reviewer",
+        decided_at=datetime(2099, 1, 1),
+    )
+    session.add(future)
+    session.flush()
+    later = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.INCLUDED,
+        reason_code="MANUAL_REVIEW",
+        rule_version="manual-v1",
+        decided_by="reviewer",
+        decided_at=datetime(2020, 1, 1),
+    )
+    session.add(later)
+    session.flush()
+
+    assert future.id < later.id
+    assert current_decision(session, raw.id) is later
 
 
 def test_new_rule_version_appends_without_rewriting_prior_history(

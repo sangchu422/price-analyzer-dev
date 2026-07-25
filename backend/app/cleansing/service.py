@@ -13,6 +13,9 @@ from app.cleansing.rules import (
     OUTLIER_RULE_VERSION,
     RULE_VERSION,
     Evaluation,
+    ZERO_MAD_MIN_ABSOLUTE_DELTA,
+    ZERO_MAD_MIN_RELATIVE_DELTA,
+    decimal_median,
     evaluate,
     mad_outlier_ids,
 )
@@ -48,10 +51,7 @@ def current_decision(
     return session.scalar(
         select(CleanDecision)
         .where(CleanDecision.raw_item_id == raw_item_id)
-        .order_by(
-            CleanDecision.decided_at.desc(),
-            CleanDecision.id.desc(),
-        )
+        .order_by(CleanDecision.id.desc())
         .limit(1)
     )
 
@@ -61,7 +61,6 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
     history: list[CleanDecision] = list(
         session.scalars(
             select(CleanDecision).order_by(
-                CleanDecision.decided_at,
                 CleanDecision.id,
             )
         )
@@ -102,10 +101,29 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
             (raw_item_id, baseline.unit_price)
         )
 
-    flagged_context: dict[int, tuple[tuple[str, str, str], int]] = {}
+    flagged_context: dict[
+        int,
+        tuple[
+            tuple[str, str, str],
+            list[tuple[int, Decimal]],
+            Decimal,
+            Decimal,
+        ],
+    ] = {}
     for group_key, rows in grouped.items():
+        rows.sort(key=lambda row: row[0])
+        values = sorted(value for _, value in rows)
+        median = decimal_median(values)
+        mad = decimal_median(
+            sorted(abs(value - median) for value in values)
+        )
         for raw_item_id in mad_outlier_ids(rows):
-            flagged_context[raw_item_id] = (group_key, len(rows))
+            flagged_context[raw_item_id] = (
+                group_key,
+                rows,
+                median,
+                mad,
+            )
 
     created: list[CleanDecision] = []
     with session.begin_nested():
@@ -113,11 +131,16 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
             baseline = eligible_baselines[raw_item_id]
             latest = latest_by_item[raw_item_id]
             if raw_item_id in flagged_context:
-                group_key, group_size = flagged_context[raw_item_id]
-                reason_detail = (
-                    "unit price is a group-local MAD outlier; "
-                    f"baseline_decision_id={baseline.id}; "
-                    f"group={group_key!r}; observations={group_size}"
+                group_key, rows, median, mad = flagged_context[
+                    raw_item_id
+                ]
+                reason_detail = _outlier_reason_detail(
+                    baseline=baseline,
+                    group_key=group_key,
+                    rows=rows,
+                    baselines=eligible_baselines,
+                    median=median,
+                    mad=mad,
                 )
                 if (
                     latest.status is CleanStatus.REVIEW_REQUIRED
@@ -175,6 +198,48 @@ def _outlier_decision(
         amount=baseline.amount,
         rule_version=OUTLIER_RULE_VERSION,
     )
+
+
+def _outlier_reason_detail(
+    *,
+    baseline: CleanDecision,
+    group_key: tuple[str, str, str],
+    rows: list[tuple[int, Decimal]],
+    baselines: dict[int, CleanDecision],
+    median: Decimal,
+    mad: Decimal,
+) -> str:
+    decision_ids = [baselines[row_id].id for row_id, _ in rows]
+    shown_ids = decision_ids[:50]
+    omitted = len(decision_ids) - len(shown_ids)
+    ids_snapshot = (
+        f"{shown_ids!r}"
+        if omitted == 0
+        else f"{shown_ids!r}...(+{omitted})"
+    )
+    bounded_group = tuple(_bounded_text(value, 80) for value in group_key)
+    gate = (
+        "delta>"
+        f"{ZERO_MAD_MIN_ABSOLUTE_DELTA}"
+        " and relative>"
+        f"{ZERO_MAD_MIN_RELATIVE_DELTA}"
+        if mad == 0
+        else "modified_z>3.5"
+    )
+    return (
+        "unit price is a group-local MAD outlier; "
+        f"rule={OUTLIER_RULE_VERSION}; "
+        f"baseline_decision_id={baseline.id}; "
+        f"group={bounded_group!r}; observations={len(rows)}; "
+        f"decision_ids={ids_snapshot}; median={median}; mad={mad}; "
+        f"gate={gate}"
+    )
+
+
+def _bounded_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
 
 
 def _decision_from_evaluation(

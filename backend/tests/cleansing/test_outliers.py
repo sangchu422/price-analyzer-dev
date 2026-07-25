@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -28,6 +29,32 @@ def test_zero_mad_flags_only_values_different_from_median() -> None:
             (4, Decimal("1000")),
         ]
     ) == {4}
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [Decimal("101"), Decimal("100.000001")],
+)
+def test_zero_mad_ignores_small_absolute_or_relative_deltas(
+    candidate: Decimal,
+) -> None:
+    assert mad_outlier_ids(
+        [
+            (1, Decimal("100")),
+            (2, Decimal("100")),
+            (3, candidate),
+        ]
+    ) == set()
+
+
+def test_zero_mad_flags_only_meaningful_absolute_and_relative_delta() -> None:
+    assert mad_outlier_ids(
+        [
+            (1, Decimal("100")),
+            (2, Decimal("100")),
+            (3, Decimal("150")),
+        ]
+    ) == {3}
 
 
 def test_nonzero_mad_uses_robust_threshold() -> None:
@@ -82,6 +109,11 @@ def test_outliers_are_group_local_and_append_review_decisions(
     assert latest is not None
     assert latest.status is CleanStatus.REVIEW_REQUIRED
     assert latest.reason_code == "UNIT_PRICE_MAD_OUTLIER"
+    assert "median=" in latest.reason_detail
+    assert "mad=" in latest.reason_detail
+    assert "decision_ids=" in latest.reason_detail
+    assert "rule=outlier-mad-v1" in latest.reason_detail
+    assert "gate=delta>1 and relative>0.20" in latest.reason_detail
     assert current_decision(
         session,
         bearing_rows[1].id,
@@ -221,6 +253,7 @@ def test_manual_included_decision_is_never_superseded_by_outlier_rule(
         amount=Decimal("1000"),
         rule_version="manual-v1",
         decided_by="reviewer",
+        decided_at=datetime(2000, 1, 1),
     )
     session.add(manual)
     session.flush()
@@ -229,6 +262,60 @@ def test_manual_included_decision_is_never_superseded_by_outlier_rule(
 
     assert created == []
     assert current_decision(session, rows[2].id) is manual
+
+
+def test_outlier_baseline_uses_latest_insert_not_future_display_time(
+    session: Session,
+    make_raw,
+) -> None:
+    rows = [
+        make_raw(
+            item_name="Timer",
+            spec="24 V",
+            unit="EA",
+            quantity="1",
+            unit_price="100",
+            amount="100",
+            source_row=index,
+        )
+        for index in range(1, 4)
+    ]
+    future_old = CleanDecision(
+        raw_item=rows[2],
+        status=CleanStatus.INCLUDED,
+        reason_code="VALID",
+        item_name_norm="TIMER",
+        spec_norm="24 V",
+        unit_norm="EA",
+        quantity=Decimal("1"),
+        unit_price=Decimal("1000"),
+        amount=Decimal("1000"),
+        rule_version="clean-v0",
+        decided_at=datetime(2099, 1, 1),
+    )
+    session.add(future_old)
+    session.flush()
+    for row in rows[:2]:
+        apply_rules(session, row)
+    latest_target = CleanDecision(
+        raw_item=rows[2],
+        status=CleanStatus.INCLUDED,
+        reason_code="VALID",
+        item_name_norm="TIMER",
+        spec_norm="24 V",
+        unit_norm="EA",
+        quantity=Decimal("1"),
+        unit_price=Decimal("100"),
+        amount=Decimal("100"),
+        rule_version="clean-v1",
+        decided_at=datetime(2000, 1, 1),
+    )
+    session.add(latest_target)
+    session.flush()
+
+    assert future_old.id < latest_target.id
+    assert apply_group_outlier_rules(session) == []
+    assert current_decision(session, rows[2].id) is latest_target
 
 
 def test_outlier_version_bump_appends_new_flagged_history(

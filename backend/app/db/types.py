@@ -7,15 +7,21 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
 
 
+EXACT_DECIMAL_QUANTUM = Decimal("0.000001")
+EXACT_DECIMAL_SCALE = Decimal("1000000")
+EXACT_DECIMAL_MAX = Decimal("9223372036854.775807")
+EXACT_DECIMAL_FRACTIONAL_DIGITS = 6
+
+
 class ExactDecimal(TypeDecorator[Decimal]):
     """Persist six-place decimals as signed scaled 64-bit integers."""
 
     impl = BigInteger
     cache_ok = True
 
-    _quantum = Decimal("0.000001")
-    _scale = Decimal("1000000")
-    _max_abs = Decimal("9223372036854.775807")
+    _quantum = EXACT_DECIMAL_QUANTUM
+    _scale = EXACT_DECIMAL_SCALE
+    _max_abs = EXACT_DECIMAL_MAX
 
     def process_bind_param(
         self,
