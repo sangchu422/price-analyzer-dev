@@ -19,6 +19,9 @@ venv/
 # Local isolated development worktrees
 .worktrees/
 
+# Local browser diagnostics
+.playwright-cli/
+output/playwright/
 
 # OS
 .DS_Store
