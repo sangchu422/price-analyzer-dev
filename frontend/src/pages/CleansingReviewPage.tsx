@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQueryClient,
@@ -47,6 +48,7 @@ export function CleansingReviewPage() {
         signal,
       }),
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    placeholderData: keepPreviousData,
   });
 
   const items = useMemo(
@@ -74,6 +76,10 @@ export function CleansingReviewPage() {
   const selected =
     items.find((item) => item.raw_item_id === effectiveSelectedId) ??
     null;
+  const isFilterTransition =
+    search.trim() !== debouncedSearch ||
+    queue.isPlaceholderData ||
+    (queue.isFetching && !queue.isFetchingNextPage);
   useEffect(() => {
     if (!focusAfterDecisionRef.current) return;
     focusAfterDecisionRef.current = false;
@@ -171,7 +177,9 @@ export function CleansingReviewPage() {
           selectedId={effectiveSelectedId}
           search={search}
           reason={reason}
-          isLocked={mutation.isPending}
+          controlsLocked={mutation.isPending}
+          resultsLocked={mutation.isPending || isFilterTransition}
+          isSearching={isFilterTransition}
           hasNextPage={queue.hasNextPage}
           isFetchingNextPage={queue.isFetchingNextPage}
           onSearchChange={setSearch}
@@ -205,6 +213,7 @@ export function CleansingReviewPage() {
               key={selected.raw_item_id}
               item={selected}
               isSaving={mutation.isPending}
+              isDisabled={isFilterTransition}
               notice={notice}
               onSubmit={(status, actor, detail) => {
                 setNotice(null);

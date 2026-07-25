@@ -4,11 +4,18 @@ import type { ManualDecisionStatus, ReviewQueueItem } from "../api/client";
 interface DecisionBarProps {
   item: ReviewQueueItem;
   isSaving: boolean;
+  isDisabled: boolean;
   notice: { kind: "success" | "stale" | "error"; text: string } | null;
   onSubmit: (status: ManualDecisionStatus, actor: string, detail: string) => void;
 }
 
-export function DecisionBar({ item, isSaving, notice, onSubmit }: DecisionBarProps) {
+export function DecisionBar({
+  item,
+  isSaving,
+  isDisabled,
+  notice,
+  onSubmit,
+}: DecisionBarProps) {
   const [actor, setActor] = useState("");
   const [detail, setDetail] = useState("");
   const [attempted, setAttempted] = useState(false);
@@ -73,7 +80,7 @@ export function DecisionBar({ item, isSaving, notice, onSubmit }: DecisionBarPro
         <button
           type="button"
           className="exclude-button"
-          disabled={isSaving}
+          disabled={isSaving || isDisabled}
           onClick={() => submit("EXCLUDED")}
         >
           제외
@@ -81,7 +88,7 @@ export function DecisionBar({ item, isSaving, notice, onSubmit }: DecisionBarPro
         <button
           type="button"
           className="include-button"
-          disabled={isSaving}
+          disabled={isSaving || isDisabled}
           onClick={() => submit("INCLUDED")}
         >
           포함

@@ -388,6 +388,25 @@ describe("CleansingReviewPage", () => {
     );
   });
 
+  it("handles a null API error detail without crashing", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST"
+        ? jsonResponse({ detail: null }, { status: 409 })
+        : jsonResponse(queue()),
+    ));
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.type(screen.getByLabelText("검토자"), "sangwoo");
+    await user.type(screen.getByLabelText("판단 근거"), "원본 대조 완료");
+    await user.click(screen.getByRole("button", { name: "포함" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "API 요청에 실패했습니다. (409)",
+    );
+  });
+
   it("loads the next cursor page and keeps existing rows", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
@@ -455,6 +474,43 @@ describe("CleansingReviewPage", () => {
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes("after_id=")),
     ).toBe(false);
+  });
+
+  it("keeps the focused search shell mounted and locks stale results while a filter request is pending", async () => {
+    let resolveSearch!: (value: Response) => void;
+    let searchRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("search=REMOTE")) {
+        searchRequests += 1;
+        return new Promise<Response>((resolve) => { resolveSearch = resolve; });
+      }
+      return jsonResponse(queue([firstItem]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    const searchbox = screen.getByRole("searchbox", {
+      name: "품목 또는 파일 검색",
+    });
+    await user.type(searchbox, "REMOTE");
+    await waitFor(() => expect(searchRequests).toBe(1));
+
+    expect(screen.getByRole("searchbox", {
+      name: "품목 또는 파일 검색",
+    })).toBe(searchbox);
+    expect(searchbox).toHaveFocus();
+    expect(screen.getByText("검색 중…")).toBeVisible();
+    expect(screen.getByRole("button", { name: /BEARING/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "포함" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "제외" })).toBeDisabled();
+
+    resolveSearch(await jsonResponse(queue([secondItem])));
+    expect(
+      await screen.findByRole("heading", { name: "SENSOR", level: 1 }),
+    ).toBeVisible();
+    expect(screen.queryByText("검색 중…")).not.toBeInTheDocument();
   });
 
   it("uses server facets to select a reason that exists only after page 50", async () => {

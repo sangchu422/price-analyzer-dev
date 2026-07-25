@@ -125,8 +125,10 @@ def review_queue(
         None,
         max_length=200,
         description=(
-            "Trimmed case-insensitive literal substring search. SQL LIKE "
-            "wildcards are treated as ordinary characters."
+            "Trimmed literal substring search. ASCII letters are "
+            "case-insensitive; non-ASCII follows SQLite lower() behavior "
+            "(Korean text is matched as an exact substring). SQL LIKE "
+            "wildcards are ordinary characters."
         ),
     ),
     reason_code: str | None = Query(None, min_length=1, max_length=100),

@@ -7,7 +7,9 @@ interface ReviewQueueProps {
   selectedId: number | null;
   search: string;
   reason: string;
-  isLocked: boolean;
+  controlsLocked: boolean;
+  resultsLocked: boolean;
+  isSearching: boolean;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   onSearchChange: (value: string) => void;
@@ -22,7 +24,9 @@ export function ReviewQueue({
   selectedId,
   search,
   reason,
-  isLocked,
+  controlsLocked,
+  resultsLocked,
+  isSearching,
   hasNextPage,
   isFetchingNextPage,
   onSearchChange,
@@ -31,7 +35,11 @@ export function ReviewQueue({
   onLoadMore,
 }: ReviewQueueProps) {
   return (
-    <aside className="queue-panel" aria-label="검토 대기 목록" aria-busy={isLocked}>
+    <aside
+      className="queue-panel"
+      aria-label="검토 대기 목록"
+      aria-busy={resultsLocked}
+    >
       <div className="queue-tools">
         <label className="search-field">
           <span className="sr-only">품목 또는 파일 검색</span>
@@ -44,7 +52,7 @@ export function ReviewQueue({
             aria-label="품목 또는 파일 검색"
             placeholder="품목 또는 파일 검색"
             value={search}
-            disabled={isLocked}
+            disabled={controlsLocked}
             onChange={(event) => onSearchChange(event.target.value)}
           />
         </label>
@@ -53,7 +61,7 @@ export function ReviewQueue({
           <select
             aria-label="검토 사유 필터"
             value={reason}
-            disabled={isLocked}
+            disabled={controlsLocked}
             onChange={(event) => onReasonChange(event.target.value)}
           >
             <option value="">모든 사유</option>
@@ -68,7 +76,13 @@ export function ReviewQueue({
 
       <div className="queue-heading">
         <span>검토 항목</span>
-        <span>{items.length}건 표시</span>
+        {isSearching ? (
+          <span className="queue-progress" role="status" aria-live="polite">
+            검색 중…
+          </span>
+        ) : (
+          <span>{items.length}건 표시</span>
+        )}
       </div>
       <ol className="queue-list">
         {items.map((item, index) => {
@@ -79,7 +93,7 @@ export function ReviewQueue({
                 type="button"
                 className={item.raw_item_id === selectedId ? "queue-row is-selected" : "queue-row"}
                 aria-pressed={item.raw_item_id === selectedId}
-                disabled={isLocked}
+                disabled={resultsLocked}
                 onClick={() => onSelect(item.raw_item_id)}
               >
                 <span className="row-main">
@@ -109,7 +123,7 @@ export function ReviewQueue({
         <button
           className="load-more"
           type="button"
-          disabled={isFetchingNextPage || isLocked}
+          disabled={isFetchingNextPage || resultsLocked}
           onClick={onLoadMore}
         >
           {isFetchingNextPage ? "불러오는 중…" : "다음 항목 불러오기"}

@@ -86,7 +86,11 @@ export class ApiError extends Error {
 
   get errorCode() {
     const detail = this.body?.detail;
-    return typeof detail === "object" ? detail.error_code : undefined;
+    return detail !== null &&
+      typeof detail === "object" &&
+      !Array.isArray(detail)
+      ? detail.error_code
+      : undefined;
   }
 }
 
