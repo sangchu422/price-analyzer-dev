@@ -44,7 +44,11 @@ def client(
     monkeypatch.setattr(settings, "quote_folder", quote_root)
 
     def override_session() -> Iterator[Session]:
-        yield api_session
+        try:
+            yield api_session
+        finally:
+            if api_session.in_transaction():
+                api_session.rollback()
 
     app.dependency_overrides[get_session] = override_session
     try:

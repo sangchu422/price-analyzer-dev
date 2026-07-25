@@ -138,6 +138,22 @@ def test_scan_empty_folder_is_explicit_not_silent(
     }
 
 
+def test_document_endpoints_publish_explicit_response_schemas(
+    client: TestClient,
+) -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+
+    list_schema = paths["/api/documents"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+    scan_schema = paths["/api/documents/scan"]["post"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+
+    assert list_schema["$ref"].endswith("/DocumentListResponse")
+    assert scan_schema["$ref"].endswith("/ScanResponse")
+
+
 def test_document_current_decisions_are_loaded_only_for_requested_page(
     client: TestClient,
     api_session: Session,

@@ -5,6 +5,10 @@ from sqlalchemy import event
 from sqlalchemy.engine import Connection, Engine
 
 
+_ALLOWED_BEGIN_MODES = frozenset({"DEFERRED", "IMMEDIATE"})
+_BUSY_TIMEOUT_MILLISECONDS = 5000
+
+
 def _configure_dbapi_connection(
     dbapi_connection: Any,
     connection_record: Any,
@@ -13,11 +17,22 @@ def _configure_dbapi_connection(
         dbapi_connection.isolation_level = None
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute(
+            f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MILLISECONDS}"
+        )
         cursor.close()
 
 
 def _begin_explicitly(connection: Connection) -> None:
-    connection.exec_driver_sql("BEGIN")
+    mode = connection.get_execution_options().get(
+        "sqlite_begin_mode",
+        "DEFERRED",
+    )
+    if mode not in _ALLOWED_BEGIN_MODES:
+        raise ValueError(
+            "sqlite_begin_mode must be DEFERRED or IMMEDIATE"
+        )
+    connection.exec_driver_sql(f"BEGIN {mode}")
 
 
 def configure_sqlite(engine: Engine) -> Engine:

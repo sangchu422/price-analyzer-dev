@@ -1,12 +1,20 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import Barrier, Lock
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.cleansing import DecisionRequest, append_manual_decision
 from app.cleansing.models import CleanDecision, CleanStatus
+from app.db.base import Base
+from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 
@@ -72,7 +80,7 @@ def test_review_queue_returns_current_decision_and_exact_provenance(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total"] == 1
+    assert payload["remaining"] == 1
     assert payload["next_cursor"] is None
     row = payload["items"][0]
     assert row["raw_item_id"] == raw.id
@@ -132,7 +140,7 @@ def test_review_queue_uses_latest_id_not_decided_time_and_filters(
     )
 
     assert response.status_code == 200
-    assert response.json()["total"] == 1
+    assert response.json()["remaining"] == 1
     assert [row["raw_item_id"] for row in response.json()["items"]] == [
         second.id
     ]
@@ -146,15 +154,18 @@ def test_review_queue_cursor_does_not_skip_after_prior_page_is_resolved(
     second = _seed_distinct_review(api_session)
     third = _seed_third_review(api_session)
     api_session.commit()
+    first_id = first.id
+    second_id = second.id
+    third_id = third.id
 
     page = client.get("/api/cleansing/review-queue", params={"limit": 1})
     assert page.status_code == 200
-    assert [item["raw_item_id"] for item in page.json()["items"]] == [first.id]
+    assert [item["raw_item_id"] for item in page.json()["items"]] == [first_id]
     cursor = page.json()["next_cursor"]
-    assert cursor == first.id
+    assert cursor == first_id
     expected_id = page.json()["items"][0]["decision"]["id"]
     resolved = client.post(
-        f"/api/cleansing/{first.id}/decisions",
+        f"/api/cleansing/{first_id}/decisions",
         json={
             "status": "INCLUDED",
             "reason_code": "MANUAL_REVIEW",
@@ -172,10 +183,10 @@ def test_review_queue_cursor_does_not_skip_after_prior_page_is_resolved(
 
     assert next_page.status_code == 200
     assert [item["raw_item_id"] for item in next_page.json()["items"]] == [
-        second.id
+        second_id
     ]
-    assert next_page.json()["next_cursor"] == second.id
-    assert third.id > second.id
+    assert next_page.json()["next_cursor"] == second_id
+    assert third_id > second_id
     assert client.get(
         "/api/cleansing/review-queue",
         params={"offset": 1},
@@ -417,3 +428,133 @@ def test_manual_decision_rejects_stale_snapshot_without_extra_history(
         "current_decision_id": first.json()["id"],
     }
     assert api_session.scalar(select(func.count(CleanDecision.id))) == 2
+
+
+def test_immediate_execution_option_emits_begin_immediate(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "immediate.sqlite3"
+    engine = configure_sqlite(
+        create_engine(f"sqlite:///{database.as_posix()}")
+    )
+    statements: list[str] = []
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        lambda connection, cursor, statement, parameters, context, many: (
+            statements.append(statement)
+        ),
+    )
+    with Session(engine) as session:
+        session.connection(
+            execution_options={"sqlite_begin_mode": "IMMEDIATE"}
+        )
+        session.rollback()
+    with Session(engine) as read_session:
+        read_session.execute(select(1))
+        read_session.rollback()
+
+    assert statements[0] == "BEGIN IMMEDIATE"
+    assert statements[-2] == "BEGIN DEFERRED"
+
+
+def test_sqlite_begin_mode_rejects_unallowlisted_sql(
+    tmp_path: Path,
+) -> None:
+    engine = configure_sqlite(
+        create_engine(f"sqlite:///{(tmp_path / 'mode.sqlite3').as_posix()}")
+    )
+
+    with Session(engine) as session:
+        with pytest.raises(ValueError, match="sqlite_begin_mode"):
+            session.connection(
+                execution_options={
+                    "sqlite_begin_mode": "IMMEDIATE; DROP TABLE x"
+                }
+            )
+
+
+def test_concurrent_manual_decisions_serialize_to_success_and_stale(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "concurrent.sqlite3"
+    engine = configure_sqlite(
+        create_engine(
+            f"sqlite:///{database.as_posix()}",
+            connect_args={"check_same_thread": False},
+        )
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as setup:
+        raw = _seed_review_item(setup)
+        raw_id = raw.id
+        expected_id = raw.decisions[0].id
+
+    start = Barrier(2)
+    first_begin = Lock()
+    begin_was_held = False
+
+    def hold_first_writer(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        many,
+    ) -> None:
+        nonlocal begin_was_held
+        if statement != "BEGIN IMMEDIATE":
+            return
+        with first_begin:
+            if begin_was_held:
+                return
+            begin_was_held = True
+        time.sleep(0.2)
+
+    event.listen(engine, "after_cursor_execute", hold_first_writer)
+
+    def submit(actor: str) -> tuple[int, int | None]:
+        with factory() as session:
+            start.wait(timeout=5)
+            request = DecisionRequest(
+                status="INCLUDED",
+                reason_code="MANUAL_REVIEW",
+                reason_detail="concurrent review",
+                decided_by=actor,
+                expected_current_decision_id=expected_id,
+            )
+            try:
+                response = append_manual_decision(raw_id, request, session)
+            except HTTPException as exc:
+                current_id = (
+                    exc.detail.get("current_decision_id")
+                    if isinstance(exc.detail, dict)
+                    else None
+                )
+                return exc.status_code, current_id
+            return 201, response["id"]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(submit, "reviewer-a"),
+                executor.submit(submit, "reviewer-b"),
+            ]
+            results = sorted(
+                future.result(timeout=10)
+                for future in futures
+            )
+    finally:
+        event.remove(engine, "after_cursor_execute", hold_first_writer)
+
+    assert [status for status, _ in results] == [201, 409]
+    assert begin_was_held
+    with factory() as observer:
+        history = observer.scalars(
+            select(CleanDecision)
+            .where(CleanDecision.raw_item_id == raw_id)
+            .order_by(CleanDecision.id)
+        ).all()
+        assert len(history) == 2
+        assert history[-1].decided_by in {"reviewer-a", "reviewer-b"}

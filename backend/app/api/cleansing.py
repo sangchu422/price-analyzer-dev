@@ -96,7 +96,7 @@ class ReviewQueueItem(BaseModel):
 
 class ReviewQueueResponse(BaseModel):
     items: list[ReviewQueueItem]
-    total: int
+    remaining: int
     limit: int
     next_cursor: int | None
 
@@ -165,7 +165,7 @@ def review_queue(
             _review_item(raw, decision, variant, document)
             for raw, decision, variant, document in page_rows
         ],
-        "total": total,
+        "remaining": total,
         "limit": limit,
         "next_cursor": (
             page_rows[-1][0].id if has_more and page_rows else None
@@ -183,8 +183,16 @@ def append_manual_decision(
     body: DecisionRequest,
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
+    if session.in_transaction():
+        raise RuntimeError(
+            "manual decision endpoint requires a fresh database session"
+        )
+    session.connection(
+        execution_options={"sqlite_begin_mode": "IMMEDIATE"}
+    )
     raw_item = session.get(RawQuoteItem, raw_item_id)
     if raw_item is None:
+        session.rollback()
         raise HTTPException(status_code=404, detail="raw quote item not found")
 
     history = list(
@@ -195,6 +203,7 @@ def append_manual_decision(
         )
     )
     if not history:
+        session.rollback()
         raise HTTPException(
             status_code=409,
             detail="raw quote item has no cleansing baseline",

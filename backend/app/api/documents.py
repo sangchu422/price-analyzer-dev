@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ntpath
+from datetime import datetime
 from pathlib import Path
 from zipfile import BadZipFile
 
 from fastapi import APIRouter, Depends, Query
 from openpyxl.utils.exceptions import InvalidFileException
 from pypdf.errors import PdfReadError
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from xlrd.biffh import XLRDError
@@ -34,7 +36,59 @@ router = APIRouter()
 _SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".pdf"}
 
 
-@router.get("")
+class VariantResponse(BaseModel):
+    id: int
+    path: str
+    sha256: str
+    extension: str
+    security_state: str
+    selected_for_parsing_at_ingest: bool
+    registered_at: datetime
+    raw_item_count: int
+
+
+class DocumentCountsResponse(BaseModel):
+    raw_items: int
+    INCLUDED: int
+    EXCLUDED: int
+    REVIEW_REQUIRED: int
+    UNDECIDED: int
+
+
+class DocumentResponse(BaseModel):
+    id: int
+    logical_name: str
+    created_at: datetime
+    variants: list[VariantResponse]
+    preferred_variant: VariantResponse
+    counts: DocumentCountsResponse
+
+
+class DocumentListResponse(BaseModel):
+    items: list[DocumentResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class ScanFailureResponse(BaseModel):
+    logical_name: str
+    error_code: str
+    detail: str
+
+
+class ScanResponse(BaseModel):
+    files_found: int
+    documents_found: int
+    documents_succeeded: int
+    documents_failed: int
+    variants_created: int
+    raw_items_created: int
+    decisions_created: int
+    failures: list[ScanFailureResponse]
+
+
+@router.get("", response_model=DocumentListResponse)
 def list_documents(
     session: Session = Depends(get_session),
     *,
@@ -66,7 +120,7 @@ def list_documents(
     }
 
 
-@router.post("/scan")
+@router.post("/scan", response_model=ScanResponse)
 def scan_documents(
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
