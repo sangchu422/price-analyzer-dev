@@ -1,0 +1,303 @@
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.cleansing.models import CleanDecision, CleanStatus
+from app.cleansing.rules import evaluate, normalize_text, parse_number
+from app.cleansing.service import apply_rules, current_decision
+from app.db.immutability import ImmutableEvidenceError
+from app.documents.models import SourceDocument
+
+
+@pytest.mark.parametrize(
+    ("item_name", "unit_price", "expected_reason"),
+    [
+        ("", "1000", "MISSING_ITEM_NAME"),
+        ("SERVO MOTOR", "0", "INVALID_UNIT_PRICE"),
+        ("SERVO MOTOR", "-1", "INVALID_UNIT_PRICE"),
+        ("SERVO MOTOR", "not a price", "INVALID_UNIT_PRICE"),
+    ],
+)
+def test_automatic_exclusion_priority(
+    make_raw,
+    item_name: str,
+    unit_price: str,
+    expected_reason: str,
+) -> None:
+    result = evaluate(
+        make_raw(item_name=item_name, unit_price=unit_price)
+    )
+
+    assert result.status is CleanStatus.EXCLUDED
+    assert result.reason_code == expected_reason
+
+
+def test_missing_name_has_priority_over_invalid_price(make_raw) -> None:
+    result = evaluate(make_raw(item_name=" ", unit_price="0"))
+
+    assert result.reason_code == "MISSING_ITEM_NAME"
+
+
+@pytest.mark.parametrize(
+    "item_name",
+    [
+        "합계",
+        " 합 계 : ",
+        "[소계]",
+        "총-계",
+        "일반관리비",
+        "일반 관리비",
+        "관리비.",
+        "인 건 비",
+        "(경비)",
+    ],
+)
+def test_summary_and_fee_variants_are_excluded(
+    make_raw,
+    item_name: str,
+) -> None:
+    result = evaluate(make_raw(item_name=item_name, unit_price="100000"))
+
+    assert result.status is CleanStatus.EXCLUDED
+    assert result.reason_code == "SUMMARY_OR_FEE_LINE"
+
+
+def test_invalid_price_has_priority_over_summary_line(make_raw) -> None:
+    result = evaluate(make_raw(item_name="합계", unit_price="0"))
+
+    assert result.reason_code == "INVALID_UNIT_PRICE"
+
+
+def test_amount_mismatch_requires_review(make_raw) -> None:
+    result = evaluate(
+        make_raw(
+            item_name="BEARING",
+            quantity="2",
+            unit_price="1000",
+            amount="9000",
+        )
+    )
+
+    assert result.status is CleanStatus.REVIEW_REQUIRED
+    assert result.reason_code == "AMOUNT_MISMATCH"
+
+
+def test_amount_tolerance_is_exact_and_inclusive(make_raw) -> None:
+    inside = evaluate(
+        make_raw(
+            source_row=1,
+            quantity="3",
+            unit_price="333.333333",
+            amount="1000",
+        )
+    )
+    outside = evaluate(
+        make_raw(
+            source_row=2,
+            quantity="3",
+            unit_price="333.333333",
+            amount="1011",
+        )
+    )
+
+    assert inside.status is CleanStatus.INCLUDED
+    assert inside.amount == Decimal("1000")
+    assert outside.status is CleanStatus.REVIEW_REQUIRED
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("₩ 1,234.50", Decimal("1234.50")),
+        ("1 234 원", Decimal("1234")),
+        ("KRW\u00a01,234", Decimal("1234")),
+        ("$ 12.25", Decimal("12.25")),
+        ("(1,234.5)", Decimal("-1234.5")),
+        (" + 1,000 ", Decimal("1000")),
+    ],
+)
+def test_common_quote_numbers_are_parsed_exactly(
+    raw: str,
+    expected: Decimal,
+) -> None:
+    assert parse_number(raw).value == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["1,2,3", "12.3.4", "1e3", "약 1000", "1000-2000", "(1000", "NaN"],
+)
+def test_ambiguous_numbers_are_not_invented(raw: str) -> None:
+    parsed = parse_number(raw)
+
+    assert parsed.value is None
+    assert parsed.supplied
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("quantity", "두 개", "INVALID_QUANTITY"),
+        ("amount", "약 2,000", "INVALID_AMOUNT"),
+    ],
+)
+def test_ambiguous_non_price_numbers_require_review(
+    make_raw,
+    field: str,
+    value: str,
+    reason: str,
+) -> None:
+    kwargs = {field: value}
+    result = evaluate(make_raw(**kwargs))
+
+    assert result.status is CleanStatus.REVIEW_REQUIRED
+    assert result.reason_code == reason
+
+
+def test_normalization_is_deterministic_without_semantic_guessing(make_raw) -> None:
+    result = evaluate(
+        make_raw(
+            item_name="  servo　 motor  ",
+            spec=" AB -  10 / 20 ",
+            unit=" ea ",
+            maker=" Acme  Corp. ",
+        )
+    )
+
+    assert result.item_name_norm == "SERVO MOTOR"
+    assert result.spec_norm == "AB-10/20"
+    assert result.unit_norm == "EA"
+    assert result.maker_norm == "ACME CORP."
+    assert normalize_text("ＡＢＣ　motor") == "ABC MOTOR"
+
+
+def test_apply_rules_persists_exact_decimals_without_committing(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw(
+        quantity="3",
+        unit_price="₩ 333.333333",
+        amount="1000",
+    )
+
+    decision = apply_rules(session, raw)
+
+    assert decision.quantity == Decimal("3")
+    assert decision.unit_price == Decimal("333.333333")
+    assert decision.amount == Decimal("1000")
+    assert session.in_transaction()
+    session.rollback()
+    assert session.scalar(select(func.count(CleanDecision.id))) == 0
+
+
+def test_repeated_rule_run_is_idempotent_but_changed_raw_version_appends(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw()
+
+    first = apply_rules(session, raw)
+    second = apply_rules(session, raw)
+
+    assert second is first
+    assert session.scalar(select(func.count(CleanDecision.id))) == 1
+    first.rule_version = "attempted-mutation"
+    with pytest.raises(ImmutableEvidenceError):
+        session.flush()
+
+
+def test_current_decision_returns_latest_chronological_row(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw()
+    automatic = apply_rules(session, raw)
+    manual = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.REVIEW_REQUIRED,
+        reason_code="MANUAL_REVIEW",
+        rule_version="manual-v1",
+        decided_by="reviewer",
+    )
+    session.add(manual)
+    session.flush()
+
+    assert current_decision(session, raw.id) is manual
+    assert automatic.id < manual.id
+
+
+def test_new_rule_version_appends_without_rewriting_prior_history(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw()
+    prior = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.INCLUDED,
+        reason_code="VALID",
+        rule_version="clean-v0",
+    )
+    session.add(prior)
+    session.flush()
+
+    current = apply_rules(session, raw)
+
+    assert current.id != prior.id
+    assert current.rule_version == "clean-v1"
+    assert session.scalar(select(func.count(CleanDecision.id))) == 2
+
+
+def test_automatic_rerun_never_supersedes_manual_decision(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw()
+    apply_rules(session, raw)
+    manual = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.EXCLUDED,
+        reason_code="MANUAL_REVIEW",
+        rule_version="manual-v1",
+        decided_by="reviewer",
+    )
+    session.add(manual)
+    session.flush()
+
+    result = apply_rules(session, raw)
+
+    assert result is manual
+    assert current_decision(session, raw.id) is manual
+    assert session.scalar(select(func.count(CleanDecision.id))) == 2
+
+
+def test_apply_rules_failure_rolls_back_only_its_savepoint(
+    session: Session,
+    make_raw,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = make_raw()
+    from app.cleansing import service
+
+    unrelated = SourceDocument(logical_name="unrelated-pending")
+    session.add(unrelated)
+    original_flush = session.flush
+
+    def fail_when_decision_added(*args, **kwargs):
+        if any(
+            isinstance(value, CleanDecision)
+            for value in session.new
+        ):
+            raise RuntimeError("simulated persistence failure")
+        return original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(session, "flush", fail_when_decision_added)
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        service.apply_rules(session, raw)
+
+    assert session.in_transaction()
+    assert unrelated in session
+    assert session.scalar(select(func.count(CleanDecision.id))) == 0
