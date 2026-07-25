@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 
 import {
   getAnalysisDocuments,
@@ -31,39 +31,43 @@ export function QuoteAnalysisPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [matchStatus, setMatchStatus] = useState<AnalysisMatchStatus | "">("");
   const [assessment, setAssessment] = useState<AnalysisAssessment | "">("");
-  const documents = useQuery({
+  const documents = useInfiniteQuery({
     queryKey: ["analysis-documents"],
-    queryFn: ({ signal }) => getAnalysisDocuments(signal),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      getAnalysisDocuments({ afterId: pageParam, signal }),
+    getNextPageParam: safeNextCursor,
   });
+  const documentItems = uniqueById(
+    documents.data?.pages.flatMap((page) => page.items) ?? [],
+    (item) => item.id,
+  );
   const effectiveId =
-    documents.data?.items.some((item) => item.id === selectedId)
+    documentItems.some((item) => item.id === selectedId)
       ? selectedId
-      : documents.data?.items[0]?.id ?? null;
-  const analysis = useQuery({
+      : documentItems[0]?.id ?? null;
+  const analysis = useInfiniteQuery({
     queryKey: ["quote-analysis", effectiveId, matchStatus, assessment],
-    queryFn: ({ signal }) =>
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
       getDocumentAnalysis({
         documentId: effectiveId!,
         matchStatus: matchStatus || undefined,
         assessment: assessment || undefined,
+        afterId: pageParam,
         signal,
       }),
     enabled: effectiveId !== null,
-    placeholderData: (previous) => previous,
+    getNextPageParam: safeNextCursor,
   });
-  const selectedDocument = documents.data?.items.find(
+  const analysisLines = uniqueById(
+    analysis.data?.pages.flatMap((page) => page.lines) ?? [],
+    (line) => line.raw_item_id,
+  );
+  const selectedDocument = documentItems.find(
     (item) => item.id === effectiveId,
   );
-  const summary = useMemo(
-    () => ({
-      matched: analysis.data?.lines.filter((line) => line.match_status === "MATCHED").length ?? 0,
-      needsReview: analysis.data?.lines.filter((line) =>
-        ["CANDIDATE", "NO_MATCH", "MATCHED_NO_PRICE", "REVIEW_REQUIRED"].includes(line.match_status),
-      ).length ?? 0,
-      high: analysis.data?.lines.filter((line) => line.assessment === "HIGH").length ?? 0,
-    }),
-    [analysis.data],
-  );
+  const documentTotal = documents.data?.pages[0]?.total ?? 0;
 
   return (
     <main className="workspace-page analysis-page">
@@ -79,11 +83,22 @@ export function QuoteAnalysisPage() {
             onChange={(event) => setSelectedId(Number(event.target.value))}
             disabled={documents.isPending}
           >
-            {documents.data?.items.map((document) => (
+            {documentItems.map((document) => (
               <option key={document.id} value={document.id}>{document.logical_name}</option>
             ))}
           </select>
         </label>
+        {documents.hasNextPage && (
+          <button
+            type="button"
+            disabled={documents.isFetchingNextPage}
+            onClick={() => void documents.fetchNextPage()}
+          >
+            {documents.isFetchingNextPage
+              ? "다음 견적서 불러오는 중…"
+              : "다음 견적서 불러오기"}
+          </button>
+        )}
         <label>
           <span>매칭 상태</span>
           <select value={matchStatus} onChange={(event) => setMatchStatus(event.target.value as AnalysisMatchStatus | "")}>
@@ -99,7 +114,9 @@ export function QuoteAnalysisPage() {
           </select>
         </label>
         <div className="filter-status" aria-live="polite">
-          {analysis.isFetching ? "서버 필터 적용 중…" : `${analysis.data?.lines.length ?? 0}개 행`}
+          {analysis.isPending
+            ? "서버 필터 적용 중…"
+            : `표시 ${analysisLines.length}개 / 원천 전체 ${selectedDocument?.raw_item_count ?? 0}개`}
         </div>
       </div>
 
@@ -113,9 +130,9 @@ export function QuoteAnalysisPage() {
               <p>원천 {selectedDocument.raw_item_count}행 · 정제 포함 {selectedDocument.included_count}행</p>
             </div>
             <dl>
-              <div><dt>단가 적용</dt><dd>{summary.matched}</dd></div>
-              <div><dt>후속 검토</dt><dd>{summary.needsReview}</dd></div>
-              <div><dt>고가 판정</dt><dd>{summary.high}</dd></div>
+              <div><dt>표시 행</dt><dd>{analysisLines.length}</dd></div>
+              <div><dt>원천 전체</dt><dd>{selectedDocument.raw_item_count}</dd></div>
+              <div><dt>견적서</dt><dd>{documentItems.length}/{documentTotal}</dd></div>
             </dl>
           </header>
 
@@ -125,7 +142,13 @@ export function QuoteAnalysisPage() {
               <button type="button" onClick={() => void analysis.refetch()}>다시 시도</button>
             </div>
           )}
-          <div className={`table-scroll analysis-table-wrap ${analysis.isFetching ? "is-loading" : ""}`}>
+          {analysis.isPending && (
+            <div className="analysis-loading" role="status">
+              새 조건의 결과를 불러오는 중…
+            </div>
+          )}
+          {!analysis.isPending && (
+          <div className={`table-scroll analysis-table-wrap ${analysis.isFetchingNextPage ? "is-loading" : ""}`}>
             <table className="data-table analysis-table">
               <thead>
                 <tr>
@@ -141,13 +164,26 @@ export function QuoteAnalysisPage() {
                 </tr>
               </thead>
               <tbody>
-                {analysis.data?.lines.map((line) => <AnalysisRow key={line.raw_item_id} line={line} />)}
+                {analysisLines.map((line) => <AnalysisRow key={line.raw_item_id} line={line} />)}
               </tbody>
             </table>
-            {!analysis.isPending && analysis.data?.lines.length === 0 && (
+            {analysisLines.length === 0 && (
               <p className="inline-state">현재 서버 필터에 맞는 행이 없습니다.</p>
             )}
+            {analysis.hasNextPage && (
+              <button
+                className="load-more-button"
+                type="button"
+                disabled={analysis.isFetchingNextPage}
+                onClick={() => void analysis.fetchNextPage()}
+              >
+                {analysis.isFetchingNextPage
+                  ? "다음 분석 행 불러오는 중…"
+                  : "다음 분석 행 불러오기"}
+              </button>
+            )}
           </div>
+          )}
         </section>
       )}
     </main>
@@ -211,4 +247,30 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
       </td>
     </tr>
   );
+}
+
+function safeNextCursor<T extends { next_cursor: number | null }>(
+  lastPage: T,
+  allPages: T[],
+  lastPageParam: number | undefined,
+) {
+  const next = lastPage.next_cursor;
+  if (
+    next === null ||
+    next === lastPageParam ||
+    allPages.slice(0, -1).some((page) => page.next_cursor === next)
+  ) {
+    return undefined;
+  }
+  return next;
+}
+
+function uniqueById<T>(items: T[], getId: (item: T) => number) {
+  const seen = new Set<number>();
+  return items.filter((item) => {
+    const id = getId(item);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }

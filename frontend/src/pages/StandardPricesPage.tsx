@@ -26,6 +26,8 @@ export function StandardPricesPage() {
   const [actor, setActor] = useState("");
   const versionLinkRefs = useRef(new Map<number, HTMLAnchorElement>());
   const focusedLinkedVersionId = useRef<number | null>(null);
+  const attemptedCatalogCursors = useRef(new Set<number>());
+  const attemptedHistoryCursors = useRef(new Set<string>());
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const catalog = useInfiniteQuery({
     queryKey: ["standard-items"],
@@ -33,6 +35,7 @@ export function StandardPricesPage() {
     queryFn: ({ pageParam, signal }) =>
       getStandardItems({ afterId: pageParam, signal }),
     getNextPageParam: safeNextCursor,
+    retry: false,
   });
   const catalogItems = uniqueById(
     catalog.data?.pages.flatMap((page) => page.items) ?? [],
@@ -40,18 +43,13 @@ export function StandardPricesPage() {
   const {
     fetchNextPage,
     hasNextPage,
+    isFetchNextPageError,
     isFetchingNextPage,
   } = catalog;
   const linkedItem = catalogItems.find((item) => item.id === requestedItemId);
-  const linkedItemPending =
-    requestedItemId !== null &&
-    !linkedItem &&
-    (catalog.isPending ||
-      hasNextPage ||
-      isFetchingNextPage);
   const effectiveId =
     linkedItem?.id ??
-    (linkedItemPending
+    (requestedItemId !== null
       ? null
       : catalogItems.some((item) => item.id === selectedId)
       ? selectedId
@@ -60,22 +58,37 @@ export function StandardPricesPage() {
     catalogItems.find((item) => item.id === effectiveId) ?? null;
   const activeLinkedVersionId =
     requestedItemId !== null && linkedItem ? linkedVersionId : null;
+  const catalogCursor =
+    catalog.data?.pages.at(-1)?.next_cursor ?? null;
+  const linkedItemMissing =
+    requestedItemId !== null &&
+    !linkedItem &&
+    catalog.data !== undefined &&
+    !hasNextPage &&
+    !isFetchingNextPage &&
+    !isFetchNextPageError;
 
   useEffect(() => {
     if (
       requestedItemId === null ||
       linkedItem ||
       !hasNextPage ||
-      isFetchingNextPage
+      isFetchingNextPage ||
+      isFetchNextPageError ||
+      catalogCursor === null ||
+      attemptedCatalogCursors.current.has(catalogCursor)
     ) {
       return;
     }
+    attemptedCatalogCursors.current.add(catalogCursor);
     void fetchNextPage();
   }, [
     requestedItemId,
     linkedItem,
     hasNextPage,
     isFetchingNextPage,
+    isFetchNextPageError,
+    catalogCursor,
     fetchNextPage,
   ]);
   const draft = useQuery({
@@ -95,6 +108,7 @@ export function StandardPricesPage() {
       }),
     getNextPageParam: safeNextCursor,
     enabled: effectiveId !== null,
+    retry: false,
   });
   const historyVersions = uniqueById(
     history.data?.pages.flatMap((page) => page.versions) ?? [],
@@ -102,27 +116,46 @@ export function StandardPricesPage() {
   const {
     fetchNextPage: fetchNextHistoryPage,
     hasNextPage: hasNextHistoryPage,
+    isFetchNextPageError: isFetchNextHistoryPageError,
     isFetchingNextPage: isFetchingNextHistoryPage,
   } = history;
   const linkedVersion = historyVersions.find(
     (version) => version.id === activeLinkedVersionId,
   );
+  const historyCursor = history.data?.pages.at(-1)?.next_cursor ?? null;
+  const historyCursorKey =
+    effectiveId !== null && historyCursor !== null
+      ? `${effectiveId}:${historyCursor}`
+      : null;
+  const linkedVersionMissing =
+    activeLinkedVersionId !== null &&
+    !linkedVersion &&
+    history.data !== undefined &&
+    !hasNextHistoryPage &&
+    !isFetchingNextHistoryPage &&
+    !isFetchNextHistoryPageError;
 
   useEffect(() => {
     if (
       activeLinkedVersionId === null ||
       linkedVersion ||
       !hasNextHistoryPage ||
-      isFetchingNextHistoryPage
+      isFetchingNextHistoryPage ||
+      isFetchNextHistoryPageError ||
+      historyCursorKey === null ||
+      attemptedHistoryCursors.current.has(historyCursorKey)
     ) {
       return;
     }
+    attemptedHistoryCursors.current.add(historyCursorKey);
     void fetchNextHistoryPage();
   }, [
     activeLinkedVersionId,
     linkedVersion,
     hasNextHistoryPage,
     isFetchingNextHistoryPage,
+    isFetchNextHistoryPageError,
+    historyCursorKey,
     fetchNextHistoryPage,
   ]);
 
@@ -224,7 +257,54 @@ export function StandardPricesPage() {
           )}
         </section>
         <section className="work-detail" aria-label="표준단가 상세">
-          {!selected && <div className="empty-detail"><p>표준품목을 선택하세요.</p></div>}
+          {requestedItemId !== null && !linkedItem && (
+            <div
+              className={`empty-detail ${
+                catalog.isError || linkedItemMissing || isFetchNextPageError
+                  ? "is-error"
+                  : ""
+              }`}
+              role={
+                catalog.isError || linkedItemMissing || isFetchNextPageError
+                  ? "alert"
+                  : "status"
+              }
+            >
+              {catalog.isError && !isFetchNextPageError ? (
+                <>
+                  <p>표준품목 목록을 불러오지 못했습니다.</p>
+                  <button type="button" onClick={() => void catalog.refetch()}>
+                    표준품목 목록 다시 시도
+                  </button>
+                </>
+              ) : isFetchNextPageError ? (
+                <>
+                  <p>표준품목을 찾는 중 다음 목록을 불러오지 못했습니다.</p>
+                  <button type="button" onClick={() => void fetchNextPage()}>
+                    딥링크 품목 다시 찾기
+                  </button>
+                </>
+              ) : linkedItemMissing ? (
+                <>
+                  <p>요청한 표준품목 근거를 찾을 수 없음</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRequestedItemId(null);
+                      setSelectedId(catalogItems[0]?.id ?? null);
+                    }}
+                  >
+                    목록 돌아가기
+                  </button>
+                </>
+              ) : (
+                <p>딥링크의 표준품목을 찾는 중…</p>
+              )}
+            </div>
+          )}
+          {requestedItemId === null && !selected && (
+            <div className="empty-detail"><p>표준품목을 선택하세요.</p></div>
+          )}
           {selected && (
             <div className="detail-content">
               <header className="record-heading">
@@ -314,7 +394,33 @@ export function StandardPricesPage() {
                   <span>{historyVersions.length}개 버전</span>
                 </div>
                 {history.isPending && <p className="inline-state">이력을 불러오는 중…</p>}
-                {history.isError && <p className="inline-state is-error">승인 이력을 불러오지 못했습니다.</p>}
+                {isFetchNextHistoryPageError && activeLinkedVersionId !== null && (
+                  <div className="inline-state is-error" role="alert">
+                    <p>요청한 버전을 찾는 중 다음 이력을 불러오지 못했습니다.</p>
+                    <button
+                      type="button"
+                      onClick={() => void fetchNextHistoryPage()}
+                    >
+                      딥링크 버전 다시 찾기
+                    </button>
+                  </div>
+                )}
+                {history.isError && !isFetchNextHistoryPageError && (
+                  <div className="inline-state is-error" role="alert">
+                    <p>승인 이력을 불러오지 못했습니다.</p>
+                    <button type="button" onClick={() => void history.refetch()}>
+                      이력 다시 시도
+                    </button>
+                  </div>
+                )}
+                {linkedVersionMissing && (
+                  <div className="inline-state is-error" role="alert">
+                    <p>요청한 표준단가 버전 근거를 찾을 수 없음</p>
+                    <a href={`/standard-prices?item_id=${selected.id}`}>
+                      목록 돌아가기
+                    </a>
+                  </div>
+                )}
                 <ol className="version-ledger">
                   {historyVersions.map((version) => (
                     <VersionRow

@@ -19,6 +19,22 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  useEffect(() => {
+    const focusHeading = () => {
+      const heading = document.querySelector<HTMLElement>("main h1");
+      if (!heading) return false;
+      heading.tabIndex = -1;
+      heading.focus();
+      return true;
+    };
+    if (focusHeading()) return;
+    const observer = new MutationObserver(() => {
+      if (focusHeading()) observer.disconnect();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [path]);
+
   const navigate = (nextPath: string) => {
     if (nextPath === path) return;
     window.history.pushState({}, "", nextPath);

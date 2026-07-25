@@ -254,6 +254,71 @@ describe("GroupingReviewPage", () => {
     expect(screen.getByText("딥링크로 연 원천행")).toBeVisible();
   });
 
+  it("keeps a saved decision successful when loading the next page fails", async () => {
+    let nextAttempts = 0;
+    let membershipWrites = 0;
+    const second = {
+      ...unmatched.items[0],
+      raw_item_id: 8,
+      name: "SENSOR",
+      spec: "PX-01",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/unmatched") && url.includes("after_id=7")) {
+          nextAttempts += 1;
+          return nextAttempts === 1
+            ? Promise.reject(new Error("next page unavailable"))
+            : jsonResponse({ items: [second], next_cursor: null, limit: 50 });
+        }
+        if (url.includes("/unmatched")) {
+          return jsonResponse({
+            items: unmatched.items,
+            next_cursor: 7,
+            limit: 50,
+          });
+        }
+        if (url.includes("/raw-items/7/candidates")) {
+          return jsonResponse(candidate);
+        }
+        if (url.includes("/raw-items/8/candidates")) {
+          return jsonResponse({
+            ...candidate,
+            raw_item: { ...candidate.raw_item, id: 8, name: "SENSOR" },
+            normalized: { ...candidate.normalized, name: "SENSOR" },
+            candidates: [],
+          });
+        }
+        if (url.includes("/memberships") && init?.method === "POST") {
+          membershipWrites += 1;
+          return jsonResponse({ id: 91, status: "MATCHED" }, { status: 201 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/grouping");
+
+    await user.click(await screen.findByRole("button", { name: /BEARING/ }));
+    await user.type(screen.getByLabelText("후보 검토자"), "buyer-1");
+    await user.type(screen.getByLabelText("후보 판정 근거"), "근거 확인");
+    await user.click(screen.getByRole("button", { name: "표준품목으로 확정" }));
+
+    expect(
+      await screen.findByText("저장 완료, 다음 목록 로드 실패"),
+    ).toBeVisible();
+    expect(membershipWrites).toBe(1);
+    await user.click(
+      screen.getByRole("button", { name: "다음 목록 다시 불러오기" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: /SENSOR/ }),
+    ).toHaveFocus();
+    expect(membershipWrites).toBe(1);
+  });
+
   it("creates an item, edits metadata, and locks stale 409 writes", async () => {
     let atomicAttempts = 0;
     vi.stubGlobal(

@@ -166,10 +166,9 @@ export function CleansingReviewPage() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">P</span>
           <div>
-            <strong>Price Analyzer</strong>
-            <span>견적 정제 검토</span>
+            <h1>정제 검토</h1>
+            <span>견적 원본과 정제값 판정</span>
           </div>
         </div>
         <div

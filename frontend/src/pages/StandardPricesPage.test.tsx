@@ -324,3 +324,216 @@ it("follows catalog cursors without duplicates and opens a linked version", asyn
     screen.queryByRole("button", { name: "다음 표준품목 불러오기" }),
   ).not.toBeInTheDocument();
 });
+
+it("stops failed deep-link searches and retries each catalog and history cursor explicitly", async () => {
+  let catalogAfterAttempts = 0;
+  let historyAfterAttempts = 0;
+  const item = (id: number) => ({
+    id,
+    member_count: 1,
+    current_version: {
+      id: id + 10,
+      standard_item_id: id,
+      version_number: 1,
+      canonical_name: `ITEM ${id}`,
+      canonical_spec: null,
+      canonical_unit: "EA",
+      aliases: [],
+      created_by: "buyer",
+      reason_detail: "initial",
+      created_at: "2026-07-25T10:00:00",
+    },
+  });
+  const version = (id: number) => ({
+    id,
+    standard_item_id: 2,
+    version_number: id,
+    observation_count: 1,
+    supplier_count: 1,
+    latest_quote_date: null,
+    prices: {
+      minimum: "10.000000",
+      median: "10.000000",
+      average: "10.000000",
+      maximum: "10.000000",
+    },
+    calculation_version: "standard-price-v1",
+    audit_status: "CAPTURED",
+    draft_fingerprint: "d".repeat(64),
+    standard_item_version: null,
+    excluded_count: 0,
+    review_required_count: 0,
+    exclusions: [],
+    exclusion_context_valid: true,
+    exclusion_context_error: null,
+    approved_by: `buyer-${id}`,
+    approved_at: "2026-07-26T10:00:00",
+    observations: [],
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        if (url.includes("after_id=1")) {
+          catalogAfterAttempts += 1;
+          return catalogAfterAttempts === 1
+            ? Promise.reject(new Error("catalog unavailable"))
+            : jsonResponse({ items: [item(2)], next_cursor: null, limit: 50 });
+        }
+        return jsonResponse({ items: [item(1)], next_cursor: 1, limit: 50 });
+      }
+      if (url.endsWith("/standard-items/2/draft")) {
+        return jsonResponse({
+          standard_item_id: 2,
+          standard_item_version_id: 12,
+          current_standard_price_version_id: 3,
+          canonical_unit: "EA",
+          observation_count: 1,
+          supplier_count: 1,
+          latest_quote_date: null,
+          prices: {
+            minimum: "10.000000",
+            median: "10.000000",
+            average: "10.000000",
+            maximum: "10.000000",
+          },
+          observations: [],
+          exclusions: [],
+          context: {},
+          calculation_version: "standard-price-v1",
+          fingerprint: "d".repeat(64),
+        });
+      }
+      if (url.includes("/standard-items/2/versions?")) {
+        if (url.includes("after_id=1")) {
+          historyAfterAttempts += 1;
+          return historyAfterAttempts === 1
+            ? Promise.reject(new Error("history unavailable"))
+            : jsonResponse({
+                standard_item_id: 2,
+                versions: [version(2)],
+                next_cursor: null,
+                limit: 50,
+              });
+        }
+        return jsonResponse({
+          standard_item_id: 2,
+          versions: [version(1)],
+          next_cursor: 1,
+          limit: 50,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  const user = userEvent.setup();
+  renderApp("/standard-prices?item_id=2&version_id=2");
+
+  await user.click(
+    await screen.findByRole("button", { name: "딥링크 품목 다시 찾기" }),
+  );
+  expect(catalogAfterAttempts).toBe(2);
+  expect(
+    await screen.findByRole("heading", { name: "ITEM 2" }),
+  ).toBeVisible();
+
+  await user.click(
+    await screen.findByRole("button", { name: "딥링크 버전 다시 찾기" }),
+  );
+  expect(historyAfterAttempts).toBe(2);
+  expect(
+    await screen.findByRole("link", { name: "표준단가 v2 감사 링크" }),
+  ).toHaveFocus();
+});
+
+it("does not fall back when a linked item or version does not exist", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        return jsonResponse({ items: [], next_cursor: null, limit: 50 });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  renderApp("/standard-prices?item_id=999&version_id=999");
+
+  expect(
+    await screen.findByText("요청한 표준품목 근거를 찾을 수 없음"),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "목록 돌아가기" })).toBeVisible();
+});
+
+it("reports an exhausted missing version instead of opening another version", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        return jsonResponse({
+          items: [
+            {
+              id: 2,
+              member_count: 1,
+              current_version: {
+                id: 12,
+                standard_item_id: 2,
+                version_number: 1,
+                canonical_name: "ITEM 2",
+                canonical_spec: null,
+                canonical_unit: "EA",
+                aliases: [],
+                created_by: "buyer",
+                reason_detail: "initial",
+                created_at: "2026-07-25T10:00:00",
+              },
+            },
+          ],
+          next_cursor: null,
+          limit: 50,
+        });
+      }
+      if (url.endsWith("/standard-items/2/draft")) {
+        return jsonResponse({
+          standard_item_id: 2,
+          standard_item_version_id: 12,
+          current_standard_price_version_id: null,
+          canonical_unit: "EA",
+          observation_count: 1,
+          supplier_count: 1,
+          latest_quote_date: null,
+          prices: {
+            minimum: "10.000000",
+            median: "10.000000",
+            average: "10.000000",
+            maximum: "10.000000",
+          },
+          observations: [],
+          exclusions: [],
+          context: {},
+          calculation_version: "standard-price-v1",
+          fingerprint: "e".repeat(64),
+        });
+      }
+      if (url.includes("/standard-items/2/versions?")) {
+        return jsonResponse({
+          standard_item_id: 2,
+          versions: [],
+          next_cursor: null,
+          limit: 50,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  renderApp("/standard-prices?item_id=2&version_id=999");
+
+  expect(
+    await screen.findByText("요청한 표준단가 버전 근거를 찾을 수 없음"),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("link", { name: /표준단가 v999 감사 링크/ }),
+  ).not.toBeInTheDocument();
+});

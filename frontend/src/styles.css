@@ -1061,7 +1061,8 @@ textarea:focus-visible,
   gap: 1px;
 }
 
-.brand strong {
+.brand h1 {
+  margin: 0;
   font-size: 15px;
   letter-spacing: -0.01em;
 }

@@ -142,6 +142,7 @@ class AnalysisDocumentPage:
     total: int
     limit: int
     offset: int
+    next_cursor: int | None
 
 
 @dataclass(frozen=True)
@@ -156,20 +157,25 @@ def list_analysis_documents(
     *,
     limit: int = 50,
     offset: int = 0,
+    after_id: int | None = None,
 ) -> AnalysisDocumentPage:
     """List logical documents with current cleansing counts in bounded queries."""
 
     _validate_list_page(limit=limit, offset=offset)
     total = session.scalar(select(func.count(SourceDocument.id))) or 0
-    documents = list(
-        session.scalars(
-            select(SourceDocument)
-            .options(selectinload(SourceDocument.variants))
-            .order_by(SourceDocument.logical_name, SourceDocument.id)
-            .offset(offset)
-            .limit(limit)
-        )
+    statement = (
+        select(SourceDocument)
+        .options(selectinload(SourceDocument.variants))
+        .order_by(SourceDocument.id)
+        .limit(limit + 1)
     )
+    if after_id is not None:
+        statement = statement.where(SourceDocument.id > after_id)
+    elif offset:
+        statement = statement.offset(offset)
+    rows = list(session.scalars(statement))
+    has_more = len(rows) > limit
+    documents = rows[:limit]
     parsing_variants = _parsing_variant_ids(session, documents)
     counts = _document_counts(session, parsing_variants)
     items = []
@@ -189,7 +195,13 @@ def list_analysis_documents(
                 analysis_ready=raw_count > 0 and undecided == 0,
             )
         )
-    return AnalysisDocumentPage(tuple(items), total, limit, offset)
+    return AnalysisDocumentPage(
+        tuple(items),
+        total,
+        limit,
+        offset,
+        items[-1].id if has_more and items else None,
+    )
 
 
 def analyze_document(

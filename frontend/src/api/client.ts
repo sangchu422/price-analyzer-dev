@@ -283,6 +283,7 @@ export interface AnalysisDocumentList {
   total: number;
   limit: number;
   offset: number;
+  next_cursor: number | null;
 }
 
 export interface AnalysisLine {
@@ -558,9 +559,17 @@ export function approvePrice(
   );
 }
 
-export function getAnalysisDocuments(signal?: AbortSignal) {
+export function getAnalysisDocuments({
+  afterId,
+  signal,
+}: {
+  afterId?: number;
+  signal?: AbortSignal;
+} = {}) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<AnalysisDocumentList>(
-    "/api/analysis/documents?limit=50&offset=0",
+    `/api/analysis/documents?${params.toString()}`,
     { signal },
   );
 }
@@ -569,16 +578,19 @@ export function getDocumentAnalysis({
   documentId,
   matchStatus,
   assessment,
+  afterId,
   signal,
 }: {
   documentId: number;
   matchStatus?: AnalysisMatchStatus;
   assessment?: AnalysisAssessment;
+  afterId?: number;
   signal?: AbortSignal;
 }) {
   const params = new URLSearchParams({ limit: "50" });
   if (matchStatus) params.set("match_status", matchStatus);
   if (assessment) params.set("assessment", assessment);
+  if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<DocumentAnalysis>(
     `/api/analysis/documents/${documentId}?${params.toString()}`,
     { signal },

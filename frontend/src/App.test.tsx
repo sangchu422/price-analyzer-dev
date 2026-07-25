@@ -74,5 +74,8 @@ it("keeps the cleansing review page and URL available", async () => {
   expect(
     screen.getByRole("link", { name: "정제 검토" }),
   ).toHaveAttribute("aria-current", "page");
+  expect(
+    screen.getByRole("heading", { name: "정제 검토" }),
+  ).toHaveFocus();
   expect(window.location.pathname).toBe("/cleansing");
 });

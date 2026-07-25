@@ -42,6 +42,7 @@ class AnalysisDocumentListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    next_cursor: int | None
 
 
 class AnalysisDocumentIdentityResponse(BaseModel):
@@ -130,13 +131,20 @@ def get_analysis_documents(
     *,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    after_id: int | None = Query(None, ge=0),
 ) -> dict[str, object]:
-    page = list_analysis_documents(session, limit=limit, offset=offset)
+    page = list_analysis_documents(
+        session,
+        limit=limit,
+        offset=offset,
+        after_id=after_id,
+    )
     return {
         "items": page.items,
         "total": page.total,
         "limit": page.limit,
         "offset": page.offset,
+        "next_cursor": page.next_cursor,
     }
 
 

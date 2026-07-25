@@ -16,7 +16,7 @@ import {
   type CatalogCandidate,
 } from "../api/client";
 
-type Notice = { kind: "success" | "error"; text: string };
+type Notice = { kind: "success" | "error" | "warning"; text: string };
 
 export function GroupingReviewPage() {
   const queryClient = useQueryClient();
@@ -25,6 +25,7 @@ export function GroupingReviewPage() {
   const [resolvedIds, setResolvedIds] = useState<Set<number>>(() => new Set());
   const [notice, setNotice] = useState<Notice | null>(null);
   const [staleLocked, setStaleLocked] = useState(false);
+  const [advanceRetryId, setAdvanceRetryId] = useState<number | null>(null);
   const rowRefs = useRef(new Map<number, HTMLButtonElement>());
   const shouldFocusSelected = useRef(false);
   const unmatched = useInfiniteQuery({
@@ -55,6 +56,7 @@ export function GroupingReviewPage() {
   }, [items, selectedId]);
 
   const advanceAfterResolution = async (resolvedId: number) => {
+    setAdvanceRetryId(null);
     setResolvedIds((current) => new Set(current).add(resolvedId));
     const currentIndex = items.findIndex(
       (item) => item.raw_item_id === resolvedId,
@@ -72,27 +74,45 @@ export function GroupingReviewPage() {
     }
     if (unmatched.hasNextPage) {
       const knownIds = new Set(allItems.map((item) => item.raw_item_id));
-      let nextResult = await unmatched.fetchNextPage();
-      while (true) {
-        const nextItem = uniqueById(
-          nextResult.data?.pages.flatMap((page) => page.items) ?? [],
-          (item) => item.raw_item_id,
-        ).find(
-          (item) =>
-            !knownIds.has(item.raw_item_id) &&
-            item.raw_item_id !== resolvedId &&
-            !resolvedIds.has(item.raw_item_id),
-        );
-        if (nextItem) {
-          shouldFocusSelected.current = true;
-          setSelectedId(nextItem.raw_item_id);
-          return;
+      try {
+        let nextResult = await unmatched.fetchNextPage();
+        while (true) {
+          if (nextResult.isFetchNextPageError) {
+            markAdvanceFailure(resolvedId);
+            return;
+          }
+          const nextItem = uniqueById(
+            nextResult.data?.pages.flatMap((page) => page.items) ?? [],
+            (item) => item.raw_item_id,
+          ).find(
+            (item) =>
+              !knownIds.has(item.raw_item_id) &&
+              item.raw_item_id !== resolvedId &&
+              !resolvedIds.has(item.raw_item_id),
+          );
+          if (nextItem) {
+            shouldFocusSelected.current = true;
+            setSelectedId(nextItem.raw_item_id);
+            return;
+          }
+          if (!nextResult.hasNextPage) break;
+          nextResult = await unmatched.fetchNextPage();
         }
-        if (!nextResult.hasNextPage) break;
-        nextResult = await unmatched.fetchNextPage();
+      } catch {
+        markAdvanceFailure(resolvedId);
+        return;
       }
     }
     setSelectedId(null);
+  };
+
+  const markAdvanceFailure = (resolvedId: number) => {
+    setSelectedId(null);
+    setAdvanceRetryId(resolvedId);
+    setNotice({
+      kind: "warning",
+      text: "저장 완료, 다음 목록 로드 실패",
+    });
   };
 
   const handleError = (error: unknown) => {
@@ -160,10 +180,10 @@ export function GroupingReviewPage() {
         decided_by: actor,
         reason_detail: reason,
       }),
-    onSuccess: async () => {
+    onSuccess: () => {
       setNotice({ kind: "success", text: "그룹핑 판정을 저장했습니다." });
       if (selectedId !== null) {
-        await advanceAfterResolution(selectedId);
+        void advanceAfterResolution(selectedId);
       }
     },
     onError: handleError,
@@ -218,10 +238,10 @@ export function GroupingReviewPage() {
           selected?.current_membership_decision_id ??
           null,
       }),
-    onSuccess: async () => {
+    onSuccess: () => {
       setNotice({ kind: "success", text: "새 표준품목을 생성하고 확정했습니다." });
       if (selectedId !== null) {
-        await advanceAfterResolution(selectedId);
+        void advanceAfterResolution(selectedId);
       }
       void queryClient.invalidateQueries({ queryKey: ["standard-items"] });
     },
@@ -244,6 +264,14 @@ export function GroupingReviewPage() {
           role={notice.kind === "error" ? "alert" : "status"}
         >
           {notice.text}
+          {advanceRetryId !== null && (
+            <button
+              type="button"
+              onClick={() => void advanceAfterResolution(advanceRetryId)}
+            >
+              다음 목록 다시 불러오기
+            </button>
+          )}
         </div>
       )}
       <div className="split-workspace">
