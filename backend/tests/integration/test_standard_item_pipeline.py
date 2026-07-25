@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 from pathlib import Path
 
 from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select
+import pytest
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.analysis.service import analyze_document
@@ -13,6 +17,7 @@ from app.catalog.cli import (
     report_standard_price_drafts,
     seed_exact_catalog,
 )
+from app.core.config import settings
 from app.catalog.models import (
     ItemMembershipDecision,
     MembershipStatus,
@@ -49,6 +54,19 @@ def _session() -> Session:
     engine = configure_sqlite(create_engine("sqlite:///:memory:"))
     Base.metadata.create_all(engine)
     return Session(engine, expire_on_commit=False)
+
+
+def _local_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    project = tmp_path / "project"
+    quote_root = project / "quotes"
+    local = project / "backend" / ".local"
+    local.mkdir(parents=True)
+    monkeypatch.setattr(settings, "project_root", project)
+    monkeypatch.setattr(settings, "quote_folder", Path("quotes"))
+    return quote_root, local
 
 
 def _raw_by_name(session: Session, name: str) -> RawQuoteItem:
@@ -299,9 +317,11 @@ def test_mock_index_is_labeled_and_repeatable_while_drafts_are_read_only(
 def test_catalog_cli_disabled_embedding_never_creates_an_index(
     tmp_path: Path,
     capsys,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    database = tmp_path / "catalog.sqlite3"
-    index_path = tmp_path / "disabled.npz"
+    _, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+    index_path = local / "disabled.npz"
 
     exit_code = main(
         [
@@ -324,9 +344,11 @@ def test_catalog_cli_disabled_embedding_never_creates_an_index(
 def test_embedding_cli_rejects_report_that_would_overwrite_index(
     tmp_path: Path,
     capsys,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    database = tmp_path / "catalog.sqlite3"
-    shared_output = tmp_path / "shared.npz"
+    _, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+    shared_output = local / "shared.npz"
 
     exit_code = main(
         [
@@ -351,10 +373,11 @@ def test_embedding_cli_rejects_report_that_would_overwrite_index(
 def test_catalog_cli_seed_and_drafts_are_idempotent(
     tmp_path: Path,
     capsys,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root = tmp_path / "quotes"
-    database = tmp_path / "catalog.sqlite3"
-    report_path = tmp_path / "draft-summary.json"
+    root, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+    report_path = local / "draft-summary.json"
     _write_quote(
         root / "a.xlsx",
         [["BEARING", "6204", "EA", 1, 100, 100]],
@@ -401,3 +424,397 @@ def test_catalog_cli_seed_and_drafts_are_idempotent(
     assert draft_payload["drafts_available"] == 1
     assert draft_payload["approved_versions_created"] == 0
     assert json.loads(report_path.read_text(encoding="utf-8")) == draft_payload
+
+
+def test_catalog_cli_rejects_original_and_output_alias_without_modification(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, local = _local_project(tmp_path, monkeypatch)
+    original = root / "quote.xlsx"
+    _write_quote(
+        original,
+        [
+            ["BEARING", "6204", "EA", 1, 100, 100],
+            ["BEARING", "6204", "EA", 1, 120, 120],
+        ],
+    )
+    before = hashlib.sha256(original.read_bytes()).hexdigest()
+    database = local / "catalog.sqlite3"
+    assert main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    direct = main(
+        [
+            "catalog-seed",
+            "--database-file",
+            str(database),
+            "--report",
+            str(original),
+            "--json",
+        ]
+    )
+    direct_payload = json.loads(capsys.readouterr().out)
+    alias = local / "original-alias.xlsx"
+    try:
+        os.link(original, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    aliased = main(
+        [
+            "catalog-seed",
+            "--database-file",
+            str(database),
+            "--report",
+            str(alias),
+            "--json",
+        ]
+    )
+    alias_payload = json.loads(capsys.readouterr().out)
+
+    assert direct == aliased == 2
+    assert direct_payload["error_code"] == "UNSAFE_OUTPUT_PATH"
+    assert alias_payload["error_code"] == "UNSAFE_OUTPUT_PATH"
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == before
+
+
+def test_catalog_cli_rejects_directory_and_symlink_outputs(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+    directory = local / "report-directory"
+    directory.mkdir()
+    directory_exit = main(
+        [
+            "standard-price-drafts",
+            "--database-file",
+            str(database),
+            "--report",
+            str(directory),
+            "--json",
+        ]
+    )
+    directory_payload = json.loads(capsys.readouterr().out)
+    assert directory_exit == 2
+    assert directory_payload["error_code"] == "UNSAFE_OUTPUT_PATH"
+
+    target = local / "real-report.json"
+    target.write_text("sentinel", encoding="utf-8")
+    link = local / "linked-report.json"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    link_exit = main(
+        [
+            "standard-price-drafts",
+            "--database-file",
+            str(database),
+            "--report",
+            str(link),
+            "--json",
+        ]
+    )
+    link_payload = json.loads(capsys.readouterr().out)
+    assert link_exit == 2
+    assert link_payload["error_code"] == "UNSAFE_OUTPUT_PATH"
+    assert target.read_text(encoding="utf-8") == "sentinel"
+
+
+def test_catalog_cli_rejects_reparse_and_arbitrary_database_files(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, local = _local_project(tmp_path, monkeypatch)
+    report = local / "report.json"
+    monkeypatch.setattr(
+        "app.cli._is_reparse_point",
+        lambda path: path == local,
+    )
+    reparse_exit = main(
+        [
+            "standard-price-drafts",
+            "--database-file",
+            str(local / "catalog.sqlite3"),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+    reparse_payload = json.loads(capsys.readouterr().out)
+    assert reparse_exit == 2
+    assert reparse_payload["error_code"] == "UNSAFE_OUTPUT_PATH"
+
+    arbitrary = local / "not-a-database.xlsx"
+    arbitrary.write_bytes(b"do not modify")
+    before = arbitrary.read_bytes()
+    database_exit = main(
+        [
+            "catalog-seed",
+            "--database-file",
+            str(arbitrary),
+            "--json",
+        ]
+    )
+    database_payload = json.loads(capsys.readouterr().out)
+    assert database_exit == 2
+    assert database_payload["error_code"] == "UNSAFE_OUTPUT_PATH"
+    assert arbitrary.read_bytes() == before
+
+
+def test_catalog_seed_report_failure_rolls_back_memberships(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+    report = local / "seed.json"
+    for name in ("a.xlsx", "b.xlsx"):
+        _write_quote(
+            root / name,
+            [["BEARING", "6204", "EA", 1, 100, 100]],
+        )
+    assert main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    real_replace = os.replace
+
+    def fail_publication(source, target):
+        if (
+            Path(source).suffix == ".staged"
+            and Path(target) == report
+        ):
+            raise OSError("simulated report publication failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr("app.cli.os.replace", fail_publication)
+    exit_code = main(
+        [
+            "catalog-seed",
+            "--database-file",
+            str(database),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
+        assert session.scalar(select(func.count(StandardItem.id))) == 0
+        assert (
+            session.scalar(select(func.count(ItemMembershipDecision.id))) == 0
+        )
+    assert exit_code == 2
+    assert payload["error_code"] == "REPORT_WRITE_ERROR"
+    assert not report.exists()
+
+
+def test_catalog_seed_commit_failure_restores_previous_report(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+    report = local / "seed.json"
+    previous = b'{"previous":true}\n'
+    report.write_bytes(previous)
+    for name in ("a.xlsx", "b.xlsx"):
+        _write_quote(
+            root / name,
+            [["BEARING", "6204", "EA", 1, 100, 100]],
+        )
+    assert main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    def fail_commit(self):
+        raise OperationalError("COMMIT", {}, Exception("simulated"))
+
+    monkeypatch.setattr(Session, "commit", fail_commit)
+    exit_code = main(
+        [
+            "catalog-seed",
+            "--database-file",
+            str(database),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["error_code"] == "DATABASE_UNAVAILABLE"
+    assert report.read_bytes() == previous
+    with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
+        assert session.scalar(select(func.count(StandardItem.id))) == 0
+
+
+def test_catalog_cli_write_failures_are_structured(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+
+    def fail_index(*args, **kwargs):
+        raise OSError("simulated index failure")
+
+    monkeypatch.setattr("app.cli.build_catalog_embedding_index", fail_index)
+    index_exit = main(
+        [
+            "embedding-index",
+            "--database-file",
+            str(database),
+            "--index-file",
+            str(local / "items.npz"),
+            "--mock",
+            "--json",
+        ]
+    )
+    index_payload = json.loads(capsys.readouterr().out)
+    assert index_exit == 2
+    assert index_payload["error_code"] == "INDEX_WRITE_ERROR"
+
+    def fail_report(*args, **kwargs):
+        raise OSError("simulated report failure")
+
+    monkeypatch.setattr("app.cli._stage_catalog_report", fail_report)
+    draft_exit = main(
+        [
+            "standard-price-drafts",
+            "--database-file",
+            str(database),
+            "--report",
+            str(local / "drafts.json"),
+            "--json",
+        ]
+    )
+    draft_payload = json.loads(capsys.readouterr().out)
+    assert draft_exit == 2
+    assert draft_payload["error_code"] == "REPORT_WRITE_ERROR"
+
+
+def test_default_catalog_reports_preserve_each_run(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, local = _local_project(tmp_path, monkeypatch)
+    database = local / "catalog.sqlite3"
+
+    for _ in range(2):
+        assert main(
+            [
+                "catalog-seed",
+                "--database-file",
+                str(database),
+                "--json",
+            ]
+        ) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["report_file"].startswith(
+            "backend/.local/reports/catalog-seed-"
+        )
+
+    reports = list((local / "reports").glob("catalog-seed-*.json"))
+    assert len(reports) == 2
+    assert reports[0].name != reports[1].name
+
+
+def test_seed_evidence_records_normalization_version(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "quotes"
+    for name in ("a.xlsx", "b.xlsx"):
+        _write_quote(
+            root / name,
+            [["BEARING", "6204", "EA", 1, 100, 100]],
+        )
+    with _session() as session:
+        ingest_corpus(session, root)
+        seed_exact_catalog(session)
+        evidence = [
+            json.loads(row.evidence_json)
+            for row in session.scalars(select(ItemMembershipDecision))
+        ]
+        assert {row["normalization_version"] for row in evidence} == {
+            "match-v1"
+        }
+
+
+def test_standard_price_draft_report_query_count_is_chunk_bounded(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "quotes"
+    rows: list[list[object]] = []
+    for index in range(120):
+        rows.extend(
+            [
+                [f"ITEM {index}", f"MODEL-{index}", "EA", 1, 100, 100],
+                [f"ITEM {index}", f"MODEL-{index}", "EA", 1, 120, 120],
+            ]
+        )
+    _write_quote(root / "many.xlsx", rows)
+    with _session() as session:
+        ingest_corpus(session, root)
+        seed_exact_catalog(session)
+        session.commit()
+        statements = 0
+
+        def count_selects(
+            conn: object,
+            cursor: object,
+            statement: str,
+            parameters: object,
+            context: object,
+            executemany: bool,
+        ) -> None:
+            nonlocal statements
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements += 1
+
+        engine = session.get_bind()
+        event.listen(engine, "before_cursor_execute", count_selects)
+        try:
+            report = report_standard_price_drafts(session)
+        finally:
+            event.remove(engine, "before_cursor_execute", count_selects)
+        assert report.standard_items == 120
+        assert report.drafts_available == 120
+        assert report.observations_available == 240
+        assert statements <= 6

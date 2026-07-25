@@ -338,12 +338,20 @@ def _current_evidence_rows(
     return [tuple(row) for row in session.execute(statement).all()]
 
 
-def _calculate_standard_price(
-    session: Session, standard_item_id: int
+def _draft_from_evidence_rows(
+    item_version: StandardItemVersion,
+    evidence_rows: list[
+        tuple[
+            RawQuoteItem,
+            CleanDecision | None,
+            ItemMembershipDecision | None,
+            SourceVariant,
+            SourceDocument,
+            DocumentMetadataVersion | None,
+        ]
+    ],
 ) -> StandardPriceDraft:
-    """Calculate a deterministic draft without adding or changing rows."""
-
-    item_version = _current_item_version(session, standard_item_id)
+    standard_item_id = item_version.standard_item_id
     observations: list[PriceObservationDraft] = []
     exclusions: list[PriceExclusion] = []
     counts: dict[str, int] = {
@@ -361,7 +369,7 @@ def _calculate_standard_price(
         variant,
         document,
         metadata,
-    ) in _current_evidence_rows(session, standard_item_id):
+    ) in evidence_rows:
         reason: ExclusionReason | None = None
         if clean is None or clean.status != CleanStatus.INCLUDED:
             reason = (
@@ -464,6 +472,18 @@ def _calculate_standard_price(
     )
 
 
+def _calculate_standard_price(
+    session: Session, standard_item_id: int
+) -> StandardPriceDraft:
+    """Calculate a deterministic draft without adding or changing rows."""
+
+    item_version = _current_item_version(session, standard_item_id)
+    return _draft_from_evidence_rows(
+        item_version,
+        _current_evidence_rows(session, standard_item_id),
+    )
+
+
 def calculate_standard_price(
     session: Session, standard_item_id: int
 ) -> StandardPriceDraft:
@@ -471,6 +491,183 @@ def calculate_standard_price(
 
     with session.no_autoflush:
         return _calculate_standard_price(session, standard_item_id)
+
+
+def calculate_standard_prices(
+    session: Session,
+    standard_item_ids: list[int],
+    *,
+    chunk_size: int = 500,
+) -> dict[int, StandardPriceDraft]:
+    """Calculate many drafts with a bounded number of set-based queries."""
+
+    if (
+        isinstance(chunk_size, bool)
+        or not isinstance(chunk_size, int)
+        or chunk_size <= 0
+    ):
+        raise ValueError("chunk_size must be a positive integer")
+    item_ids = list(dict.fromkeys(standard_item_ids))
+    if not item_ids:
+        return {}
+    latest_versions = (
+        select(
+            StandardItemVersion.standard_item_id,
+            func.max(StandardItemVersion.id).label("version_id"),
+        )
+        .where(StandardItemVersion.standard_item_id.in_(item_ids))
+        .group_by(StandardItemVersion.standard_item_id)
+        .subquery()
+    )
+    versions = {
+        version.standard_item_id: version
+        for version in session.scalars(
+            select(StandardItemVersion).join(
+                latest_versions,
+                latest_versions.c.version_id == StandardItemVersion.id,
+            )
+        )
+    }
+    drafts: dict[int, StandardPriceDraft] = {}
+    for offset in range(0, len(item_ids), chunk_size):
+        chunk = item_ids[offset : offset + chunk_size]
+        evidence = _current_evidence_rows_for_items(session, chunk)
+        for item_id in chunk:
+            version = versions.get(item_id)
+            if version is None:
+                continue
+            try:
+                drafts[item_id] = _draft_from_evidence_rows(
+                    version,
+                    evidence.get(item_id, []),
+                )
+            except NoEligiblePriceObservations:
+                continue
+    return drafts
+
+
+def _current_evidence_rows_for_items(
+    session: Session,
+    standard_item_ids: list[int],
+) -> dict[
+    int,
+    list[
+        tuple[
+            RawQuoteItem,
+            CleanDecision | None,
+            ItemMembershipDecision | None,
+            SourceVariant,
+            SourceDocument,
+            DocumentMetadataVersion | None,
+        ]
+    ],
+]:
+    candidate_rows = (
+        select(
+            ItemMembershipDecision.standard_item_id.label(
+                "target_standard_item_id"
+            ),
+            ItemMembershipDecision.raw_item_id.label("raw_item_id"),
+        )
+        .where(
+            ItemMembershipDecision.standard_item_id.in_(standard_item_ids),
+            ItemMembershipDecision.status == MembershipStatus.MATCHED,
+        )
+        .distinct()
+        .subquery()
+    )
+    latest_clean = (
+        select(
+            CleanDecision.raw_item_id.label("raw_item_id"),
+            func.max(CleanDecision.id).label("decision_id"),
+        )
+        .group_by(CleanDecision.raw_item_id)
+        .subquery()
+    )
+    latest_membership = (
+        select(
+            ItemMembershipDecision.raw_item_id.label("raw_item_id"),
+            func.max(ItemMembershipDecision.id).label("decision_id"),
+        )
+        .group_by(ItemMembershipDecision.raw_item_id)
+        .subquery()
+    )
+    latest_metadata = (
+        select(
+            DocumentMetadataVersion.source_document_id.label("document_id"),
+            func.max(DocumentMetadataVersion.id).label("metadata_id"),
+        )
+        .group_by(DocumentMetadataVersion.source_document_id)
+        .subquery()
+    )
+    statement = (
+        select(
+            candidate_rows.c.target_standard_item_id,
+            RawQuoteItem,
+            CleanDecision,
+            ItemMembershipDecision,
+            SourceVariant,
+            SourceDocument,
+            DocumentMetadataVersion,
+        )
+        .join(
+            RawQuoteItem,
+            RawQuoteItem.id == candidate_rows.c.raw_item_id,
+        )
+        .join(
+            SourceVariant,
+            SourceVariant.id == RawQuoteItem.source_variant_id,
+        )
+        .join(
+            SourceDocument,
+            SourceDocument.id == SourceVariant.document_id,
+        )
+        .outerjoin(
+            latest_clean,
+            latest_clean.c.raw_item_id == RawQuoteItem.id,
+        )
+        .outerjoin(
+            CleanDecision,
+            CleanDecision.id == latest_clean.c.decision_id,
+        )
+        .outerjoin(
+            latest_membership,
+            latest_membership.c.raw_item_id == RawQuoteItem.id,
+        )
+        .outerjoin(
+            ItemMembershipDecision,
+            ItemMembershipDecision.id
+            == latest_membership.c.decision_id,
+        )
+        .outerjoin(
+            latest_metadata,
+            latest_metadata.c.document_id == SourceDocument.id,
+        )
+        .outerjoin(
+            DocumentMetadataVersion,
+            DocumentMetadataVersion.id == latest_metadata.c.metadata_id,
+        )
+        .order_by(
+            candidate_rows.c.target_standard_item_id,
+            RawQuoteItem.id,
+        )
+    )
+    grouped: dict[
+        int,
+        list[
+            tuple[
+                RawQuoteItem,
+                CleanDecision | None,
+                ItemMembershipDecision | None,
+                SourceVariant,
+                SourceDocument,
+                DocumentMetadataVersion | None,
+            ]
+        ],
+    ] = {item_id: [] for item_id in standard_item_ids}
+    for row in session.execute(statement):
+        grouped[row[0]].append(tuple(row[1:]))
+    return grouped
 
 
 def current_standard_price_version(

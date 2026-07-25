@@ -19,7 +19,7 @@
    > .venv\Scripts\python -m app.cli ingest --quote-root ..\견적서 --database-file .local\price-analyzer.sqlite3 --report .local\corpus-run.json
 
 4. 완전 일치 표준품목 초안 이관
-   > .venv\Scripts\python -m app.cli catalog-seed --database-file .local\price-analyzer.sqlite3 --report .local\catalog-seed-report.json
+   > .venv\Scripts\python -m app.cli catalog-seed --database-file .local\price-analyzer.sqlite3
 
    현재 INCLUDED 중 정규화된 품명·사양·단위가 완전히 같고 2건 이상인
    그룹만 자동 생성합니다. 단위 충돌, 퍼지 후보, 의미 유사 후보는 자동
@@ -27,20 +27,26 @@
    멤버십을 중복 생성하지 않습니다.
 
 5. 표준단가 계산 초안 확인(승인하지 않음)
-   > .venv\Scripts\python -m app.cli standard-price-drafts --database-file .local\price-analyzer.sqlite3 --report .local\standard-price-drafts-report.json
+   > .venv\Scripts\python -m app.cli standard-price-drafts --database-file .local\price-analyzer.sqlite3
 
    이 명령은 읽기 전용이며 StandardPriceVersion을 만들지 않습니다.
    표준단가 버전은 웹 화면/API에서 사람 이름과 최신 fingerprint를
    확인해 명시적으로 승인해야 생성됩니다.
 
 6. 개발용 mock 임베딩 인덱스(선택)
-   > .venv\Scripts\python -m app.cli embedding-index --database-file .local\price-analyzer.sqlite3 --index-file .local\standard-items-mock.npz --mock --report .local\embedding-index-report.json
+   > .venv\Scripts\python -m app.cli embedding-index --database-file .local\price-analyzer.sqlite3 --index-file .local\standard-items-mock.npz --mock
 
    local-mock-v1은 연결 시험용이며 실제 의미 임베딩 모델이 아닙니다.
    --mock 없이 실행하면 로컬 기본 설정은 DISABLED로 종료하고 네트워크를
    호출하거나 인덱스를 만들지 않습니다. 사내 hChat 샘플을 받은 뒤
    backend/app/embeddings/hchat.py의 _build_payload와 _parse_response만
    맞추고, 먼저 mock transport 계약 테스트를 실행하십시오.
+
+   위 세 명령의 보고서는 backend/.local/reports 아래에 UTC 시각과
+   run-id를 붙여 매번 새 파일로 보존되며, 출력의 report_file에서
+   경로를 확인할 수 있습니다. --report를 명시하면 해당 고정 파일을
+   교체합니다. DB·보고서·인덱스는 backend/.local 내부만 허용하고,
+   원본 견적서·hard link·symlink·junction·디렉터리는 거부합니다.
 
 7. 로컬 API/화면 실행
    > .venv\Scripts\python -m uvicorn app.main:app --reload

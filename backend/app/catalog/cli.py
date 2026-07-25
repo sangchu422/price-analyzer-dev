@@ -29,8 +29,7 @@ from app.embeddings.index import IndexMetadata, save_index
 from app.embeddings.mock import DeterministicMockEmbeddingClient
 from app.matching.normalization import model_tokens, normalize_search_text
 from app.pricing.service import (
-    NoEligiblePriceObservations,
-    calculate_standard_price,
+    calculate_standard_prices,
 )
 from app.quotes.models import RawQuoteItem
 
@@ -302,6 +301,7 @@ def seed_exact_catalog(session: Session) -> CatalogSeedReport:
                     "unit": key[2] or None,
                 },
                 "group_size": len(rows),
+                "normalization_version": NORMALIZATION_VERSION,
                 "rule_version": CATALOG_SEED_RULE,
             }
             session.add(
@@ -462,10 +462,10 @@ def report_standard_price_drafts(
     missing_supplier = 0
     missing_date = 0
     with session.no_autoflush:
+        calculated = calculate_standard_prices(session, item_ids)
         for item_id in item_ids:
-            try:
-                draft = calculate_standard_price(session, item_id)
-            except NoEligiblePriceObservations:
+            draft = calculated.get(item_id)
+            if draft is None:
                 unavailable += 1
                 continue
             observations += draft.observation_count

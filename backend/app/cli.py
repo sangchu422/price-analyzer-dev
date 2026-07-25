@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import stat
 import sys
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from alembic import command
@@ -180,7 +184,12 @@ def _parser() -> argparse.ArgumentParser:
         command_parser = subparsers.add_parser(command_name)
         command_parser.add_argument(
             "--database-file",
-            default=str(settings.database_path),
+            default=str(
+                settings.project_root
+                / "backend"
+                / ".local"
+                / "price-analyzer.sqlite3"
+            ),
             help="마이그레이션된 로컬 SQLite 파일",
         )
         command_parser.add_argument(
@@ -208,23 +217,29 @@ def _parser() -> argparse.ArgumentParser:
 
 def _run_catalog_command(args: argparse.Namespace) -> int:
     try:
-        database_path = Path(args.database_file).expanduser().resolve(
-            strict=False
+        requested_database = Path(args.database_file).expanduser()
+        requested_report = (
+            Path(args.report).expanduser()
+            if args.report is not None
+            else _default_catalog_report_path(args.command)
         )
-        report_path = (
-            None
-            if args.report is None
-            else Path(args.report).expanduser().resolve(strict=False)
+        requested_index = (
+            Path(args.index_file).expanduser()
+            if args.command == "embedding-index"
+            else None
         )
-        if report_path == database_path:
-            return _emit_error(
-                "UNSAFE_OUTPUT_PATH",
-                "database and report targets must be distinct",
-                json_output=args.json,
-            )
-        if database_path.exists() and database_path.is_dir():
-            raise OSError("database target is a directory")
+        database_path, report_path, index_path = _validate_catalog_targets(
+            database_path=requested_database,
+            report_path=requested_report,
+            index_path=requested_index,
+        )
         _upgrade_database(database_path)
+    except UnsafeOutputPathError as exc:
+        return _emit_error(
+            "UNSAFE_OUTPUT_PATH",
+            str(exc),
+            json_output=args.json,
+        )
     except CommandError:
         return _emit_error(
             "DATABASE_MIGRATION_ERROR",
@@ -250,57 +265,83 @@ def _run_catalog_command(args: argparse.Namespace) -> int:
         with Session(engine, expire_on_commit=False) as session:
             if args.command == "catalog-seed":
                 report = seed_exact_catalog(session)
-                session.commit()
-                _publish_catalog_report(
+                payload = _catalog_report_payload(
                     report.to_dict(),
-                    report_path=report_path,
-                    json_output=args.json,
+                    report_path,
                 )
+                try:
+                    publication = _stage_catalog_report(
+                        report_path,
+                        payload,
+                    )
+                    publication.publish()
+                except OSError:
+                    session.rollback()
+                    return _emit_error(
+                        "REPORT_WRITE_ERROR",
+                        "catalog report could not be written",
+                        json_output=args.json,
+                    )
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    publication.restore()
+                    raise
+                publication.finalize()
+                _emit_catalog(payload, json_output=args.json)
                 return EXIT_OK
             if args.command == "standard-price-drafts":
                 report = report_standard_price_drafts(session)
                 session.rollback()
+                try:
+                    _publish_catalog_report(
+                        _catalog_report_payload(
+                            report.to_dict(),
+                            report_path,
+                        ),
+                        report_path=report_path,
+                        json_output=args.json,
+                    )
+                except OSError:
+                    return _emit_error(
+                        "REPORT_WRITE_ERROR",
+                        "standard-price draft report could not be written",
+                        json_output=args.json,
+                    )
+                return EXIT_OK
+
+            assert index_path is not None
+            try:
+                report = build_catalog_embedding_index(
+                    session,
+                    index_path=index_path,
+                    mock=args.mock,
+                    settings=settings,
+                )
+            except OSError:
+                session.rollback()
+                return _emit_error(
+                    "INDEX_WRITE_ERROR",
+                    "embedding index could not be written",
+                    json_output=args.json,
+                )
+            session.rollback()
+            try:
                 _publish_catalog_report(
-                    report.to_dict(),
+                    _catalog_report_payload(
+                        report.to_dict(),
+                        report_path,
+                    ),
                     report_path=report_path,
                     json_output=args.json,
                 )
-                return EXIT_OK
-
-            index_path = Path(args.index_file).expanduser().resolve(
-                strict=False
-            )
-            if report_path == index_path:
+            except OSError:
                 return _emit_error(
-                    "UNSAFE_OUTPUT_PATH",
-                    "embedding index and report targets must be distinct",
+                    "REPORT_WRITE_ERROR",
+                    "embedding index report could not be written",
                     json_output=args.json,
                 )
-            if (
-                index_path == database_path
-                or (
-                    index_path.exists()
-                    and database_path.exists()
-                    and _same_file(index_path, database_path)
-                )
-            ):
-                return _emit_error(
-                    "UNSAFE_OUTPUT_PATH",
-                    "embedding index and database targets must be distinct",
-                    json_output=args.json,
-                )
-            report = build_catalog_embedding_index(
-                session,
-                index_path=index_path,
-                mock=args.mock,
-                settings=settings,
-            )
-            session.rollback()
-            _publish_catalog_report(
-                report.to_dict(),
-                report_path=report_path,
-                json_output=args.json,
-            )
             return (
                 EXIT_OK
                 if report.status
@@ -324,6 +365,19 @@ def _emit_catalog(
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _catalog_report_payload(
+    payload: dict[str, object],
+    report_path: Path,
+) -> dict[str, object]:
+    result = dict(payload)
+    try:
+        display = report_path.relative_to(settings.project_root).as_posix()
+    except ValueError:
+        display = report_path.name
+    result["report_file"] = display
+    return result
+
+
 def _publish_catalog_report(
     payload: dict[str, object],
     *,
@@ -331,8 +385,223 @@ def _publish_catalog_report(
     json_output: bool,
 ) -> None:
     if report_path is not None:
-        _write_report(report_path, payload)
+        publication = _stage_catalog_report(report_path, payload)
+        publication.publish()
+        publication.finalize()
     _emit_catalog(payload, json_output=json_output)
+
+
+@dataclass
+class _ReportPublication:
+    final_path: Path
+    staged_path: Path
+    backup_path: Path | None = None
+    published: bool = False
+
+    def publish(self) -> None:
+        if self.final_path.exists():
+            self.backup_path = self.final_path.with_name(
+                f".{self.final_path.name}.{secrets.token_hex(8)}.backup"
+            )
+            os.replace(self.final_path, self.backup_path)
+        try:
+            os.replace(self.staged_path, self.final_path)
+        except OSError:
+            if self.backup_path is not None:
+                os.replace(self.backup_path, self.final_path)
+                self.backup_path = None
+            raise
+        self.published = True
+
+    def restore(self) -> None:
+        try:
+            if self.published and self.final_path.exists():
+                self.final_path.unlink()
+            if self.backup_path is not None and self.backup_path.exists():
+                os.replace(self.backup_path, self.final_path)
+        finally:
+            if self.staged_path.exists():
+                self.staged_path.unlink()
+            self.backup_path = None
+            self.published = False
+
+    def finalize(self) -> None:
+        try:
+            if self.backup_path is not None and self.backup_path.exists():
+                self.backup_path.unlink()
+            if self.staged_path.exists():
+                self.staged_path.unlink()
+        except OSError:
+            # The committed report remains authoritative; a hidden backup can
+            # be cleaned by trusted local maintenance on the next run.
+            pass
+        self.backup_path = None
+
+
+def _stage_catalog_report(
+    path: Path,
+    payload: dict[str, object],
+) -> _ReportPublication:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    staged: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".staged",
+            delete=False,
+        ) as stream:
+            staged = Path(stream.name)
+            stream.write(serialized)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError:
+        if staged is not None and staged.exists():
+            staged.unlink()
+        raise
+    assert staged is not None
+    return _ReportPublication(final_path=path, staged_path=staged)
+
+
+def _default_catalog_report_path(command_name: str) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_id = secrets.token_hex(4)
+    return (
+        settings.project_root
+        / "backend"
+        / ".local"
+        / "reports"
+        / f"{command_name}-{timestamp}-{run_id}.json"
+    )
+
+
+def _validate_catalog_targets(
+    *,
+    database_path: Path,
+    report_path: Path,
+    index_path: Path | None,
+) -> tuple[Path, Path, Path | None]:
+    allowed_root = (
+        settings.project_root / "backend" / ".local"
+    ).resolve(strict=False)
+    requested = [
+        ("database", database_path, {".db", ".sqlite3"}),
+        ("report", report_path, {".json"}),
+    ]
+    if index_path is not None:
+        requested.append(("index", index_path, {".npz"}))
+
+    resolved: list[tuple[str, Path]] = []
+    for role, path, suffixes in requested:
+        if _path_has_reparse_component(path):
+            raise UnsafeOutputPathError(
+                f"{role} target must not use a symlink or reparse point"
+            )
+        target = path.resolve(strict=False)
+        if target.suffix.casefold() not in suffixes:
+            raise UnsafeOutputPathError(
+                f"{role} target has an unsupported file extension"
+            )
+        if target.exists() and target.is_dir():
+            raise UnsafeOutputPathError(
+                f"{role} target must be a file path"
+            )
+        if not _is_within(target, allowed_root):
+            raise UnsafeOutputPathError(
+                "catalog database and outputs must stay under backend/.local"
+            )
+        resolved.append((role, target))
+
+    for index, (role, target) in enumerate(resolved):
+        for other_role, other in resolved[index + 1 :]:
+            if target == other or (
+                target.exists()
+                and other.exists()
+                and _same_file(target, other)
+            ):
+                raise UnsafeOutputPathError(
+                    f"{role} and {other_role} targets must be distinct"
+                )
+
+    source_paths, source_hashes = _catalog_source_evidence(resolved[0][1])
+    for role, target in resolved:
+        aliases_source = any(
+            target == source
+            or (
+                target.exists()
+                and source.exists()
+                and _same_file(target, source)
+            )
+            for source in source_paths
+        )
+        duplicates_source = (
+            target.is_file()
+            and _sha256_file(target) in source_hashes
+        )
+        if aliases_source or duplicates_source:
+            raise UnsafeOutputPathError(
+                f"{role} target must not alias quote source evidence"
+            )
+    by_role = dict(resolved)
+    return by_role["database"], by_role["report"], by_role.get("index")
+
+
+def _catalog_source_evidence(
+    database_path: Path,
+) -> tuple[set[Path], set[str]]:
+    quote_root = settings.quote_path.resolve(strict=False)
+    paths = {
+        path.resolve(strict=False)
+        for path in scan_supported_files(settings.quote_path)
+    }
+    hashes: set[str] = set()
+    if not database_path.is_file():
+        return paths, hashes
+    try:
+        uri = f"file:{database_path.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='source_variant'"
+            ).fetchone()
+            if exists:
+                for value, digest in connection.execute(
+                    "SELECT path, sha256 FROM source_variant"
+                ):
+                    source = Path(value)
+                    if not source.is_absolute():
+                        source = quote_root / source
+                    paths.add(source.resolve(strict=False))
+                    if isinstance(digest, str) and len(digest) == 64:
+                        hashes.add(digest.casefold())
+    except sqlite3.DatabaseError:
+        pass
+    return paths, hashes
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _path_has_reparse_component(path: Path) -> bool:
+    candidate = path.expanduser()
+    for component in (candidate, *candidate.parents):
+        if component.exists() and _is_reparse_point(component):
+            return True
+    return False
 
 
 def _upgrade_database(database_path: Path) -> None:
