@@ -133,6 +133,48 @@ textarea:focus-visible,
   font-family: "IBM Plex Mono", monospace;
 }
 
+.query-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 28px;
+  border-bottom: 1px solid #c88882;
+  color: #6f2722;
+  background: #fff1ef;
+}
+
+.query-error-banner > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.query-error-banner strong {
+  font-size: 12px;
+}
+
+.query-error-banner span {
+  font-size: 11px;
+}
+
+.query-error-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.query-error-actions button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid #ad625c;
+  border-radius: 4px;
+  color: #6f2722;
+  background: #fffaf9;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .status-dot {
   width: 7px;
   height: 7px;
@@ -691,6 +733,16 @@ textarea:focus-visible,
 
   .decision-actions {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .query-error-banner {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px 16px;
+  }
+
+  .query-error-actions button {
+    flex: 1;
   }
 
   .decision-notice {

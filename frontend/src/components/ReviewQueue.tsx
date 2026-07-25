@@ -52,8 +52,11 @@ export function ReviewQueue({
             aria-label="품목 또는 파일 검색"
             placeholder="품목 또는 파일 검색"
             value={search}
+            maxLength={200}
             disabled={controlsLocked}
-            onChange={(event) => onSearchChange(event.target.value)}
+            onChange={(event) =>
+              onSearchChange(event.target.value.slice(0, 200))
+            }
           />
         </label>
         <label>

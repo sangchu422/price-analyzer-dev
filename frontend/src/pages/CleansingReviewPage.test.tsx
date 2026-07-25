@@ -513,6 +513,93 @@ describe("CleansingReviewPage", () => {
     expect(screen.queryByText("검색 중…")).not.toBeInTheDocument();
   });
 
+  it("truncates a 201-character paste and never sends an overlong search", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL) => {
+      void _input;
+      return jsonResponse(queue([firstItem]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    const searchbox = screen.getByRole("searchbox", {
+      name: "품목 또는 파일 검색",
+    });
+    await user.click(searchbox);
+    await user.paste("x".repeat(201));
+
+    expect(searchbox).toHaveAttribute("maxlength", "200");
+    expect(searchbox).toHaveValue("x".repeat(200));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    const sentSearches = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost").searchParams.get("search"))
+      .filter((value): value is string => value !== null);
+    expect(sentSearches.length).toBeGreaterThan(0);
+    expect(sentSearches.every((value) => value.length <= 200)).toBe(true);
+    expect(screen.getByRole("searchbox", {
+      name: "품목 또는 파일 검색",
+    })).toBe(searchbox);
+  });
+
+  it("keeps a retained workspace on filtered query error and clear recovers it", async () => {
+    let resolveFirstSearch!: (value: Response) => void;
+    let searchRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("search=REMOTE")) {
+        searchRequests += 1;
+        if (searchRequests === 1) {
+          return new Promise<Response>((resolve) => {
+            resolveFirstSearch = resolve;
+          });
+        }
+        return jsonResponse({ detail: "invalid filtered query" }, { status: 422 });
+      }
+      return jsonResponse(queue([firstItem]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    const searchbox = screen.getByRole("searchbox", {
+      name: "품목 또는 파일 검색",
+    });
+    await user.type(searchbox, "REMOTE");
+    await waitFor(() => expect(searchRequests).toBe(1));
+    resolveFirstSearch(
+      await jsonResponse({ detail: "invalid filtered query" }, { status: 422 }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "invalid filtered query",
+    );
+    expect(screen.getByRole("searchbox", {
+      name: "품목 또는 파일 검색",
+    })).toBe(searchbox);
+    expect(searchbox).toHaveFocus();
+    expect(searchbox).toBeEnabled();
+    expect(screen.getByRole("button", { name: /BEARING/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "포함" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "현재 조건 다시 시도" }));
+    await waitFor(() => expect(searchRequests).toBe(2));
+    expect(fetchMock.mock.calls.some(([input]) =>
+      String(input).includes("search=REMOTE"),
+    )).toBe(true);
+    expect(await screen.findByRole("alert")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "필터 초기화" }));
+    expect(searchbox).toHaveValue("");
+    expect(
+      await screen.findByRole("heading", { name: "BEARING", level: 1 }),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+    );
+  });
+
   it("uses server facets to select a reason that exists only after page 50", async () => {
     const firstFifty = Array.from({ length: 50 }, (_, index) => ({
       ...firstItem,

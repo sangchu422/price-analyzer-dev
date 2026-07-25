@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   keepPreviousData,
+  type InfiniteData,
   useInfiniteQuery,
   useMutation,
   useQueryClient,
@@ -11,6 +12,7 @@ import {
   getReviewQueue,
   submitManualDecision,
   type ManualDecisionStatus,
+  type ReviewQueueResponse,
 } from "../api/client";
 import { DecisionBar } from "../components/DecisionBar";
 import { ItemInspector } from "../components/ItemInspector";
@@ -50,22 +52,26 @@ export function CleansingReviewPage() {
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     placeholderData: keepPreviousData,
   });
+  const unfilteredCache = queryClient.getQueryData<
+    InfiniteData<ReviewQueueResponse>
+  >(["cleansing-review", "", ""]);
+  const displayData = queue.data ?? unfilteredCache;
 
   const items = useMemo(
     () =>
-      (queue.data?.pages.flatMap((page) => page.items) ?? []).filter(
+      (displayData?.pages.flatMap((page) => page.items) ?? []).filter(
         (item) => !resolvedIds.has(item.raw_item_id),
       ),
-    [queue.data, resolvedIds],
+    [displayData, resolvedIds],
   );
   const availableReasons = useMemo(
     () => [
       ...new Set([
         ...(reason ? [reason] : []),
-        ...(queue.data?.pages[0]?.available_reason_codes ?? []),
+        ...(displayData?.pages[0]?.available_reason_codes ?? []),
       ]),
     ],
-    [queue.data, reason],
+    [displayData, reason],
   );
 
   const effectiveSelectedId = items.some(
@@ -79,7 +85,8 @@ export function CleansingReviewPage() {
   const isFilterTransition =
     search.trim() !== debouncedSearch ||
     queue.isPlaceholderData ||
-    (queue.isFetching && !queue.isFetchingNextPage);
+    (queue.isFetching && !queue.isFetchingNextPage) ||
+    queue.isError;
   useEffect(() => {
     if (!focusAfterDecisionRef.current) return;
     focusAfterDecisionRef.current = false;
@@ -127,7 +134,7 @@ export function CleansingReviewPage() {
   if (queue.isPending) {
     return <StateScreen message="검토 항목을 불러오는 중입니다." busy />;
   }
-  if (queue.isError) {
+  if (queue.isError && !displayData) {
     return (
       <StateScreen
         message="검토 목록을 불러오지 못했습니다."
@@ -149,7 +156,11 @@ export function CleansingReviewPage() {
     );
   }
 
-  const serverRemaining = queue.data.pages[0]?.remaining ?? items.length;
+  const serverRemaining = displayData?.pages[0]?.remaining ?? items.length;
+  const queryErrorMessage =
+    queue.isError && queue.error instanceof ApiError
+      ? queue.error.message.slice(0, 300)
+      : "검토 목록을 불러오지 못했습니다.";
 
   return (
     <main className="app-shell">
@@ -169,6 +180,30 @@ export function CleansingReviewPage() {
           검토 대기 <strong>{serverRemaining}</strong>건
         </div>
       </header>
+      {queue.isError && (
+        <section className="query-error-banner" role="alert">
+          <div>
+            <strong>현재 검색 조건을 적용하지 못했습니다.</strong>
+            <span>{queryErrorMessage}</span>
+          </div>
+          <div className="query-error-actions">
+            <button type="button" onClick={() => void queue.refetch()}>
+              현재 조건 다시 시도
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSearch("");
+                setReason("");
+                setSelectedId(null);
+                setNotice(null);
+              }}
+            >
+              필터 초기화
+            </button>
+          </div>
+        </section>
+      )}
 
       <div className="workspace">
         <ReviewQueue
@@ -179,7 +214,7 @@ export function CleansingReviewPage() {
           reason={reason}
           controlsLocked={mutation.isPending}
           resultsLocked={mutation.isPending || isFilterTransition}
-          isSearching={isFilterTransition}
+          isSearching={isFilterTransition && !queue.isError}
           hasNextPage={queue.hasNextPage}
           isFetchingNextPage={queue.isFetchingNextPage}
           onSearchChange={setSearch}
