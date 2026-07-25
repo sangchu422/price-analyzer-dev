@@ -1,11 +1,11 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
-from app.api.documents import _safe_error_detail
 from app.cleansing.models import CleanDecision
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
@@ -70,8 +70,10 @@ def test_scan_isolates_bad_documents_and_reports_failures(
     assert payload["documents_succeeded"] == 1
     assert payload["documents_failed"] == 1
     assert payload["failures"][0]["logical_name"] == "bad"
-    assert payload["failures"][0]["error_type"]
-    assert payload["failures"][0]["detail"]
+    assert payload["failures"][0]["error_code"] == "UNREADABLE_SOURCE"
+    assert payload["failures"][0]["detail"] == (
+        "source file could not be read"
+    )
     assert api_session.scalar(select(func.count(SourceDocument.id))) == 1
     assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 1
 
@@ -136,13 +138,105 @@ def test_scan_empty_folder_is_explicit_not_silent(
     }
 
 
-def test_scan_error_detail_does_not_leak_configured_absolute_root(
+def test_document_current_decisions_are_loaded_only_for_requested_page(
+    client: TestClient,
+    api_session: Session,
     quote_root: Path,
 ) -> None:
-    detail = f"failed to parse {quote_root / 'nested' / 'bad.xlsx'}"
+    for index in range(6):
+        _write_quote(
+            quote_root / f"{index:02d}.xlsx",
+            item_name=f"ITEM {index}",
+        )
+    assert client.post("/api/documents/scan").status_code == 200
+    api_session.expunge_all()
+    loaded_ids: list[int] = []
 
-    safe = _safe_error_detail(RuntimeError(detail), quote_root)
+    def record_load(decision: CleanDecision, context: object) -> None:
+        loaded_ids.append(decision.raw_item_id)
 
-    assert str(quote_root) not in safe
-    assert "nested" in safe
-    assert "bad.xlsx" in safe
+    event.listen(CleanDecision, "load", record_load)
+    try:
+        response = client.get(
+            "/api/documents",
+            params={"limit": 1, "offset": 0},
+        )
+    finally:
+        event.remove(CleanDecision, "load", record_load)
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 6
+    assert len(loaded_ids) == 1
+
+
+def test_scan_reports_escaped_resolved_candidate_and_keeps_valid_document(
+    client: TestClient,
+    api_session: Session,
+    quote_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    valid = quote_root / "valid.xlsx"
+    escaped = tmp_path / "outside.xlsx"
+    _write_quote(valid, item_name="VALID")
+    _write_quote(escaped, item_name="OUTSIDE")
+    monkeypatch.setattr(
+        "app.api.documents._scan_supported_files",
+        lambda root: [escaped, valid],
+    )
+
+    response = client.post("/api/documents/scan")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["documents_succeeded"] == 1
+    assert payload["documents_failed"] == 1
+    assert payload["failures"] == [
+        {
+            "logical_name": "outside",
+            "error_code": "PATH_OUTSIDE_ROOT",
+            "detail": "source path resolves outside configured quote root",
+        }
+    ]
+    assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 1
+
+
+def test_scan_rejects_file_symlink_that_escapes_configured_root(
+    client: TestClient,
+    quote_root: Path,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside.xlsx"
+    _write_quote(outside, item_name="OUTSIDE")
+    link = quote_root / "escaped-link.xlsx"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    response = client.post("/api/documents/scan")
+
+    assert response.status_code == 200
+    assert response.json()["documents_succeeded"] == 0
+    assert response.json()["documents_failed"] == 1
+    assert response.json()["failures"][0]["error_code"] == "PATH_OUTSIDE_ROOT"
+    assert str(tmp_path) not in response.text
+
+
+def test_scan_does_not_disguise_unexpected_programmer_errors(
+    client: TestClient,
+    quote_root: Path,
+    monkeypatch,
+) -> None:
+    _write_quote(quote_root / "valid.xlsx", item_name="VALID")
+
+    def fail_unexpectedly(*args, **kwargs):
+        raise ValueError("programming bug with sensitive internals")
+
+    monkeypatch.setattr(
+        "app.api.documents.ingest_group",
+        fail_unexpectedly,
+    )
+
+    with pytest.raises(ValueError, match="programming bug"):
+        client.post("/api/documents/scan")

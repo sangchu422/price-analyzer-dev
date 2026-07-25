@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import ntpath
 from pathlib import Path
+from zipfile import BadZipFile
 
 from fastapi import APIRouter, Depends, Query
+from openpyxl.utils.exceptions import InvalidFileException
+from pypdf.errors import PdfReadError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
+from xlrd.biffh import XLRDError
 
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.cleansing.service import apply_rules
@@ -14,11 +19,14 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.ingestion.service import (
+    SourceEvidenceConflictError,
+    SourceFileChangedError,
+    UnsupportedQuoteLayoutError,
     ingest_group,
     parsing_variant_for,
     preferred_variant_for,
 )
-from app.ingestion.source_selector import build_source_groups
+from app.ingestion.source_selector import SourceGroup, build_source_groups
 from app.quotes.models import RawQuoteItem
 
 
@@ -45,7 +53,8 @@ def list_documents(
         .offset(offset)
         .limit(limit)
     ).all()
-    current_by_item = _current_decisions(session)
+    document_ids = [document.id for document in documents]
+    current_by_item = _current_decisions(session, document_ids)
     return {
         "items": [
             _document_item(document, current_by_item)
@@ -63,16 +72,16 @@ def scan_documents(
 ) -> dict[str, object]:
     quote_root = settings.quote_path.resolve(strict=False)
     paths = _scan_supported_files(quote_root)
-    groups = build_source_groups(paths, root=quote_root) if paths else []
+    groups, preflight_failures = _prepare_source_groups(paths, quote_root)
     result: dict[str, object] = {
         "files_found": len(paths),
-        "documents_found": len(groups),
+        "documents_found": len(groups) + len(preflight_failures),
         "documents_succeeded": 0,
-        "documents_failed": 0,
+        "documents_failed": len(preflight_failures),
         "variants_created": 0,
         "raw_items_created": 0,
         "decisions_created": 0,
-        "failures": [],
+        "failures": list(preflight_failures),
     }
 
     for group in groups:
@@ -88,17 +97,16 @@ def scan_documents(
             ):
                 apply_rules(session, raw_item)
             session.commit()
-        except Exception as exc:
+        except _EXPECTED_INGESTION_ERRORS as exc:
             session.rollback()
             result["documents_failed"] += 1
             result["failures"].append(
-                {
-                    "logical_name": group.logical_name,
-                    "error_type": type(exc).__name__,
-                    "detail": _safe_error_detail(exc, quote_root),
-                }
+                _ingestion_failure(group.logical_name, exc)
             )
             continue
+        except Exception:
+            session.rollback()
+            raise
 
         result["documents_succeeded"] += 1
         result["variants_created"] += (
@@ -128,30 +136,134 @@ def _scan_supported_files(root: Path) -> list[Path]:
     )
 
 
-def _safe_error_detail(exc: Exception, root: Path) -> str:
-    detail = str(exc) or type(exc).__name__
+_EXPECTED_INGESTION_ERRORS = (
+    UnsupportedQuoteLayoutError,
+    SourceFileChangedError,
+    SourceEvidenceConflictError,
+    BadZipFile,
+    InvalidFileException,
+    PdfReadError,
+    XLRDError,
+    OSError,
+)
+
+
+def _prepare_source_groups(
+    paths: list[Path],
+    root: Path,
+) -> tuple[list[SourceGroup], list[dict[str, str]]]:
     resolved_root = root.resolve(strict=False)
-    for root_text in {
-        str(root),
-        root.as_posix(),
-        str(resolved_root),
-        resolved_root.as_posix(),
-    }:
-        if root_text:
-            detail = detail.replace(root_text, "<quote-root>")
-    return detail
+    grouped_paths: dict[str, list[Path]] = {}
+    failures: list[dict[str, str]] = []
+    for path in paths:
+        try:
+            resolved = path.resolve(strict=False)
+        except OSError:
+            failures.append(
+                _preflight_failure(
+                    path,
+                    "INVALID_SOURCE_PATH",
+                    "source path could not be resolved",
+                )
+            )
+            continue
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError:
+            failures.append(
+                _preflight_failure(
+                    path,
+                    "PATH_OUTSIDE_ROOT",
+                    "source path resolves outside configured quote root",
+                )
+            )
+            continue
+        try:
+            candidate_group = build_source_groups([path], root=root)[0]
+        except (OSError, ValueError):
+            failures.append(
+                _preflight_failure(
+                    path,
+                    "INVALID_SOURCE_PATH",
+                    "source path could not be grouped",
+                )
+            )
+            continue
+        key = ntpath.normcase(candidate_group.logical_name)
+        grouped_paths.setdefault(key, []).append(path)
+
+    groups = [
+        build_source_groups(group_paths, root=root)[0]
+        for _, group_paths in sorted(grouped_paths.items())
+    ]
+    return groups, failures
+
+
+def _preflight_failure(
+    path: Path,
+    error_code: str,
+    detail: str,
+) -> dict[str, str]:
+    return {
+        "logical_name": path.stem,
+        "error_code": error_code,
+        "detail": detail,
+    }
+
+
+def _ingestion_failure(
+    logical_name: str,
+    exc: Exception,
+) -> dict[str, str]:
+    if isinstance(exc, UnsupportedQuoteLayoutError):
+        code = "UNSUPPORTED_LAYOUT"
+        detail = "source layout is not currently supported"
+    elif isinstance(exc, SourceFileChangedError):
+        code = "SOURCE_CHANGED"
+        detail = "source file changed during ingestion"
+    elif isinstance(
+        exc,
+        (BadZipFile, InvalidFileException, PdfReadError, XLRDError),
+    ):
+        code = "UNREADABLE_SOURCE"
+        detail = "source file could not be read"
+    elif isinstance(exc, OSError):
+        code = "SOURCE_IO_ERROR"
+        detail = "source file could not be accessed"
+    else:
+        code = "INVALID_SOURCE_EVIDENCE"
+        detail = "source evidence is invalid or changed"
+    return {
+        "logical_name": logical_name,
+        "error_code": code,
+        "detail": detail,
+    }
 
 
 def _count(session: Session, column: object) -> int:
     return session.scalar(select(func.count(column))) or 0
 
 
-def _current_decisions(session: Session) -> dict[int, CleanDecision]:
+def _current_decisions(
+    session: Session,
+    document_ids: list[int],
+) -> dict[int, CleanDecision]:
+    if not document_ids:
+        return {}
     latest_ids = (
         select(
             CleanDecision.raw_item_id,
             func.max(CleanDecision.id).label("decision_id"),
         )
+        .join(
+            RawQuoteItem,
+            RawQuoteItem.id == CleanDecision.raw_item_id,
+        )
+        .join(
+            SourceVariant,
+            SourceVariant.id == RawQuoteItem.source_variant_id,
+        )
+        .where(SourceVariant.document_id.in_(document_ids))
         .group_by(CleanDecision.raw_item_id)
         .subquery()
     )

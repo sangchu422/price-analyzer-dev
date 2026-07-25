@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -22,12 +23,17 @@ router = APIRouter()
 
 
 class DecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+    )
 
     status: Literal["INCLUDED", "EXCLUDED"]
     reason_code: Literal["MANUAL_REVIEW"]
     reason_detail: str = Field(min_length=1, max_length=2000)
     decided_by: str = Field(min_length=1, max_length=100)
+    expected_current_decision_id: int = Field(gt=0)
 
     @field_validator("decided_by")
     @classmethod
@@ -37,15 +43,86 @@ class DecisionRequest(BaseModel):
         return value
 
 
-@router.get("/review-queue")
+class DecisionResponse(BaseModel):
+    id: int
+    status: CleanStatus
+    reason_code: str
+    reason_detail: str | None
+    rule_version: str
+    decided_by: str
+    decided_at: datetime
+
+
+class RawDisplay(BaseModel):
+    item_name: str | None
+    spec: str | None
+    unit: str | None
+    quantity: str | None
+    unit_price: str | None
+    amount: str | None
+    maker: str | None
+
+
+class NormalizedDisplay(RawDisplay):
+    pass
+
+
+class SourceEvidence(BaseModel):
+    document_id: int
+    logical_name: str
+    variant_id: int
+    path: str
+    sha256: str
+    security_state: str
+    selected_for_parsing_at_ingest: bool
+    sheet: str | None
+    page: int | None
+    row: int | None
+    cells: str | None
+    parser_name: str
+    parser_version: str
+    parser_warnings: list[Any]
+
+
+class ReviewQueueItem(BaseModel):
+    raw_item_id: int
+    raw: RawDisplay
+    normalized: NormalizedDisplay
+    reason_code: str
+    reason_detail: str | None
+    decision: DecisionResponse
+    source: SourceEvidence
+
+
+class ReviewQueueResponse(BaseModel):
+    items: list[ReviewQueueItem]
+    total: int
+    limit: int
+    next_cursor: int | None
+
+
+@router.get("/review-queue", response_model=ReviewQueueResponse)
 def review_queue(
     session: Session = Depends(get_session),
     *,
     limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    after_id: int | None = Query(
+        None,
+        ge=0,
+        description=(
+            "Stable raw-item cursor. Refresh from the first page to discover "
+            "new review items inserted with lower IDs."
+        ),
+    ),
+    offset: int | None = Query(None, include_in_schema=False),
     reason_code: str | None = Query(None, min_length=1, max_length=100),
     logical_name: str | None = Query(None, min_length=1, max_length=500),
 ) -> dict[str, object]:
+    if offset is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="offset pagination is unsupported; use after_id",
+        )
     latest_ids = (
         select(
             CleanDecision.raw_item_id,
@@ -72,26 +149,35 @@ def review_queue(
         base = base.where(CleanDecision.reason_code == reason_code)
     if logical_name is not None:
         base = base.where(SourceDocument.logical_name == logical_name)
+    if after_id is not None:
+        base = base.where(RawQuoteItem.id > after_id)
 
     count_query = select(func.count()).select_from(base.subquery())
     total = session.scalar(count_query) or 0
     rows = session.execute(
         base.order_by(RawQuoteItem.id, CleanDecision.id)
-        .offset(offset)
-        .limit(limit)
+        .limit(limit + 1)
     ).all()
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
     return {
         "items": [
             _review_item(raw, decision, variant, document)
-            for raw, decision, variant, document in rows
+            for raw, decision, variant, document in page_rows
         ],
         "total": total,
         "limit": limit,
-        "offset": offset,
+        "next_cursor": (
+            page_rows[-1][0].id if has_more and page_rows else None
+        ),
     }
 
 
-@router.post("/{raw_item_id}/decisions", status_code=201)
+@router.post(
+    "/{raw_item_id}/decisions",
+    status_code=201,
+    response_model=DecisionResponse,
+)
 def append_manual_decision(
     raw_item_id: int,
     body: DecisionRequest,
@@ -114,6 +200,21 @@ def append_manual_decision(
             detail="raw quote item has no cleansing baseline",
         )
     values = _preserved_values(history)
+    current_id = session.scalar(
+        select(func.max(CleanDecision.id)).where(
+            CleanDecision.raw_item_id == raw_item_id
+        )
+    )
+    if current_id != body.expected_current_decision_id:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "STALE_DECISION",
+                "message": "cleansing decision changed; refresh and retry",
+                "current_decision_id": current_id,
+            },
+        )
 
     decision = CleanDecision(
         raw_item=raw_item,

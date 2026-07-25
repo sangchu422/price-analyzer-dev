@@ -73,6 +73,7 @@ def test_review_queue_returns_current_decision_and_exact_provenance(
     assert response.status_code == 200
     payload = response.json()
     assert payload["total"] == 1
+    assert payload["next_cursor"] is None
     row = payload["items"][0]
     assert row["raw_item_id"] == raw.id
     assert row["raw"]["item_name"] == " BEARING "
@@ -137,6 +138,84 @@ def test_review_queue_uses_latest_id_not_decided_time_and_filters(
     ]
 
 
+def test_review_queue_cursor_does_not_skip_after_prior_page_is_resolved(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    first = _seed_review_item(api_session)
+    second = _seed_distinct_review(api_session)
+    third = _seed_third_review(api_session)
+    api_session.commit()
+
+    page = client.get("/api/cleansing/review-queue", params={"limit": 1})
+    assert page.status_code == 200
+    assert [item["raw_item_id"] for item in page.json()["items"]] == [first.id]
+    cursor = page.json()["next_cursor"]
+    assert cursor == first.id
+    expected_id = page.json()["items"][0]["decision"]["id"]
+    resolved = client.post(
+        f"/api/cleansing/{first.id}/decisions",
+        json={
+            "status": "INCLUDED",
+            "reason_code": "MANUAL_REVIEW",
+            "reason_detail": "resolved",
+            "decided_by": "reviewer",
+            "expected_current_decision_id": expected_id,
+        },
+    )
+    assert resolved.status_code == 201
+
+    next_page = client.get(
+        "/api/cleansing/review-queue",
+        params={"limit": 1, "after_id": cursor},
+    )
+
+    assert next_page.status_code == 200
+    assert [item["raw_item_id"] for item in next_page.json()["items"]] == [
+        second.id
+    ]
+    assert next_page.json()["next_cursor"] == second.id
+    assert third.id > second.id
+    assert client.get(
+        "/api/cleansing/review-queue",
+        params={"offset": 1},
+    ).status_code == 422
+
+
+def _seed_third_review(session: Session) -> RawQuoteItem:
+    document = SourceDocument(logical_name="라인C/견적")
+    variant = SourceVariant(
+        document=document,
+        path="라인C/견적.xlsx",
+        sha256="c" * 64,
+        extension=".xlsx",
+        security_state="UNKNOWN",
+        selected_for_parsing_at_ingest=True,
+    )
+    raw = RawQuoteItem(
+        source_variant=variant,
+        source_sheet="내역",
+        source_row=4,
+        source_cells="A4:C4",
+        item_name_raw="5678",
+        unit_price_raw="700",
+        parser_name="quote-reader",
+        parser_version="reader-v1",
+    )
+    session.add(
+        CleanDecision(
+            raw_item=raw,
+            status=CleanStatus.REVIEW_REQUIRED,
+            reason_code="COLUMN_SHIFT_SUSPECTED",
+            item_name_norm="5678",
+            unit_price=Decimal("700"),
+            rule_version="clean-v1",
+        )
+    )
+    session.flush()
+    return raw
+
+
 def _seed_distinct_review(session: Session) -> RawQuoteItem:
     document = SourceDocument(logical_name="라인B/견적")
     variant = SourceVariant(
@@ -185,6 +264,7 @@ def test_manual_decision_appends_and_preserves_baseline_values(
             "reason_code": "MANUAL_REVIEW",
             "reason_detail": "원본 확인",
             "decided_by": "sangwoo",
+            "expected_current_decision_id": original.id,
         },
     )
 
@@ -230,6 +310,7 @@ def test_manual_include_recovers_values_from_latest_complete_history(
             "reason_code": "MANUAL_REVIEW",
             "reason_detail": "원본 재확인",
             "decided_by": "reviewer",
+            "expected_current_decision_id": raw.decisions[-1].id,
         },
     )
 
@@ -275,6 +356,13 @@ def test_manual_decision_rejects_impersonation_and_invalid_contract(
             "reason_detail": "x" * 2001,
             "decided_by": "reviewer",
         },
+        {
+            "status": "EXCLUDED",
+            "reason_code": "MANUAL_REVIEW",
+            "reason_detail": "ok",
+            "decided_by": "reviewer",
+            "expected_current_decision_id": str(raw.decisions[0].id),
+        },
     ]
 
     for body in invalid_bodies:
@@ -296,8 +384,36 @@ def test_manual_decision_returns_404_without_history(
             "reason_code": "MANUAL_REVIEW",
             "reason_detail": "not applicable",
             "decided_by": "reviewer",
+            "expected_current_decision_id": 1,
         },
     )
 
     assert response.status_code == 404
     assert api_session.scalar(select(func.count(CleanDecision.id))) == 0
+
+
+def test_manual_decision_rejects_stale_snapshot_without_extra_history(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    raw = _seed_review_item(api_session)
+    snapshot_id = raw.decisions[0].id
+    body = {
+        "status": "INCLUDED",
+        "reason_code": "MANUAL_REVIEW",
+        "reason_detail": "reviewed",
+        "decided_by": "reviewer",
+        "expected_current_decision_id": snapshot_id,
+    }
+
+    first = client.post(f"/api/cleansing/{raw.id}/decisions", json=body)
+    second = client.post(f"/api/cleansing/{raw.id}/decisions", json=body)
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["detail"] == {
+        "error_code": "STALE_DECISION",
+        "message": "cleansing decision changed; refresh and retry",
+        "current_decision_id": first.json()["id"],
+    }
+    assert api_session.scalar(select(func.count(CleanDecision.id))) == 2

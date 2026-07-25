@@ -30,6 +30,10 @@ class SourceFileChangedError(RuntimeError):
     """Raised when source bytes change between hashing and parsing."""
 
 
+class SourceEvidenceConflictError(ValueError):
+    """Raised when an immutable stored path now has different content."""
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -177,7 +181,7 @@ def _register_variant(
     existing_path = _find_variant_by_path(session, stored_path)
     if existing_path is not None:
         if existing_path.sha256 != digest:
-            raise ValueError(
+            raise SourceEvidenceConflictError(
                 f"content changed at immutable source path: {stored_path}"
             )
         return existing_path
