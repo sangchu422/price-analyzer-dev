@@ -53,6 +53,7 @@ export interface ReviewQueueResponse {
   remaining: number;
   limit: number;
   next_cursor: number | null;
+  available_reason_codes: string[];
 }
 
 export interface ManualDecisionRequest {
@@ -111,8 +112,20 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function getReviewQueue(afterId?: number, signal?: AbortSignal) {
+export function getReviewQueue({
+  afterId,
+  search,
+  reasonCode,
+  signal,
+}: {
+  afterId?: number;
+  search?: string;
+  reasonCode?: string;
+  signal?: AbortSignal;
+} = {}) {
   const params = new URLSearchParams({ limit: "50" });
+  if (search) params.set("search", search);
+  if (reasonCode) params.set("reason_code", reasonCode);
   if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<ReviewQueueResponse>(
     `/api/cleansing/review-queue?${params.toString()}`,

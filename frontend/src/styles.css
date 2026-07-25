@@ -52,9 +52,11 @@ button {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 32%, transparent);
+textarea:focus-visible,
+.inspector-header h1:focus-visible {
+  outline: 2px solid #3f258f;
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px #fff;
 }
 
 .sr-only {
@@ -142,7 +144,8 @@ textarea:focus-visible {
 .workspace {
   min-height: calc(100vh - 68px);
   display: grid;
-  grid-template-columns: minmax(310px, 30vw) 1fr;
+  grid-template-columns: minmax(280px, 30vw) minmax(0, 1fr);
+  min-width: 0;
 }
 
 .queue-panel {
@@ -238,6 +241,11 @@ textarea:focus-visible {
   opacity: .62;
 }
 
+.queue-row:focus-visible {
+  outline-offset: -4px;
+  box-shadow: inset 0 0 0 2px #fff;
+}
+
 .queue-row.is-selected {
   border-left-color: var(--accent);
   background: var(--paper);
@@ -312,6 +320,7 @@ textarea:focus-visible {
 
 .detail-pane {
   min-width: 0;
+  max-width: 100%;
   background: var(--paper);
 }
 
@@ -324,6 +333,7 @@ textarea:focus-visible {
 
 .inspector-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: flex-start;
   gap: 24px;
@@ -396,7 +406,7 @@ textarea:focus-visible {
 .comparison-head,
 .comparison-row {
   display: grid;
-  grid-template-columns: minmax(78px, .6fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  grid-template-columns: minmax(64px, .55fr) minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .comparison-head {
@@ -482,7 +492,7 @@ textarea:focus-visible {
   z-index: 10;
   right: 0;
   bottom: 0;
-  width: calc(100% - max(310px, 30vw));
+  width: calc(100% - max(280px, 30vw));
   padding: 15px clamp(24px, 5vw, 72px) 18px;
   border-top: 1px solid var(--line);
   background: rgba(251, 250, 246, .96);
@@ -630,11 +640,7 @@ textarea:focus-visible {
   to { opacity: 1; transform: translateX(0); }
 }
 
-@media (max-width: 760px) {
-  .topbar {
-    padding: 0 16px;
-  }
-
+@media (max-width: 900px) {
   .workspace {
     display: block;
   }
@@ -647,6 +653,21 @@ textarea:focus-visible {
   .queue-list {
     max-height: 42vh;
     overflow: auto;
+  }
+
+  .inspector {
+    padding: 30px clamp(18px, 4vw, 32px) 220px;
+  }
+
+  .decision-bar {
+    width: 100%;
+    padding-inline: clamp(18px, 4vw, 32px);
+  }
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    padding: 0 16px;
   }
 
   .inspector {
@@ -679,6 +700,36 @@ textarea:focus-visible {
   .evidence-list > div {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+}
+
+@media (max-width: 380px) {
+  .topbar {
+    padding-inline: 12px;
+  }
+
+  .brand span:last-child {
+    display: none;
+  }
+
+  .queue-tools {
+    grid-template-columns: minmax(0, 1fr) 112px;
+    padding-inline: 12px;
+  }
+
+  .comparison-head,
+  .comparison-row {
+    grid-template-columns: 54px minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .comparison-row dt,
+  .comparison-row dd {
+    padding-inline: 7px;
+  }
+
+  .decision-actions button {
+    min-width: 0;
+    width: 100%;
   }
 }
 

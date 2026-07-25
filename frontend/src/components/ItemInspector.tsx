@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import type { DisplayValues, ReviewQueueItem } from "../api/client";
 import { reasonLabel } from "./reasonLabels";
 
@@ -25,13 +26,21 @@ function sourceLocation(item: ReviewQueueItem) {
   return parts.join(" · ") || "위치 정보 없음";
 }
 
-export function ItemInspector({ item }: { item: ReviewQueueItem }) {
+export function ItemInspector({
+  item,
+  headingRef,
+}: {
+  item: ReviewQueueItem;
+  headingRef?: Ref<HTMLHeadingElement>;
+}) {
   return (
     <section className="inspector" aria-label="선택 항목 상세" key={item.raw_item_id}>
       <header className="inspector-header">
         <div>
           <p className="eyebrow">항목 #{item.raw_item_id}</p>
-          <h1>{item.normalized.item_name ?? item.raw.item_name ?? "품명 없음"}</h1>
+          <h1 ref={headingRef} tabIndex={-1}>
+            {item.normalized.item_name ?? item.raw.item_name ?? "품명 없음"}
+          </h1>
           <p>{item.normalized.spec ?? item.raw.spec ?? "사양 정보 없음"}</p>
         </div>
         <span className="status-tag">검토 필요</span>

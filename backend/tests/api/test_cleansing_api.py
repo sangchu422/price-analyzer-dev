@@ -82,6 +82,7 @@ def test_review_queue_returns_current_decision_and_exact_provenance(
     payload = response.json()
     assert payload["remaining"] == 1
     assert payload["next_cursor"] is None
+    assert payload["available_reason_codes"] == ["AMOUNT_MISMATCH"]
     row = payload["items"][0]
     assert row["raw_item_id"] == raw.id
     assert row["raw"]["item_name"] == " BEARING "
@@ -259,6 +260,141 @@ def _seed_distinct_review(session: Session) -> RawQuoteItem:
     )
     session.flush()
     return raw
+
+
+def _seed_review_batch(
+    session: Session,
+    *,
+    count: int = 55,
+) -> list[RawQuoteItem]:
+    document = SourceDocument(logical_name="대량/검색문서")
+    variant = SourceVariant(
+        document=document,
+        path="대량/검색문서_보안해제.xlsx",
+        sha256="d" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    rows: list[RawQuoteItem] = []
+    for index in range(count):
+        is_last = index == count - 1
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="내역",
+            source_row=index + 1,
+            source_cells=f"A{index + 1}:C{index + 1}",
+            item_name_raw=(
+                "PAGE2%_Needle" if is_last else f"GENERIC-{index:03d}"
+            ),
+            spec_raw="RAW-SPECIAL" if index == 1 else "STANDARD",
+            parser_name="quote-reader",
+            parser_version="reader-v1",
+        )
+        session.add(
+            CleanDecision(
+                raw_item=raw,
+                status=CleanStatus.REVIEW_REQUIRED,
+                reason_code=(
+                    "RARE_PAGE2_REASON" if is_last else "COMMON_REASON"
+                ),
+                item_name_norm=(
+                    "PAGE2%_NEEDLE" if is_last else f"GENERIC-{index:03d}"
+                ),
+                spec_norm="NORM-SPECIAL" if index == 2 else "STANDARD",
+                rule_version="clean-v1",
+            )
+        )
+        rows.append(raw)
+    session.commit()
+    return rows
+
+
+def test_review_queue_searches_all_pages_and_escapes_sql_wildcards(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    rows = _seed_review_batch(api_session)
+
+    ordinary_page = client.get(
+        "/api/cleansing/review-queue",
+        params={"limit": 50},
+    )
+    assert ordinary_page.status_code == 200
+    assert rows[-1].id not in {
+        item["raw_item_id"] for item in ordinary_page.json()["items"]
+    }
+
+    search = client.get(
+        "/api/cleansing/review-queue",
+        params={"search": "  page2%_needle  ", "limit": 50},
+    )
+
+    assert search.status_code == 200
+    assert search.json()["remaining"] == 1
+    assert [item["raw_item_id"] for item in search.json()["items"]] == [
+        rows[-1].id
+    ]
+
+
+@pytest.mark.parametrize(
+    ("search", "expected_index"),
+    [
+        ("raw-special", 1),
+        ("norm-special", 2),
+        ("대량/검색문서", 0),
+        ("검색문서_보안해제.xlsx", 0),
+    ],
+)
+def test_review_queue_searches_raw_normalized_and_source_fields(
+    client: TestClient,
+    api_session: Session,
+    search: str,
+    expected_index: int,
+) -> None:
+    rows = _seed_review_batch(api_session, count=4)
+
+    response = client.get(
+        "/api/cleansing/review-queue",
+        params={"search": search},
+    )
+
+    assert response.status_code == 200
+    ids = [item["raw_item_id"] for item in response.json()["items"]]
+    if search in {"대량/검색문서", "검색문서_보안해제.xlsx"}:
+        assert ids == [row.id for row in rows]
+    else:
+        assert ids == [rows[expected_index].id]
+
+
+def test_review_queue_reason_facets_cover_unloaded_search_result(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    rows = _seed_review_batch(api_session)
+
+    first_page = client.get(
+        "/api/cleansing/review-queue",
+        params={"limit": 50},
+    )
+    rare_only = client.get(
+        "/api/cleansing/review-queue",
+        params={"reason_code": "RARE_PAGE2_REASON"},
+    )
+
+    assert first_page.status_code == 200
+    assert first_page.json()["available_reason_codes"] == [
+        "COMMON_REASON",
+        "RARE_PAGE2_REASON",
+    ]
+    assert rare_only.status_code == 200
+    assert rare_only.json()["available_reason_codes"] == [
+        "COMMON_REASON",
+        "RARE_PAGE2_REASON",
+    ]
+    assert [item["raw_item_id"] for item in rare_only.json()["items"]] == [
+        rows[-1].id
+    ]
 
 
 def test_manual_decision_appends_and_preserves_baseline_values(

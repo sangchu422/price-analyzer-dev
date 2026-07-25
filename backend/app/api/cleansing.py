@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -99,6 +99,12 @@ class ReviewQueueResponse(BaseModel):
     remaining: int
     limit: int
     next_cursor: int | None
+    available_reason_codes: list[str] = Field(
+        description=(
+            "Reason facets for the full current search/logical-document "
+            "result, before reason and cursor filters."
+        )
+    )
 
 
 @router.get("/review-queue", response_model=ReviewQueueResponse)
@@ -115,6 +121,14 @@ def review_queue(
         ),
     ),
     offset: int | None = Query(None, include_in_schema=False),
+    search: str | None = Query(
+        None,
+        max_length=200,
+        description=(
+            "Trimmed case-insensitive literal substring search. SQL LIKE "
+            "wildcards are treated as ordinary characters."
+        ),
+    ),
     reason_code: str | None = Query(None, min_length=1, max_length=100),
     logical_name: str | None = Query(None, min_length=1, max_length=500),
 ) -> dict[str, object]:
@@ -145,10 +159,52 @@ def review_queue(
         .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
         .where(CleanDecision.status == CleanStatus.REVIEW_REQUIRED)
     )
-    if reason_code is not None:
-        base = base.where(CleanDecision.reason_code == reason_code)
     if logical_name is not None:
         base = base.where(SourceDocument.logical_name == logical_name)
+    normalized_search = search.strip() if search is not None else ""
+    if normalized_search:
+        pattern = f"%{_escape_like(normalized_search.casefold())}%"
+        base = base.where(
+            or_(
+                func.lower(RawQuoteItem.item_name_raw).like(
+                    pattern,
+                    escape="\\",
+                ),
+                func.lower(RawQuoteItem.spec_raw).like(
+                    pattern,
+                    escape="\\",
+                ),
+                func.lower(CleanDecision.item_name_norm).like(
+                    pattern,
+                    escape="\\",
+                ),
+                func.lower(CleanDecision.spec_norm).like(
+                    pattern,
+                    escape="\\",
+                ),
+                func.lower(SourceDocument.logical_name).like(
+                    pattern,
+                    escape="\\",
+                ),
+                func.lower(SourceVariant.path).like(
+                    pattern,
+                    escape="\\",
+                ),
+            )
+        )
+
+    available_reason_codes = list(
+        session.scalars(
+            base.with_only_columns(
+                CleanDecision.reason_code,
+                maintain_column_froms=True,
+            )
+            .distinct()
+            .order_by(CleanDecision.reason_code)
+        )
+    )
+    if reason_code is not None:
+        base = base.where(CleanDecision.reason_code == reason_code)
     if after_id is not None:
         base = base.where(RawQuoteItem.id > after_id)
 
@@ -170,6 +226,7 @@ def review_queue(
         "next_cursor": (
             page_rows[-1][0].id if has_more and page_rows else None
         ),
+        "available_reason_codes": available_reason_codes,
     }
 
 
@@ -346,3 +403,7 @@ def _parser_warnings(value: str) -> list[object]:
     except (json.JSONDecodeError, TypeError):
         return [{"code": "INVALID_WARNING_JSON", "raw": value}]
     return parsed if isinstance(parsed, list) else [parsed]
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

@@ -64,8 +64,18 @@ const secondItem = {
   source: { ...firstItem.source, row: 19, cells: "A19:G19" },
 };
 
-function queue(items = [firstItem], nextCursor: number | null = null) {
-  return { items, remaining: items.length, limit: 50, next_cursor: nextCursor };
+function queue(
+  items = [firstItem],
+  nextCursor: number | null = null,
+  reasons = [...new Set(items.map((item) => item.reason_code))],
+) {
+  return {
+    items,
+    remaining: items.length,
+    limit: 50,
+    next_cursor: nextCursor,
+    available_reason_codes: reasons,
+  };
 }
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
@@ -216,30 +226,55 @@ describe("CleansingReviewPage", () => {
   });
 
   it("keeps selection and decision target inside the filtered result", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => jsonResponse(queue([firstItem, secondItem]))));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      const reasons = ["AMOUNT_MISMATCH", "PRICE_OUTLIER"];
+      if (url.includes("search=")) return jsonResponse(queue([], null, reasons));
+      if (url.includes("reason_code=PRICE_OUTLIER")) {
+        return jsonResponse(queue([secondItem], null, reasons));
+      }
+      if (url.includes("reason_code=AMOUNT_MISMATCH")) {
+        return jsonResponse(queue([firstItem], null, reasons));
+      }
+      return jsonResponse(queue([firstItem, secondItem], null, reasons));
+    }));
     const user = userEvent.setup();
     renderPage();
 
     await screen.findByRole("heading", { name: "BEARING", level: 1 });
     await user.selectOptions(screen.getByRole("combobox", { name: "검토 사유 필터" }), "PRICE_OUTLIER");
 
+    expect(await screen.findByRole("heading", { name: "SENSOR", level: 1 })).toBeVisible();
     expect(screen.queryByRole("button", { name: /BEARING/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "SENSOR", level: 1 })).toBeVisible();
     expect(screen.getByRole("region", { name: "검토 판단" })).toBeVisible();
 
     await user.selectOptions(screen.getByRole("combobox", { name: "검토 사유 필터" }), "AMOUNT_MISMATCH");
     await user.type(screen.getByRole("searchbox", { name: "품목 또는 파일 검색" }), "없는 품목");
-    expect(screen.getByText("검색 조건에 맞는 검토 항목이 없습니다.")).toBeVisible();
+    expect(
+      await screen.findByText("검색 조건에 맞는 검토 항목이 없습니다."),
+    ).toBeVisible();
     expect(screen.queryByRole("region", { name: "검토 판단" })).not.toBeInTheDocument();
   });
 
   it("shows filtered empty rather than server empty when a reason filter remains after resolution", async () => {
     let resolvePost!: (value: Response) => void;
-    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+    let resolved = false;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") {
-        return new Promise<Response>((resolve) => { resolvePost = resolve; });
+        return new Promise<Response>((resolve) => {
+          resolvePost = (value) => {
+            resolved = true;
+            resolve(value);
+          };
+        });
       }
-      return jsonResponse(queue([firstItem, secondItem]));
+      const reasons = ["AMOUNT_MISMATCH", "PRICE_OUTLIER"];
+      if (String(input).includes("reason_code=AMOUNT_MISMATCH")) {
+        return jsonResponse(
+          queue(resolved ? [] : [firstItem], null, reasons),
+        );
+      }
+      return jsonResponse(queue([firstItem, secondItem], null, reasons));
     }));
     const user = userEvent.setup();
     renderPage();
@@ -295,7 +330,12 @@ describe("CleansingReviewPage", () => {
         { status: 201 },
       ),
     );
-    expect(await screen.findByRole("heading", { name: "SENSOR", level: 1 })).toBeVisible();
+    const nextHeading = await screen.findByRole("heading", {
+      name: "SENSOR",
+      level: 1,
+    });
+    expect(nextHeading).toBeVisible();
+    expect(nextHeading).toHaveFocus();
     expect(screen.queryByRole("button", { name: /BEARING/ })).not.toBeInTheDocument();
   });
 
@@ -326,6 +366,28 @@ describe("CleansingReviewPage", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("announces a safe API mutation error detail", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST"
+        ? jsonResponse(
+            { detail: "manual decision could not be appended" },
+            { status: 409 },
+          )
+        : jsonResponse(queue()),
+    ));
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.type(screen.getByLabelText("검토자"), "sangwoo");
+    await user.type(screen.getByLabelText("판단 근거"), "원본 대조 완료");
+    await user.click(screen.getByRole("button", { name: "포함" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "manual decision could not be appended",
+    );
+  });
+
   it("loads the next cursor page and keeps existing rows", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
@@ -343,6 +405,126 @@ describe("CleansingReviewPage", () => {
     expect(screen.getByRole("button", { name: /BEARING/ })).toBeVisible();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("after_id=7"),
+      expect.anything(),
+    );
+  });
+
+  it("debounces search, resets the cursor, and finds an item beyond 50 loaded rows", async () => {
+    const firstFifty = Array.from({ length: 50 }, (_, index) => ({
+      ...firstItem,
+      raw_item_id: index + 1,
+      raw: { ...firstItem.raw, item_name: `GENERIC-${index + 1}` },
+      normalized: {
+        ...firstItem.normalized,
+        item_name: `GENERIC-${index + 1}`,
+      },
+      decision: { ...firstItem.decision, id: index + 1 },
+    }));
+    const pageTwoMatch = {
+      ...secondItem,
+      raw_item_id: 51,
+      raw: { ...secondItem.raw, item_name: "REMOTE NEEDLE" },
+      normalized: { ...secondItem.normalized, item_name: "REMOTE NEEDLE" },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("search=REMOTE+NEEDLE")) {
+        return jsonResponse(queue([pageTwoMatch], null, ["PRICE_OUTLIER"]));
+      }
+      return jsonResponse(
+        queue(firstFifty, 50, ["AMOUNT_MISMATCH", "PRICE_OUTLIER"]),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "GENERIC-1", level: 1 });
+    await user.type(
+      screen.getByRole("searchbox", { name: "품목 또는 파일 검색" }),
+      "REMOTE NEEDLE",
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "REMOTE NEEDLE", level: 1 }),
+    ).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/search=REMOTE\+NEEDLE/),
+      expect.anything(),
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("after_id=")),
+    ).toBe(false);
+  });
+
+  it("uses server facets to select a reason that exists only after page 50", async () => {
+    const firstFifty = Array.from({ length: 50 }, (_, index) => ({
+      ...firstItem,
+      raw_item_id: index + 1,
+      decision: { ...firstItem.decision, id: index + 1 },
+    }));
+    const rare = {
+      ...secondItem,
+      raw_item_id: 51,
+      reason_code: "RARE_PAGE2_REASON",
+      decision: {
+        ...secondItem.decision,
+        id: 51,
+        reason_code: "RARE_PAGE2_REASON",
+      },
+    };
+    const reasons = ["AMOUNT_MISMATCH", "RARE_PAGE2_REASON"];
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("reason_code=RARE_PAGE2_REASON")
+        ? jsonResponse(queue([rare], null, reasons))
+        : jsonResponse(queue(firstFifty, 50, reasons)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "검토 사유 필터" }),
+      "RARE_PAGE2_REASON",
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "SENSOR", level: 1 }),
+    ).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("reason_code=RARE_PAGE2_REASON"),
+      expect.anything(),
+    );
+  });
+
+  it("continues keyset pagination inside the active server search", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("search=BEARING") && url.includes("after_id=7")) {
+        return jsonResponse(queue([secondItem], null));
+      }
+      if (url.includes("search=BEARING")) {
+        return jsonResponse(queue([firstItem], 7));
+      }
+      return jsonResponse(queue([firstItem]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.type(
+      screen.getByRole("searchbox", { name: "품목 또는 파일 검색" }),
+      "BEARING",
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "다음 항목 불러오기" }),
+    );
+
+    expect(await screen.findByRole("button", { name: /SENSOR/ })).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/search=BEARING.*after_id=7|after_id=7.*search=BEARING/),
       expect.anything(),
     );
   });

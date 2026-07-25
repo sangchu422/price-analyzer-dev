@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -32,11 +32,20 @@ export function CleansingReviewPage() {
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
+  const inspectorHeadingRef = useRef<HTMLHeadingElement>(null);
+  const focusAfterDecisionRef = useRef(false);
+  const debouncedSearch = useDebouncedValue(search.trim(), 300);
 
   const queue = useInfiniteQuery({
-    queryKey: ["cleansing-review"],
+    queryKey: ["cleansing-review", debouncedSearch, reason],
     initialPageParam: undefined as number | undefined,
-    queryFn: ({ pageParam, signal }) => getReviewQueue(pageParam, signal),
+    queryFn: ({ pageParam, signal }) =>
+      getReviewQueue({
+        afterId: pageParam,
+        search: debouncedSearch || undefined,
+        reasonCode: reason || undefined,
+        signal,
+      }),
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 
@@ -47,42 +56,29 @@ export function CleansingReviewPage() {
       ),
     [queue.data, resolvedIds],
   );
-  const filteredItems = useMemo(() => {
-    const needle = search.trim().toLocaleLowerCase("ko");
-    return items.filter((item) => {
-      const searchable = [
-        item.raw.item_name,
-        item.normalized.item_name,
-        item.source.logical_name,
-        item.source.path,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLocaleLowerCase("ko");
-      return (
-        (!needle || searchable.includes(needle)) &&
-        (!reason || item.reason_code === reason)
-      );
-    });
-  }, [items, reason, search]);
   const availableReasons = useMemo(
     () => [
       ...new Set([
         ...(reason ? [reason] : []),
-        ...items.map((item) => item.reason_code),
+        ...(queue.data?.pages[0]?.available_reason_codes ?? []),
       ]),
     ],
-    [items, reason],
+    [queue.data, reason],
   );
 
-  const effectiveSelectedId = filteredItems.some(
+  const effectiveSelectedId = items.some(
     (item) => item.raw_item_id === selectedId,
   )
     ? selectedId
-    : filteredItems[0]?.raw_item_id ?? null;
+    : items[0]?.raw_item_id ?? null;
   const selected =
-    filteredItems.find((item) => item.raw_item_id === effectiveSelectedId) ??
+    items.find((item) => item.raw_item_id === effectiveSelectedId) ??
     null;
+  useEffect(() => {
+    if (!focusAfterDecisionRef.current) return;
+    focusAfterDecisionRef.current = false;
+    inspectorHeadingRef.current?.focus();
+  }, [selected?.raw_item_id]);
 
   const mutation = useMutation({
     mutationFn: (variables: DecisionMutationVariables) =>
@@ -94,6 +90,7 @@ export function CleansingReviewPage() {
         expected_current_decision_id: variables.expectedDecisionId,
       }),
     onSuccess: (_data, variables) => {
+      focusAfterDecisionRef.current = true;
       setResolvedIds((current) => new Set(current).add(variables.rawItemId));
       setNotice({ kind: "success", text: "판단이 저장되었습니다." });
       void queryClient.invalidateQueries({ queryKey: ["cleansing-review"] });
@@ -113,7 +110,10 @@ export function CleansingReviewPage() {
       }
       setNotice({
         kind: "error",
-        text: "판단을 저장하지 못했습니다. 내용을 확인하고 다시 시도해 주세요.",
+        text:
+          error instanceof ApiError
+            ? `판단을 저장하지 못했습니다: ${error.message.slice(0, 300)}`
+            : "판단을 저장하지 못했습니다. 내용을 확인하고 다시 시도해 주세요.",
       });
     },
   });
@@ -130,7 +130,8 @@ export function CleansingReviewPage() {
       />
     );
   }
-  if (items.length === 0) {
+  const hasActiveFilter = Boolean(debouncedSearch || reason);
+  if (items.length === 0 && !hasActiveFilter) {
     return (
       <StateScreen
         message={
@@ -165,7 +166,7 @@ export function CleansingReviewPage() {
 
       <div className="workspace">
         <ReviewQueue
-          items={filteredItems}
+          items={items}
           availableReasons={availableReasons}
           selectedId={effectiveSelectedId}
           search={search}
@@ -196,7 +197,9 @@ export function CleansingReviewPage() {
               )}
             </div>
           )}
-          {selected && <ItemInspector item={selected} />}
+          {selected && (
+            <ItemInspector item={selected} headingRef={inspectorHeadingRef} />
+          )}
           {selected && (
             <DecisionBar
               key={selected.raw_item_id}
@@ -244,4 +247,13 @@ function StateScreen({
       {action}
     </main>
   );
+}
+
+function useDebouncedValue<T>(value: T, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timeout);
+  }, [delay, value]);
+  return debounced;
 }
