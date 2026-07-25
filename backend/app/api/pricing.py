@@ -7,8 +7,14 @@ from decimal import Decimal, ROUND_HALF_UP
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -117,7 +123,25 @@ class ApprovedObservationResponse(BaseModel):
     raw_item_id: int
     clean_decision_id: int
     membership_decision_id: int
+    metadata_version_id: int | None
+    metadata: MetadataAuditResponse | None
     source: PriceSourceResponse
+
+
+class StandardItemAuditResponse(BaseModel):
+    id: int
+    version_number: int
+    canonical_name: str
+    canonical_spec: str | None
+    canonical_unit: str | None
+
+
+class MetadataAuditResponse(BaseModel):
+    id: int
+    version_number: int
+    supplier_name: str | None
+    quote_date: date | None
+    project_name: str | None
 
 
 class PriceVersionResponse(BaseModel):
@@ -129,10 +153,14 @@ class PriceVersionResponse(BaseModel):
     latest_quote_date: date | None
     prices: PriceStatisticsResponse
     calculation_version: str
-    draft_fingerprint: str
+    audit_status: Literal["CAPTURED", "LEGACY_BACKFILL"]
+    draft_fingerprint: str | None
+    standard_item_version: StandardItemAuditResponse | None
     excluded_count: int
     review_required_count: int
     exclusions: list[PriceExclusionResponse]
+    exclusion_context_valid: bool
+    exclusion_context_error: str | None
     approved_by: str
     approved_at: datetime
     observations: list[ApprovedObservationResponse]
@@ -141,6 +169,8 @@ class PriceVersionResponse(BaseModel):
 class PriceVersionHistoryResponse(BaseModel):
     standard_item_id: int
     versions: list[PriceVersionResponse]
+    next_cursor: int | None
+    limit: int
 
 
 def _decimal(value: object) -> str:
@@ -252,6 +282,10 @@ def _observation_source(row: StandardPriceObservation) -> PriceSource:
 
 
 def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
+    exclusions, context_valid, context_error = _safe_exclusion_context(
+        version.exclusion_context_json
+    )
+    item_version = version.standard_item_version
     return {
         "id": version.id,
         "standard_item_id": version.standard_item_id,
@@ -266,10 +300,24 @@ def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
             "maximum": _decimal(version.maximum_price),
         },
         "calculation_version": version.calculation_version,
+        "audit_status": version.audit_status.value,
         "draft_fingerprint": version.draft_fingerprint,
+        "standard_item_version": (
+            None
+            if item_version is None
+            else {
+                "id": item_version.id,
+                "version_number": item_version.version_number,
+                "canonical_name": item_version.canonical_name,
+                "canonical_spec": item_version.canonical_spec,
+                "canonical_unit": item_version.canonical_unit,
+            }
+        ),
         "excluded_count": version.excluded_count,
         "review_required_count": version.review_required_count,
-        "exclusions": json.loads(version.exclusion_context_json),
+        "exclusions": exclusions,
+        "exclusion_context_valid": context_valid,
+        "exclusion_context_error": context_error,
         "approved_by": version.approved_by,
         "approved_at": version.approved_at,
         "observations": [
@@ -277,6 +325,22 @@ def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
                 "raw_item_id": row.raw_item_id,
                 "clean_decision_id": row.clean_decision_id,
                 "membership_decision_id": row.membership_decision_id,
+                "metadata_version_id": row.metadata_version_id,
+                "metadata": (
+                    None
+                    if row.metadata_version is None
+                    else {
+                        "id": row.metadata_version.id,
+                        "version_number": (
+                            row.metadata_version.version_number
+                        ),
+                        "supplier_name": (
+                            row.metadata_version.supplier_name
+                        ),
+                        "quote_date": row.metadata_version.quote_date,
+                        "project_name": row.metadata_version.project_name,
+                    }
+                ),
                 "source": _source_payload(_observation_source(row)),
             }
             for row in sorted(
@@ -284,6 +348,19 @@ def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
             )
         ],
     }
+
+
+def _safe_exclusion_context(
+    value: str,
+) -> tuple[list[dict[str, object]], bool, str | None]:
+    try:
+        parsed = json.loads(value)
+        validated = TypeAdapter(list[PriceExclusionResponse]).validate_python(
+            parsed
+        )
+    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+        return [], False, f"INVALID_STORED_EXCLUSION_CONTEXT: {exc}"
+    return [row.model_dump(mode="json") for row in validated], True, None
 
 
 def _raise_pricing_error(session: Session, exc: Exception) -> None:
@@ -346,12 +423,22 @@ def get_price_draft(
 def get_price_versions(
     standard_item_id: int,
     session: Session = Depends(get_session),
+    *,
+    after_id: int | None = Query(None, ge=0),
+    limit: int = Query(50, ge=1, le=100),
 ) -> dict[str, object]:
     try:
-        versions = standard_price_versions(session, standard_item_id)
+        versions, next_cursor = standard_price_versions(
+            session,
+            standard_item_id,
+            after_id=after_id,
+            limit=limit,
+        )
         return {
             "standard_item_id": standard_item_id,
             "versions": [_version_payload(row) for row in versions],
+            "next_cursor": next_cursor,
+            "limit": limit,
         }
     except Exception as exc:
         _raise_pricing_error(session, exc)

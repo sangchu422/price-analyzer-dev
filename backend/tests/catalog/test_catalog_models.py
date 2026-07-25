@@ -707,9 +707,13 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
             "standard_item",
             "item_membership_decision",
         },
-        "standard_price_version": {"standard_item"},
+        "standard_price_version": {
+            "standard_item",
+            "standard_item_version",
+        },
         "standard_price_observation": {
             "clean_decision",
+            "document_metadata_version",
             "item_membership_decision",
             "standard_price_version",
         },

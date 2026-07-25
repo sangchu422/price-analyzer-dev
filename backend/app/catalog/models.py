@@ -34,6 +34,11 @@ class MembershipStatus(StrEnum):
     REJECTED = "REJECTED"
 
 
+class PriceAuditStatus(StrEnum):
+    CAPTURED = "CAPTURED"
+    LEGACY_BACKFILL = "LEGACY_BACKFILL"
+
+
 class CatalogIntegrityError(RuntimeError):
     """Raised when an ORM write would create mutable catalog evidence."""
 
@@ -290,9 +295,14 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             name="ck_standard_price_value_order",
         ),
         CheckConstraint(
-            "length(draft_fingerprint) = 64 "
-            "AND draft_fingerprint NOT GLOB '*[^0-9a-f]*'",
-            name="ck_standard_price_draft_fingerprint",
+            "(audit_status = 'CAPTURED' "
+            "AND standard_item_version_id IS NOT NULL "
+            "AND draft_fingerprint IS NOT NULL "
+            "AND length(draft_fingerprint) = 64 "
+            "AND draft_fingerprint NOT GLOB '*[^0-9a-f]*') "
+            "OR (audit_status = 'LEGACY_BACKFILL' "
+            "AND draft_fingerprint IS NULL)",
+            name="ck_standard_price_audit_capture",
         ),
         CheckConstraint(
             "excluded_count >= 0 AND review_required_count >= 0",
@@ -316,6 +326,10 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
         ForeignKey("standard_item.id", ondelete="RESTRICT"),
         index=True,
     )
+    standard_item_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("standard_item_version.id", ondelete="RESTRICT"),
+        index=True,
+    )
     version_number: Mapped[int] = mapped_column(Integer)
     observation_count: Mapped[int] = mapped_column(Integer)
     supplier_count: Mapped[int] = mapped_column(Integer)
@@ -325,11 +339,18 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
     average_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     maximum_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     calculation_version: Mapped[str] = mapped_column(String(100))
-    draft_fingerprint: Mapped[str] = mapped_column(
-        String(64),
-        default="0" * 64,
-        server_default=text("'" + ("0" * 64) + "'"),
+    audit_status: Mapped[PriceAuditStatus] = mapped_column(
+        Enum(
+            PriceAuditStatus,
+            name="price_audit_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=PriceAuditStatus.LEGACY_BACKFILL,
+        server_default=text("'LEGACY_BACKFILL'"),
     )
+    draft_fingerprint: Mapped[str | None] = mapped_column(String(64))
     excluded_count: Mapped[int] = mapped_column(
         Integer,
         default=0,
@@ -355,6 +376,10 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
     standard_item: Mapped[StandardItem] = relationship(
         "StandardItem",
         back_populates="price_versions",
+    )
+    standard_item_version: Mapped[StandardItemVersion | None] = relationship(
+        "StandardItemVersion",
+        foreign_keys=[standard_item_version_id],
     )
     observations: Mapped[list[StandardPriceObservation]] = relationship(
         "StandardPriceObservation",
@@ -452,6 +477,10 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
         server_default=text("'INCLUDED'"),
     )
     membership_decision_id: Mapped[int] = mapped_column(index=True)
+    metadata_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_metadata_version.id", ondelete="RESTRICT"),
+        index=True,
+    )
     membership_status: Mapped[MembershipStatus] = mapped_column(
         Enum(
             MembershipStatus,
@@ -485,6 +514,10 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
         ],
         overlaps="clean_decision,standard_price_version",
     )
+    metadata_version: Mapped[DocumentMetadataVersion | None] = relationship(
+        "DocumentMetadataVersion",
+        foreign_keys=[metadata_version_id],
+    )
 
 
 @event.listens_for(Session, "before_flush")
@@ -507,9 +540,55 @@ def validate_new_standard_price_evidence(
                     "a new standard price version must include exactly "
                     "observation_count normalized observations"
                 )
+            if (
+                row.audit_status is PriceAuditStatus.CAPTURED
+                and row.standard_item_version is not None
+                and (
+                    (
+                        row.standard_item_version.standard_item_id
+                        is not None
+                        and row.standard_item_version.standard_item_id
+                        != row.standard_item_id
+                    )
+                    or (
+                        row.standard_item_version.standard_item_id
+                        is None
+                        and row.standard_item_version.standard_item
+                        is not row.standard_item
+                    )
+                )
+            ):
+                raise CatalogIntegrityError(
+                    "captured standard item version must belong to "
+                    "the priced standard item"
+                )
         elif isinstance(row, StandardPriceObservation):
             if row.standard_price_version not in new_rows:
                 raise CatalogIntegrityError(
                     "price observations may only be created atomically "
                     "with a new standard price version"
                 )
+            if row.metadata_version is not None:
+                source_document = (
+                    row.clean_decision.raw_item.source_variant.document
+                )
+                metadata_document_id = (
+                    row.metadata_version.source_document_id
+                )
+                wrong_document = (
+                    source_document.id is not None
+                    and metadata_document_id is not None
+                    and source_document.id != metadata_document_id
+                ) or (
+                    (
+                        source_document.id is None
+                        or metadata_document_id is None
+                    )
+                    and source_document
+                    is not row.metadata_version.source_document
+                )
+                if wrong_document:
+                    raise CatalogIntegrityError(
+                        "observation metadata must belong to its "
+                        "source document"
+                    )

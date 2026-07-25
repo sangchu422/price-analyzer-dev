@@ -9,25 +9,28 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import (
+    Session,
+    contains_eager,
+    joinedload,
+    selectinload,
+)
 
 from app.catalog.models import (
     DocumentMetadataVersion,
     ItemMembershipDecision,
     MembershipStatus,
+    PriceAuditStatus,
     StandardItem,
     StandardItemVersion,
     StandardPriceObservation,
     StandardPriceVersion,
 )
-from app.catalog.service import (
-    current_document_metadata,
-    current_membership,
-    current_standard_item_version,
-)
+from app.catalog.service import current_standard_item_version
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.types import EXACT_DECIMAL_MAX, EXACT_DECIMAL_QUANTUM
+from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 
 
@@ -81,6 +84,7 @@ class PriceObservationDraft:
     source: PriceSource
     clean_decision: CleanDecision
     membership_decision: ItemMembershipDecision
+    metadata_version: DocumentMetadataVersion | None
 
 
 ExclusionReason = Literal[
@@ -154,9 +158,11 @@ def _current_item_version(
     return version
 
 
-def _source(raw: RawQuoteItem) -> PriceSource:
-    variant = raw.source_variant
-    document = variant.document
+def _source(
+    raw: RawQuoteItem,
+    variant: SourceVariant,
+    document: SourceDocument,
+) -> PriceSource:
     return PriceSource(
         document_id=document.id,
         logical_name=document.logical_name,
@@ -166,14 +172,6 @@ def _source(raw: RawQuoteItem) -> PriceSource:
         source_page=raw.source_page,
         source_row=raw.source_row,
     )
-
-
-def _current_metadata(
-    session: Session, document_id: int
-) -> DocumentMetadataVersion | None:
-    return current_document_metadata(session, document_id)
-
-
 def _same_unit(observation: str | None, canonical: str | None) -> bool:
     if canonical is None:
         return True
@@ -243,37 +241,101 @@ def _fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _candidate_raw_items(
+def _current_evidence_rows(
     session: Session, standard_item_id: int
-) -> list[RawQuoteItem]:
-    raw_ids = select(ItemMembershipDecision.raw_item_id).where(
+) -> list[
+    tuple[
+        RawQuoteItem,
+        CleanDecision | None,
+        ItemMembershipDecision | None,
+        SourceVariant,
+        SourceDocument,
+        DocumentMetadataVersion | None,
+    ]
+]:
+    candidate_ids = (
+        select(ItemMembershipDecision.raw_item_id)
+        .where(
         ItemMembershipDecision.standard_item_id == standard_item_id,
         ItemMembershipDecision.status == MembershipStatus.MATCHED,
-    )
-    return list(
-        session.scalars(
-            select(RawQuoteItem)
-            .where(RawQuoteItem.id.in_(raw_ids))
-            .order_by(RawQuoteItem.id)
         )
+        .distinct()
+        .subquery()
     )
-
-
-def _latest_clean(
-    session: Session, raw_item_id: int
-) -> CleanDecision | None:
-    return session.scalar(
-        select(CleanDecision)
-        .where(CleanDecision.raw_item_id == raw_item_id)
-        .order_by(CleanDecision.id.desc())
-        .limit(1)
+    latest_clean = (
+        select(
+            CleanDecision.raw_item_id.label("raw_item_id"),
+            func.max(CleanDecision.id).label("decision_id"),
+        )
+        .group_by(CleanDecision.raw_item_id)
+        .subquery()
     )
-
-
-def _latest_membership(
-    session: Session, raw_item_id: int
-) -> ItemMembershipDecision | None:
-    return current_membership(session, raw_item_id)
+    latest_membership = (
+        select(
+            ItemMembershipDecision.raw_item_id.label("raw_item_id"),
+            func.max(ItemMembershipDecision.id).label("decision_id"),
+        )
+        .group_by(ItemMembershipDecision.raw_item_id)
+        .subquery()
+    )
+    latest_metadata = (
+        select(
+            DocumentMetadataVersion.source_document_id.label("document_id"),
+            func.max(DocumentMetadataVersion.id).label("metadata_id"),
+        )
+        .group_by(DocumentMetadataVersion.source_document_id)
+        .subquery()
+    )
+    statement = (
+        select(
+            RawQuoteItem,
+            CleanDecision,
+            ItemMembershipDecision,
+            SourceVariant,
+            SourceDocument,
+            DocumentMetadataVersion,
+        )
+        .join(candidate_ids, candidate_ids.c.raw_item_id == RawQuoteItem.id)
+        .join(
+            SourceVariant,
+            SourceVariant.id == RawQuoteItem.source_variant_id,
+        )
+        .join(
+            SourceDocument,
+            SourceDocument.id == SourceVariant.document_id,
+        )
+        .outerjoin(
+            latest_clean,
+            latest_clean.c.raw_item_id == RawQuoteItem.id,
+        )
+        .outerjoin(
+            CleanDecision,
+            CleanDecision.id == latest_clean.c.decision_id,
+        )
+        .outerjoin(
+            latest_membership,
+            latest_membership.c.raw_item_id == RawQuoteItem.id,
+        )
+        .outerjoin(
+            ItemMembershipDecision,
+            ItemMembershipDecision.id
+            == latest_membership.c.decision_id,
+        )
+        .outerjoin(
+            latest_metadata,
+            latest_metadata.c.document_id == SourceDocument.id,
+        )
+        .outerjoin(
+            DocumentMetadataVersion,
+            DocumentMetadataVersion.id == latest_metadata.c.metadata_id,
+        )
+        .options(
+            contains_eager(RawQuoteItem.source_variant)
+            .contains_eager(SourceVariant.document)
+        )
+        .order_by(RawQuoteItem.id)
+    )
+    return [tuple(row) for row in session.execute(statement).all()]
 
 
 def _calculate_standard_price(
@@ -292,9 +354,14 @@ def _calculate_standard_price(
         "MISSING_OR_INVALID_PRICE": 0,
         "UNIT_INCOMPATIBLE": 0,
     }
-    for raw in _candidate_raw_items(session, standard_item_id):
-        clean = _latest_clean(session, raw.id)
-        membership = _latest_membership(session, raw.id)
+    for (
+        raw,
+        clean,
+        membership,
+        variant,
+        document,
+        metadata,
+    ) in _current_evidence_rows(session, standard_item_id):
         reason: ExclusionReason | None = None
         if clean is None or clean.status != CleanStatus.INCLUDED:
             reason = (
@@ -330,15 +397,12 @@ def _calculate_standard_price(
                         if membership is None
                         else membership.standard_item_id
                     ),
-                    source=_source(raw),
+                    source=_source(raw, variant, document),
                 )
             )
             continue
         assert clean is not None and clean.unit_price is not None
         assert membership is not None
-        metadata = _current_metadata(
-            session, raw.source_variant.document_id
-        )
         observations.append(
             PriceObservationDraft(
                 raw_item_id=raw.id,
@@ -352,9 +416,10 @@ def _calculate_standard_price(
                     None if metadata is None else metadata.supplier_name
                 ),
                 quote_date=None if metadata is None else metadata.quote_date,
-                source=_source(raw),
+                source=_source(raw, variant, document),
                 clean_decision=clean,
                 membership_decision=membership,
+                metadata_version=metadata,
             )
         )
     if not observations:
@@ -420,17 +485,37 @@ def current_standard_price_version(
 
 
 def standard_price_versions(
-    session: Session, standard_item_id: int
-) -> list[StandardPriceVersion]:
+    session: Session,
+    standard_item_id: int,
+    *,
+    after_id: int | None = None,
+    limit: int = 50,
+) -> tuple[list[StandardPriceVersion], int | None]:
     if session.get(StandardItem, standard_item_id) is None:
         raise PricingNotFound("standard item not found")
-    return list(
-        session.scalars(
-            select(StandardPriceVersion)
-            .where(StandardPriceVersion.standard_item_id == standard_item_id)
-            .order_by(StandardPriceVersion.version_number.desc())
+    statement = (
+        select(StandardPriceVersion)
+        .where(StandardPriceVersion.standard_item_id == standard_item_id)
+        .order_by(StandardPriceVersion.id)
+        .limit(limit + 1)
+        .options(
+            joinedload(StandardPriceVersion.standard_item_version),
+            selectinload(StandardPriceVersion.observations)
+            .joinedload(StandardPriceObservation.clean_decision)
+            .joinedload(CleanDecision.raw_item)
+            .joinedload(RawQuoteItem.source_variant)
+            .joinedload(SourceVariant.document),
+            selectinload(StandardPriceVersion.observations).joinedload(
+                StandardPriceObservation.metadata_version
+            ),
         )
     )
+    if after_id is not None:
+        statement = statement.where(StandardPriceVersion.id > after_id)
+    rows = list(session.scalars(statement))
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    return page, page[-1].id if has_more and page else None
 
 
 def approve_standard_price(
@@ -459,6 +544,11 @@ def approve_standard_price(
     version_number = 1 if current is None else current.version_number + 1
     version = StandardPriceVersion(
         standard_item_id=standard_item_id,
+        standard_item_version_id=draft.standard_item_version_id,
+        standard_item_version=session.get(
+            StandardItemVersion,
+            draft.standard_item_version_id,
+        ),
         version_number=version_number,
         observation_count=draft.observation_count,
         supplier_count=draft.supplier_count,
@@ -476,6 +566,7 @@ def approve_standard_price(
             EXACT_DECIMAL_QUANTUM, rounding=ROUND_HALF_UP
         ),
         calculation_version=draft.calculation_version,
+        audit_status=PriceAuditStatus.CAPTURED,
         draft_fingerprint=draft.fingerprint,
         excluded_count=draft.context.excluded_count,
         review_required_count=draft.context.review_required_count,
@@ -486,6 +577,7 @@ def approve_standard_price(
         StandardPriceObservation(
             clean_decision=row.clean_decision,
             membership_decision=row.membership_decision,
+            metadata_version=row.metadata_version,
         )
         for row in draft.observations
     ]

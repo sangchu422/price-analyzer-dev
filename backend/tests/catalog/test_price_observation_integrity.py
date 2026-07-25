@@ -14,6 +14,7 @@ from app.catalog.models import (
     StandardItem,
     StandardPriceObservation,
     StandardPriceVersion,
+    DocumentMetadataVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
@@ -192,6 +193,28 @@ def test_observation_cannot_be_appended_to_persisted_price_version() -> None:
                     membership_decision=second_membership,
                 )
             )
+        with pytest.raises(CatalogIntegrityError):
+            session.flush()
+
+
+def test_observation_rejects_metadata_from_another_document() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    graph = _graph()
+    other_document = SourceDocument(logical_name="other.xlsx")
+    wrong_metadata = DocumentMetadataVersion(
+        source_document=other_document,
+        version_number=1,
+        supplier_name="WRONG",
+        quote_date=None,
+        project_name=None,
+        decided_by="buyer",
+    )
+    graph[6].metadata_version = wrong_metadata
+    with Session(engine) as session:
+        session.add_all(
+            [graph[0], graph[1], graph[5], other_document]
+        )
         with pytest.raises(CatalogIntegrityError):
             session.flush()
 

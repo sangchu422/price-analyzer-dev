@@ -5,7 +5,7 @@ from decimal import Decimal
 import json
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
@@ -280,6 +280,12 @@ def test_approval_atomically_persists_version_and_normalized_evidence() -> None:
             draft.decision_ids
         )
         assert version.draft_fingerprint == draft.fingerprint
+        assert version.standard_item_version_id == (
+            draft.standard_item_version_id
+        )
+        assert {
+            row.metadata_version_id for row in version.observations
+        } == {None}
         assert version.excluded_count == 0
         assert version.review_required_count == 0
         assert version.exclusion_context_json == "[]"
@@ -468,3 +474,45 @@ def test_calculation_does_not_autoflush_pending_decisions() -> None:
         assert draft.decision_ids == (included.id,)
         assert pending.id is None
         assert pending in session.new
+
+
+def _calculation_select_count(observation_count: int) -> int:
+    with _session() as session:
+        item = _item(session)
+        for row in range(1, observation_count + 1):
+            _observation(
+                session,
+                item,
+                row=row,
+                price=str(100 + row),
+                supplier=f"S{row}",
+                quote_date=date(2026, 7, min(row, 28)),
+            )
+        engine = session.get_bind()
+        statements = 0
+
+        def count_selects(
+            conn: object,
+            cursor: object,
+            statement: str,
+            parameters: object,
+            context: object,
+            executemany: bool,
+        ) -> None:
+            nonlocal statements
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements += 1
+
+        event.listen(engine, "before_cursor_execute", count_selects)
+        try:
+            calculate_standard_price(session, item.id)
+        finally:
+            event.remove(engine, "before_cursor_execute", count_selects)
+        return statements
+
+
+def test_price_draft_query_count_is_bounded_as_members_grow() -> None:
+    one = _calculation_select_count(1)
+    many = _calculation_select_count(20)
+    assert one <= 4
+    assert many == one

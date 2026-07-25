@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
@@ -16,6 +17,7 @@ from app.catalog.models import (
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.api.pricing import _safe_exclusion_context
 
 
 def _seed(session: Session) -> StandardItem:
@@ -109,9 +111,44 @@ def test_pricing_api_draft_approval_and_history(
     assert approved.status_code == 201
     assert approved.json()["version_number"] == 1
     assert approved.json()["draft_fingerprint"] == draft["fingerprint"]
+    assert approved.json()["audit_status"] == "CAPTURED"
+    assert approved.json()["standard_item_version"] == {
+        "id": item.versions[0].id,
+        "version_number": 1,
+        "canonical_name": "BEARING",
+        "canonical_spec": "6204 ZZ",
+        "canonical_unit": "EA",
+    }
     assert approved.json()["excluded_count"] == 0
     assert approved.json()["review_required_count"] == 0
     assert approved.json()["exclusions"] == []
+    api_session.add(
+        StandardItemVersion(
+            standard_item_id=item.id,
+            version_number=2,
+            canonical_name="BEARING UPDATED",
+            canonical_spec="6204 ZZ",
+            canonical_unit="EA",
+            created_by="buyer",
+        )
+    )
+    first_document = api_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.logical_name == "quote-1.xlsx"
+        )
+    )
+    assert first_document is not None
+    api_session.add(
+        DocumentMetadataVersion(
+            source_document_id=first_document.id,
+            version_number=2,
+            supplier_name="A UPDATED",
+            quote_date=date(2026, 8, 1),
+            project_name="CHANGED",
+            decided_by="buyer",
+        )
+    )
+    api_session.commit()
     history = client.get(
         f"/api/pricing/standard-items/{item.id}/versions"
     )
@@ -121,6 +158,14 @@ def test_pricing_api_draft_approval_and_history(
     assert history.json()["versions"][0]["draft_fingerprint"] == (
         draft["fingerprint"]
     )
+    assert history.json()["versions"][0]["standard_item_version"][
+        "canonical_name"
+    ] == "BEARING"
+    assert {
+        row["metadata"]["supplier_name"]
+        for row in history.json()["versions"][0]["observations"]
+        if row["metadata"] is not None
+    } == {"A", "B"}
 
 
 def test_pricing_api_returns_typed_stale_error(
@@ -244,3 +289,120 @@ def test_price_history_returns_frozen_exclusion_audit(
     ).json()["versions"][0]
     assert history["excluded_count"] == 1
     assert history["exclusions"] == approved["exclusions"]
+
+
+def test_price_history_cursor_pagination_and_bounded_queries(
+    client: TestClient, api_session: Session
+) -> None:
+    item = _seed(api_session)
+    for row in range(3, 21):
+        document = SourceDocument(logical_name=f"quote-{row}.xlsx")
+        variant = SourceVariant(
+            document=document,
+            path=f"quote-{row}.xlsx",
+            sha256=f"{row:064x}",
+            extension=".xlsx",
+            security_state="UNLOCKED",
+            selected_for_parsing_at_ingest=True,
+        )
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_row=row,
+            item_name_raw="BEARING",
+            parser_name="xlsx",
+            parser_version="1",
+        )
+        api_session.add_all(
+            [
+                CleanDecision(
+                    raw_item=raw,
+                    status=CleanStatus.INCLUDED,
+                    reason_code="VALID",
+                    item_name_norm="BEARING",
+                    unit_norm="EA",
+                    unit_price=Decimal(100 + row),
+                    rule_version="clean-v1",
+                ),
+                ItemMembershipDecision(
+                    raw_item=raw,
+                    standard_item=item,
+                    status=MembershipStatus.MATCHED,
+                    method="MANUAL",
+                    evidence_json="{}",
+                    decided_by="buyer",
+                ),
+            ]
+        )
+    api_session.commit()
+    draft = client.get(
+        f"/api/pricing/standard-items/{item.id}/draft"
+    ).json()
+    current_id = None
+    created_ids: list[int] = []
+    for _ in range(3):
+        response = client.post(
+            f"/api/pricing/standard-items/{item.id}/versions",
+            json={
+                "expected_fingerprint": draft["fingerprint"],
+                "expected_current_version_id": current_id,
+                "approved_by": "buyer",
+            },
+        )
+        assert response.status_code == 201
+        current_id = response.json()["id"]
+        created_ids.append(current_id)
+
+    statements = 0
+    engine = api_session.get_bind()
+
+    def count_selects(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        nonlocal statements
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements += 1
+
+    event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        first = client.get(
+            f"/api/pricing/standard-items/{item.id}/versions?limit=2"
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_selects)
+    assert first.status_code == 200
+    assert [row["id"] for row in first.json()["versions"]] == created_ids[:2]
+    assert first.json()["next_cursor"] == created_ids[1]
+    assert first.json()["limit"] == 2
+    assert statements <= 5
+
+    second = client.get(
+        f"/api/pricing/standard-items/{item.id}/versions"
+        f"?after_id={first.json()['next_cursor']}&limit=2"
+    )
+    assert [row["id"] for row in second.json()["versions"]] == created_ids[2:]
+    assert second.json()["next_cursor"] is None
+
+
+def test_history_marks_migrated_rows_as_legacy_without_fake_fingerprint(
+    client: TestClient,
+) -> None:
+    # The migration contract is covered against a populated 0005 database;
+    # this endpoint schema must preserve an explicit nullable distinction.
+    schema = client.get("/openapi.json").json()
+    version_schema = schema["components"]["schemas"]["PriceVersionResponse"]
+    assert "audit_status" in version_schema["properties"]
+
+
+def test_invalid_stored_exclusion_context_degrades_safely() -> None:
+    exclusions, valid, error = _safe_exclusion_context(
+        '[{"reason":"UNKNOWN"}]'
+    )
+    assert exclusions == []
+    assert valid is False
+    assert error is not None
+    assert error.startswith("INVALID_STORED_EXCLUSION_CONTEXT")

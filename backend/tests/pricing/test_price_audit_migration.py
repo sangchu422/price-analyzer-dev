@@ -9,6 +9,7 @@ import sys
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
+from app.db.sqlite import configure_sqlite
 
 
 def _alembic(
@@ -42,7 +43,9 @@ def test_0006_backfills_price_audit_and_round_trips(
     assert upgrade_0005.returncode == 0, (
         upgrade_0005.stdout + upgrade_0005.stderr
     )
-    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    engine = configure_sqlite(
+        create_engine(f"sqlite:///{database.as_posix()}")
+    )
     with engine.begin() as connection:
         connection.exec_driver_sql(
             "INSERT INTO source_document (logical_name) VALUES ('seed.xlsx')"
@@ -71,6 +74,14 @@ def test_0006_backfills_price_audit_and_round_trips(
             """
         )
         connection.exec_driver_sql("INSERT INTO standard_item DEFAULT VALUES")
+        connection.exec_driver_sql(
+            """
+            INSERT INTO standard_item_version (
+                standard_item_id, version_number, canonical_name,
+                aliases_json, created_by
+            ) VALUES (1, 1, 'BEARING', '[]', 'buyer')
+            """
+        )
         connection.exec_driver_sql(
             """
             INSERT INTO item_membership_decision (
@@ -107,6 +118,8 @@ def test_0006_backfills_price_audit_and_round_trips(
         for row in inspect(engine).get_columns("standard_price_version")
     }
     assert {
+        "standard_item_version_id",
+        "audit_status",
         "draft_fingerprint",
         "excluded_count",
         "review_required_count",
@@ -115,7 +128,8 @@ def test_0006_backfills_price_audit_and_round_trips(
     with engine.connect() as connection:
         row = connection.exec_driver_sql(
             """
-            SELECT draft_fingerprint, excluded_count,
+            SELECT standard_item_version_id, audit_status,
+                   draft_fingerprint, excluded_count,
                    review_required_count, exclusion_context_json
             FROM standard_price_version WHERE id = 1
             """
@@ -123,10 +137,43 @@ def test_0006_backfills_price_audit_and_round_trips(
         assert connection.exec_driver_sql(
             "PRAGMA foreign_key_check"
         ).all() == []
-    assert row.draft_fingerprint == f"{1:064x}"
+    assert row.standard_item_version_id is None
+    assert row.audit_status == "LEGACY_BACKFILL"
+    assert row.draft_fingerprint is None
     assert row.excluded_count == 0
     assert row.review_required_count == 0
     assert json.loads(row.exclusion_context_json) == []
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            INSERT INTO standard_price_version (
+                standard_item_id, standard_item_version_id,
+                version_number, observation_count, supplier_count,
+                minimum_price, median_price, average_price, maximum_price,
+                calculation_version, audit_status, draft_fingerprint,
+                excluded_count, review_required_count,
+                exclusion_context_json, approved_by
+            ) VALUES (
+                1, 1, 2, 1, 0, 1000000, 1000000, 1000000, 1000000,
+                'v2', 'CAPTURED', ?, 0, 0, '[]', 'buyer'
+            )
+            """,
+            ("a" * 64,),
+        )
+    observation_columns = {
+        row["name"]
+        for row in inspect(engine).get_columns(
+            "standard_price_observation"
+        )
+    }
+    assert "metadata_version_id" in observation_columns
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            """
+            SELECT metadata_version_id
+            FROM standard_price_observation WHERE id = 1
+            """
+        ).scalar_one_or_none() is None
     with engine.begin() as connection:
         for column, value in (
             ("draft_fingerprint", "invalid"),
@@ -152,6 +199,8 @@ def test_0006_backfills_price_audit_and_round_trips(
         for row in inspect(engine).get_columns("standard_price_version")
     }
     assert not {
+        "standard_item_version_id",
+        "audit_status",
         "draft_fingerprint",
         "excluded_count",
         "review_required_count",
@@ -160,7 +209,7 @@ def test_0006_backfills_price_audit_and_round_trips(
     with engine.connect() as connection:
         assert connection.exec_driver_sql(
             "SELECT COUNT(*) FROM standard_price_version"
-        ).scalar_one() == 1
+        ).scalar_one() == 2
         assert connection.exec_driver_sql(
             "SELECT COUNT(*) FROM standard_price_observation"
         ).scalar_one() == 1
