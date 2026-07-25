@@ -16,6 +16,7 @@ from app.catalog.models import (
     DocumentMetadataVersion,
     ItemMembershipDecision,
     MembershipStatus,
+    PriceAuditStatus,
     StandardItem,
     StandardItemVersion,
     StandardPriceObservation,
@@ -107,6 +108,7 @@ def _catalog_graph() -> tuple[
     )
     price = StandardPriceVersion(
         standard_item=item,
+        standard_item_version=item_version,
         version_number=1,
         observation_count=1,
         supplier_count=1,
@@ -116,6 +118,8 @@ def _catalog_graph() -> tuple[
         average_price=Decimal("120"),
         maximum_price=Decimal("120"),
         calculation_version="STANDARD_PRICE_V1",
+        audit_status=PriceAuditStatus.CAPTURED,
+        draft_fingerprint="a" * 64,
         approved_by="buyer-1",
     )
     StandardPriceObservation(

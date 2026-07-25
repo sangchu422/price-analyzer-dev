@@ -11,7 +11,9 @@ from app.catalog.models import (
     CatalogIntegrityError,
     ItemMembershipDecision,
     MembershipStatus,
+    PriceAuditStatus,
     StandardItem,
+    StandardItemVersion,
     StandardPriceObservation,
     StandardPriceVersion,
     DocumentMetadataVersion,
@@ -78,9 +80,17 @@ def _graph():
     raw_item = _raw(variant, 2, "BEARING")
     clean = _decision(raw_item, "120")
     item = StandardItem()
+    item_version = StandardItemVersion(
+        standard_item=item,
+        version_number=1,
+        canonical_name="BEARING",
+        canonical_unit="EA",
+        created_by="buyer",
+    )
     membership = _membership(raw_item, item)
     price = StandardPriceVersion(
         standard_item=item,
+        standard_item_version=item_version,
         version_number=1,
         observation_count=1,
         supplier_count=0,
@@ -89,6 +99,8 @@ def _graph():
         average_price=Decimal("120"),
         maximum_price=Decimal("120"),
         calculation_version="v1",
+        audit_status=PriceAuditStatus.CAPTURED,
+        draft_fingerprint="a" * 64,
         approved_by="buyer",
     )
     observation = StandardPriceObservation(
@@ -97,6 +109,159 @@ def _graph():
         membership_decision=membership,
     )
     return document, item, raw_item, clean, membership, price, observation
+
+
+def test_session_rejects_new_legacy_price_version() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    graph = _graph()
+    graph[5].audit_status = PriceAuditStatus.LEGACY_BACKFILL
+    graph[5].draft_fingerprint = None
+    with Session(engine) as session:
+        session.add_all([graph[0], graph[1], graph[5]])
+        with pytest.raises(CatalogIntegrityError):
+            session.flush()
+
+
+def test_captured_price_rejects_id_only_version_from_other_item() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    document = SourceDocument(logical_name="quote.xlsx")
+    variant = SourceVariant(
+        document=document,
+        path="quote.xlsx",
+        sha256="a" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    raw = _raw(variant, 1, "BEARING")
+    clean = _decision(raw, "100")
+    target = StandardItem()
+    target_version = StandardItemVersion(
+        standard_item=target,
+        version_number=1,
+        canonical_name="BEARING",
+        created_by="buyer",
+    )
+    membership = _membership(raw, target)
+    other = StandardItem()
+    other_version = StandardItemVersion(
+        standard_item=other,
+        version_number=1,
+        canonical_name="MOTOR",
+        created_by="buyer",
+    )
+    with Session(engine) as session:
+        session.add_all(
+            [
+                document,
+                clean,
+                membership,
+                target,
+                target_version,
+                other,
+                other_version,
+            ]
+        )
+        session.flush()
+        price = StandardPriceVersion(
+            standard_item=target,
+            standard_item_version_id=other_version.id,
+            version_number=1,
+            observation_count=1,
+            supplier_count=0,
+            minimum_price=Decimal("100"),
+            median_price=Decimal("100"),
+            average_price=Decimal("100"),
+            maximum_price=Decimal("100"),
+            calculation_version="v1",
+            audit_status=PriceAuditStatus.CAPTURED,
+            draft_fingerprint="b" * 64,
+            approved_by="buyer",
+        )
+        StandardPriceObservation(
+            standard_price_version=price,
+            clean_decision=clean,
+            membership_decision=membership,
+        )
+        session.add(price)
+        with pytest.raises(CatalogIntegrityError):
+            session.flush()
+
+
+def test_observation_rejects_id_only_metadata_from_other_document() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    other_document = SourceDocument(logical_name="other.xlsx")
+    wrong_metadata = DocumentMetadataVersion(
+        source_document=other_document,
+        version_number=1,
+        supplier_name="WRONG",
+        quote_date=None,
+        project_name=None,
+        decided_by="buyer",
+    )
+    with Session(engine) as session:
+        session.add_all([other_document, wrong_metadata])
+        session.commit()
+        wrong_id = wrong_metadata.id
+    graph = _graph()
+    graph[6].metadata_version_id = wrong_id
+    with Session(engine) as session:
+        session.add_all([graph[0], graph[1], graph[5]])
+        with pytest.raises(CatalogIntegrityError):
+            session.flush()
+
+
+def test_database_rejects_cross_item_standard_version_target() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    target = StandardItem()
+    target_version = StandardItemVersion(
+        standard_item=target,
+        version_number=1,
+        canonical_name="BEARING",
+        created_by="buyer",
+    )
+    other = StandardItem()
+    other_version = StandardItemVersion(
+        standard_item=other,
+        version_number=1,
+        canonical_name="MOTOR",
+        created_by="buyer",
+    )
+    with Session(engine) as session:
+        session.add_all([target, target_version, other, other_version])
+        session.commit()
+        target_id = target.id
+        other_version_id = other_version.id
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO standard_price_version (
+                        standard_item_id, standard_item_version_id,
+                        version_number, observation_count, supplier_count,
+                        minimum_price, median_price, average_price,
+                        maximum_price, calculation_version, audit_status,
+                        draft_fingerprint, excluded_count,
+                        review_required_count, exclusion_context_json,
+                        approved_by
+                    ) VALUES (
+                        :target_id, :other_version_id, 1, 1, 0,
+                        1000000, 1000000, 1000000, 1000000,
+                        'v1', 'CAPTURED', :fingerprint, 0, 0, '[]', 'buyer'
+                    )
+                    """
+                ),
+                {
+                    "target_id": target_id,
+                    "other_version_id": other_version_id,
+                    "fingerprint": "c" * 64,
+                },
+            )
 
 
 def test_normalized_price_observation_persists_valid_decision_links() -> None:

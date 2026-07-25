@@ -167,6 +167,22 @@ def test_0006_backfills_price_audit_and_round_trips(
         )
     }
     assert "metadata_version_id" in observation_columns
+    item_version_unique_keys = {
+        tuple(row["column_names"])
+        for row in inspect(engine).get_unique_constraints(
+            "standard_item_version"
+        )
+    }
+    assert ("id", "standard_item_id") in item_version_unique_keys
+    price_version_foreign_keys = {
+        tuple(row["constrained_columns"]): tuple(row["referred_columns"])
+        for row in inspect(engine).get_foreign_keys(
+            "standard_price_version"
+        )
+    }
+    assert price_version_foreign_keys[
+        ("standard_item_version_id", "standard_item_id")
+    ] == ("id", "standard_item_id")
     with engine.connect() as connection:
         assert connection.exec_driver_sql(
             """

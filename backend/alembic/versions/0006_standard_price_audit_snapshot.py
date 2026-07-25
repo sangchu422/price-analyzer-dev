@@ -59,6 +59,11 @@ def _restore_price_observations() -> None:
 def upgrade() -> None:
     _detach_price_observations()
     try:
+        with op.batch_alter_table("standard_item_version") as batch_op:
+            batch_op.create_unique_constraint(
+                "uq_standard_item_version_evidence_key",
+                ["id", "standard_item_id"],
+            )
         with op.batch_alter_table("standard_price_version") as batch_op:
             batch_op.add_column(
                 sa.Column(
@@ -113,10 +118,10 @@ def upgrade() -> None:
                 )
             )
             batch_op.create_foreign_key(
-                "fk_standard_price_standard_item_version",
+                "fk_standard_price_item_version_target",
                 "standard_item_version",
-                ["standard_item_version_id"],
-                ["id"],
+                ["standard_item_version_id", "standard_item_id"],
+                ["id", "standard_item_id"],
                 ondelete="RESTRICT",
             )
             batch_op.create_check_constraint(
@@ -204,7 +209,7 @@ def downgrade() -> None:
                 type_="check",
             )
             batch_op.drop_constraint(
-                "fk_standard_price_standard_item_version",
+                "fk_standard_price_item_version_target",
                 type_="foreignkey",
             )
             batch_op.drop_column("exclusion_context_json")
@@ -213,5 +218,10 @@ def downgrade() -> None:
             batch_op.drop_column("draft_fingerprint")
             batch_op.drop_column("audit_status")
             batch_op.drop_column("standard_item_version_id")
+        with op.batch_alter_table("standard_item_version") as batch_op:
+            batch_op.drop_constraint(
+                "uq_standard_item_version_evidence_key",
+                type_="unique",
+            )
     finally:
         _restore_price_observations()

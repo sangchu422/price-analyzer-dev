@@ -82,6 +82,11 @@ class StandardItemVersion(_ImmutableCatalogRow, Base):
             "version_number",
             name="uq_standard_item_version_parent_number",
         ),
+        UniqueConstraint(
+            "id",
+            "standard_item_id",
+            name="uq_standard_item_version_evidence_key",
+        ),
         CheckConstraint(
             "version_number > 0",
             name="ck_standard_item_version_positive",
@@ -313,6 +318,15 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             "AND json_type(exclusion_context_json) = 'array'",
             name="ck_standard_price_exclusion_context_json",
         ),
+        ForeignKeyConstraint(
+            ["standard_item_version_id", "standard_item_id"],
+            [
+                "standard_item_version.id",
+                "standard_item_version.standard_item_id",
+            ],
+            name="fk_standard_price_item_version_target",
+            ondelete="RESTRICT",
+        ),
         {
             "info": {
                 "evidence_immutable": True,
@@ -327,7 +341,6 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
         index=True,
     )
     standard_item_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("standard_item_version.id", ondelete="RESTRICT"),
         index=True,
     )
     version_number: Mapped[int] = mapped_column(Integer)
@@ -347,7 +360,6 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             create_constraint=True,
             validate_strings=True,
         ),
-        default=PriceAuditStatus.LEGACY_BACKFILL,
         server_default=text("'LEGACY_BACKFILL'"),
     )
     draft_fingerprint: Mapped[str | None] = mapped_column(String(64))
@@ -540,24 +552,37 @@ def validate_new_standard_price_evidence(
                     "a new standard price version must include exactly "
                     "observation_count normalized observations"
                 )
-            if (
-                row.audit_status is PriceAuditStatus.CAPTURED
-                and row.standard_item_version is not None
-                and (
-                    (
-                        row.standard_item_version.standard_item_id
-                        is not None
-                        and row.standard_item_version.standard_item_id
-                        != row.standard_item_id
-                    )
-                    or (
-                        row.standard_item_version.standard_item_id
-                        is None
-                        and row.standard_item_version.standard_item
-                        is not row.standard_item
-                    )
+            if row.audit_status is not PriceAuditStatus.CAPTURED:
+                raise CatalogIntegrityError(
+                    "new standard price versions must use CAPTURED audit; "
+                    "LEGACY_BACKFILL is reserved for native migrations"
                 )
-            ):
+            item_version = row.standard_item_version
+            if item_version is None and row.standard_item_version_id is not None:
+                item_version = session.get(
+                    StandardItemVersion,
+                    row.standard_item_version_id,
+                )
+            if item_version is None:
+                raise CatalogIntegrityError(
+                    "captured standard price requires an existing "
+                    "standard item version"
+                )
+            target_item_id = row.standard_item_id
+            if target_item_id is None and row.standard_item is not None:
+                target_item_id = row.standard_item.id
+            wrong_target = (
+                item_version.standard_item_id is not None
+                and target_item_id is not None
+                and item_version.standard_item_id != target_item_id
+            ) or (
+                (
+                    item_version.standard_item_id is None
+                    or target_item_id is None
+                )
+                and item_version.standard_item is not row.standard_item
+            )
+            if wrong_target:
                 raise CatalogIntegrityError(
                     "captured standard item version must belong to "
                     "the priced standard item"
@@ -568,12 +593,25 @@ def validate_new_standard_price_evidence(
                     "price observations may only be created atomically "
                     "with a new standard price version"
                 )
-            if row.metadata_version is not None:
+            metadata_version = row.metadata_version
+            if (
+                metadata_version is None
+                and row.metadata_version_id is not None
+            ):
+                metadata_version = session.get(
+                    DocumentMetadataVersion,
+                    row.metadata_version_id,
+                )
+                if metadata_version is None:
+                    raise CatalogIntegrityError(
+                        "observation metadata version does not exist"
+                    )
+            if metadata_version is not None:
                 source_document = (
                     row.clean_decision.raw_item.source_variant.document
                 )
                 metadata_document_id = (
-                    row.metadata_version.source_document_id
+                    metadata_version.source_document_id
                 )
                 wrong_document = (
                     source_document.id is not None
@@ -585,7 +623,7 @@ def validate_new_standard_price_evidence(
                         or metadata_document_id is None
                     )
                     and source_document
-                    is not row.metadata_version.source_document
+                    is not metadata_version.source_document
                 )
                 if wrong_document:
                     raise CatalogIntegrityError(
