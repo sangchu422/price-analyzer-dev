@@ -4,8 +4,9 @@ import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Iterable
+from typing import Iterable, Sequence
 
+import numpy as np
 from rapidfuzz import fuzz
 
 from app.embeddings.base import (
@@ -230,6 +231,91 @@ def _embedding_scores(
     return scores, status
 
 
+def _embedding_scores_batch(
+    *,
+    queries: Sequence[MatchQuery],
+    embedding_client: EmbeddingClient | None,
+    embedding_index: EmbeddingIndex | None,
+) -> list[tuple[dict[int, float], str]]:
+    if not queries:
+        return []
+    if embedding_client is None and embedding_index is None:
+        return [({}, "DISABLED") for _ in queries]
+    if embedding_client is None or embedding_index is None:
+        return [({}, "UNAVAILABLE") for _ in queries]
+    unavailable = [({}, "UNAVAILABLE") for _ in queries]
+    try:
+        batch = embedding_client.embed(
+            [f"{query.name} {query.spec or ''}".strip() for query in queries]
+        )
+        if batch.model != embedding_index.metadata.model:
+            raise IndexMismatchError("embedding model mismatch")
+        if batch.dimension != embedding_index.metadata.dimension:
+            raise IndexMismatchError("embedding dimension mismatch")
+        vectors = np.asarray(batch.vectors, dtype=np.float32)
+        if vectors.shape != (
+            len(queries),
+            embedding_index.metadata.dimension,
+        ):
+            raise IndexMismatchError("embedding query batch is invalid")
+    except Exception:
+        # Embeddings are optional external evidence; a broken adapter or
+        # response contract must not abort deterministic lexical matching.
+        return unavailable
+    status = "MOCK_ONLY" if batch.model == "local-mock-v1" else "AVAILABLE"
+    results: list[tuple[dict[int, float], str]] = []
+    for vector in vectors:
+        try:
+            if not np.isfinite(vector).all():
+                raise IndexMismatchError(
+                    "embedding query vector must be finite"
+                )
+            scores = embedding_index.scores(vector)
+            if any(
+                not math.isfinite(float(score))
+                for score in scores.values()
+            ):
+                raise IndexMismatchError(
+                    "embedding scores must be finite"
+                )
+        except Exception:
+            # Preserve valid sibling vectors while isolating a bad query row.
+            results.append(({}, "UNAVAILABLE"))
+        else:
+            results.append((scores, status))
+    return results
+
+
+def rank_candidate_batch(
+    *,
+    queries: Sequence[MatchQuery],
+    items: Iterable[CandidateItem],
+    top_n: int = 10,
+    embedding_client: EmbeddingClient | None = None,
+    embedding_index: EmbeddingIndex | None = None,
+) -> list[list[CandidateScore]]:
+    """Rank several independent queries with at most one embedding call."""
+
+    _validate_top_n(top_n)
+    query_rows = list(queries)
+    candidate_items = tuple(items)
+    evidence = _embedding_scores_batch(
+        queries=query_rows,
+        embedding_client=embedding_client,
+        embedding_index=embedding_index,
+    )
+    return [
+        _rank_candidates(
+            query=query,
+            items=candidate_items,
+            top_n=top_n,
+            semantic_scores=row_evidence[0],
+            embedding_status=row_evidence[1],
+        )
+        for query, row_evidence in zip(query_rows, evidence, strict=True)
+    ]
+
+
 def rank_candidates(
     *,
     query: MatchQuery,
@@ -240,20 +326,33 @@ def rank_candidates(
 ) -> list[CandidateScore]:
     """Rank compatible candidates without making a membership decision."""
 
-    if isinstance(top_n, bool) or not isinstance(top_n, int):
-        raise TypeError("top_n must be an integer")
-    if top_n <= 0:
-        raise ValueError("top_n must be positive")
-
-    query_name = normalize_search_text(query.name)
-    query_spec = normalize_search_text(query.spec)
-    query_unit = normalize_search_text(query.unit)
-    query_tokens = _normalized_tokens(query.name, query.spec)
+    _validate_top_n(top_n)
     semantic_scores, embedding_status = _embedding_scores(
         query=query,
         embedding_client=embedding_client,
         embedding_index=embedding_index,
     )
+    return _rank_candidates(
+        query=query,
+        items=items,
+        top_n=top_n,
+        semantic_scores=semantic_scores,
+        embedding_status=embedding_status,
+    )
+
+
+def _rank_candidates(
+    *,
+    query: MatchQuery,
+    items: Iterable[CandidateItem],
+    top_n: int,
+    semantic_scores: dict[int, float],
+    embedding_status: str,
+) -> list[CandidateScore]:
+    query_name = normalize_search_text(query.name)
+    query_spec = normalize_search_text(query.spec)
+    query_unit = normalize_search_text(query.unit)
+    query_tokens = _normalized_tokens(query.name, query.spec)
     results: list[CandidateScore] = []
 
     for item in items:
@@ -349,3 +448,10 @@ def rank_candidates(
             candidate.standard_item_id,
         ),
     )[:top_n]
+
+
+def _validate_top_n(top_n: int) -> None:
+    if isinstance(top_n, bool) or not isinstance(top_n, int):
+        raise TypeError("top_n must be an integer")
+    if top_n <= 0:
+        raise ValueError("top_n must be positive")

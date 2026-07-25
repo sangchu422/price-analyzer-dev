@@ -72,6 +72,13 @@ class AnalysisCandidateResponse(BaseModel):
     final_score: Decimal
     method: str
     matched_tokens: list[str]
+    embedding_status: Literal[
+        "DISABLED",
+        "UNAVAILABLE",
+        "AVAILABLE",
+        "MOCK_ONLY",
+    ]
+    embedding_model: str | None
 
 
 class AnalysisLineResponse(BaseModel):

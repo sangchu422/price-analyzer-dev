@@ -21,7 +21,12 @@ from app.catalog.service import CandidateEmbeddingRuntime
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.ingestion.service import preferred_variant_for
-from app.matching.candidates import CandidateItem, MatchQuery, rank_candidates
+from app.matching.candidates import (
+    CandidateItem,
+    CandidateScore,
+    MatchQuery,
+    rank_candidate_batch,
+)
 from app.matching.normalization import normalize_search_text
 from app.quotes.models import RawQuoteItem
 
@@ -76,6 +81,8 @@ class AnalysisCandidate:
     final_score: Decimal
     method: str
     matched_tokens: tuple[str, ...]
+    embedding_status: str
+    embedding_model: str | None
 
 
 @dataclass(frozen=True)
@@ -255,6 +262,12 @@ def _analyze_document(
             break
         cursor = rows[-1][0].id
         exhausted = len(rows) < chunk_size
+        candidates_by_raw_id = _candidate_batch(
+            rows=rows,
+            projection=projection,
+            runtime=runtime,
+            top_n=top_n,
+        )
         for raw, variant, clean, membership in rows:
             line = _classify_line(
                 raw=raw,
@@ -263,10 +276,9 @@ def _analyze_document(
                 clean=clean,
                 membership=membership,
                 projection=projection,
-                runtime=runtime,
                 review_percent=review_percent,
                 high_percent=high_percent,
-                top_n=top_n,
+                candidates=candidates_by_raw_id.get(raw.id, ()),
             )
             if statuses is not None and line.match_status not in statuses:
                 continue
@@ -415,10 +427,9 @@ def _classify_line(
     clean: CleanDecision | None,
     membership: ItemMembershipDecision | None,
     projection: _CatalogProjection,
-    runtime: CandidateEmbeddingRuntime,
     review_percent: Decimal,
     high_percent: Decimal,
-    top_n: int,
+    candidates: tuple[AnalysisCandidate, ...],
 ) -> AnalysisLine:
     source = AnalysisSource(
         document_id=document.id,
@@ -524,13 +535,6 @@ def _classify_line(
             market_price_lookup_status="NOT_REQUIRED",
             candidates=(),
         )
-    candidates = _candidates(
-        raw=raw,
-        clean=clean,
-        projection=projection,
-        runtime=runtime,
-        top_n=top_n,
-    )
     if candidates:
         return _unpriced_line(
             **base,
@@ -592,28 +596,75 @@ def _unpriced_line(
     )
 
 
-def _candidates(
+def _candidate_batch(
     *,
-    raw: RawQuoteItem,
-    clean: CleanDecision,
+    rows: list[
+        tuple[
+            RawQuoteItem,
+            SourceVariant,
+            CleanDecision | None,
+            ItemMembershipDecision | None,
+        ]
+    ],
     projection: _CatalogProjection,
     runtime: CandidateEmbeddingRuntime,
     top_n: int,
-) -> tuple[AnalysisCandidate, ...]:
-    name = clean.item_name_norm or raw.item_name_raw or ""
-    if not normalize_search_text(name):
-        return ()
-    scores = rank_candidates(
-        query=MatchQuery(
-            name=name,
-            spec=clean.spec_norm,
-            unit=clean.unit_norm,
-        ),
+) -> dict[int, tuple[AnalysisCandidate, ...]]:
+    eligible: list[tuple[RawQuoteItem, CleanDecision, MatchQuery]] = []
+    for raw, _, clean, membership in rows:
+        if clean is None or clean.status != CleanStatus.INCLUDED:
+            continue
+        if (
+            membership is not None
+            and membership.status == MembershipStatus.MATCHED
+        ):
+            continue
+        name = clean.item_name_norm or raw.item_name_raw or ""
+        if not normalize_search_text(name):
+            continue
+        eligible.append(
+            (
+                raw,
+                clean,
+                MatchQuery(
+                    name=name,
+                    spec=clean.spec_norm,
+                    unit=clean.unit_norm,
+                ),
+            )
+        )
+    if not eligible or not projection.candidate_items:
+        return {raw.id: () for raw, _, _ in eligible}
+    ranked = rank_candidate_batch(
+        queries=[query for _, _, query in eligible],
         items=projection.candidate_items,
         top_n=top_n,
         embedding_client=runtime.client,
         embedding_index=runtime.index,
     )
+    return {
+        raw.id: _analysis_candidates(
+            scores,
+            projection,
+            embedding_model=(
+                runtime.model
+                or (
+                    runtime.index.metadata.model
+                    if runtime.index is not None
+                    else None
+                )
+            ),
+        )
+        for (raw, _, _), scores in zip(eligible, ranked, strict=True)
+    }
+
+
+def _analysis_candidates(
+    scores: list[CandidateScore],
+    projection: _CatalogProjection,
+    *,
+    embedding_model: str | None,
+) -> tuple[AnalysisCandidate, ...]:
     return tuple(
         AnalysisCandidate(
             standard_item_id=score.standard_item_id,
@@ -632,6 +683,12 @@ def _candidates(
             final_score=score.final_score,
             method=score.method,
             matched_tokens=score.matched_tokens,
+            embedding_status=score.embedding_status,
+            embedding_model=(
+                embedding_model
+                if score.embedding_status in {"AVAILABLE", "MOCK_ONLY"}
+                else None
+            ),
         )
         for score in scores
     )

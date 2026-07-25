@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
+import numpy as np
+import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
@@ -12,10 +15,13 @@ from app.catalog.models import (
     StandardItem,
     StandardItemVersion,
 )
+from app.catalog.service import CandidateEmbeddingRuntime
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
+from app.embeddings.base import EmbeddingBatch
+from app.embeddings.index import EmbeddingIndex, IndexMetadata
 from app.pricing.service import (
     approve_standard_price,
     calculate_standard_price,
@@ -381,6 +387,100 @@ def test_analysis_does_not_flush_pending_membership_mutations() -> None:
         assert result.lines[0].match_status == "CANDIDATE"
         assert pending.id is None
         assert stored == 0
+
+
+class _CountingClient:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts) -> EmbeddingBatch:
+        self.calls.append(list(texts))
+        return EmbeddingBatch(
+            vectors=np.repeat(
+                np.array([[1.0, 0.0]], dtype=np.float32),
+                len(texts),
+                axis=0,
+            ),
+            model="office-model",
+            dimension=2,
+        )
+
+
+def _embedding_runtime(
+    item: StandardItem,
+    client: _CountingClient,
+) -> CandidateEmbeddingRuntime:
+    return CandidateEmbeddingRuntime(
+        client=client,
+        index=EmbeddingIndex(
+            item_ids=np.array([item.id]),
+            vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+            metadata=IndexMetadata(
+                model="office-model",
+                dimension=2,
+                item_count=1,
+                catalog_fingerprint="test",
+                normalization_version="match-v1",
+                created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+            ),
+        ),
+        model="office-model",
+    )
+
+
+@pytest.mark.parametrize("row_count", [5, 100])
+def test_analysis_batches_candidate_embeddings_per_page(
+    row_count: int,
+) -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        quote = _document(session, f"batch-{row_count}.xlsx")
+        for row in range(1, row_count + 1):
+            _row(session, quote, row=row)
+        client = _CountingClient()
+
+        result = analyze_document(
+            session,
+            quote.id,
+            limit=100,
+            embedding_runtime=_embedding_runtime(item, client),
+        )
+
+        assert len(result.lines) == row_count
+        assert len(client.calls) == 1
+        assert len(client.calls[0]) == row_count
+        assert result.lines[0].candidates[0].embedding_status == "AVAILABLE"
+        assert result.lines[0].candidates[0].embedding_model == "office-model"
+
+
+def test_analysis_embeds_only_included_unmatched_rows() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        quote = _document(session, "eligible-batch.xlsx")
+        _row(session, quote, row=1)
+        _row(
+            session,
+            quote,
+            row=2,
+            status=CleanStatus.EXCLUDED,
+        )
+        _row(
+            session,
+            quote,
+            row=3,
+            status=CleanStatus.REVIEW_REQUIRED,
+        )
+        _row(session, quote, row=4, item=item)
+        client = _CountingClient()
+
+        analyze_document(
+            session,
+            quote.id,
+            embedding_runtime=_embedding_runtime(item, client),
+        )
+
+        assert len(client.calls) == 1
+        assert len(client.calls[0]) == 1
 
 
 def _select_count(row_count: int) -> int:

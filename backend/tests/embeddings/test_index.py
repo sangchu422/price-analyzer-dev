@@ -14,7 +14,12 @@ from app.embeddings.index import (
     save_index,
 )
 from app.embeddings.mock import DeterministicMockEmbeddingClient
-from app.matching.candidates import CandidateItem, MatchQuery, rank_candidates
+from app.matching.candidates import (
+    CandidateItem,
+    MatchQuery,
+    rank_candidate_batch,
+    rank_candidates,
+)
 
 
 def metadata(*, model: str = "mock-v1", count: int = 2) -> IndexMetadata:
@@ -420,3 +425,138 @@ def test_ranking_rejects_nonfinite_score_defensively(
     assert result.embedding_status == "UNAVAILABLE"
     assert result.embedding_score is None
     assert result.final_score == pytest.approx(1)
+
+
+class CountingBatchClient:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts):
+        from app.embeddings.base import EmbeddingBatch
+
+        self.calls.append(list(texts))
+        return EmbeddingBatch(
+            vectors=np.repeat(
+                np.array([[1.0, 0.0]], dtype=np.float32),
+                len(texts),
+                axis=0,
+            ),
+            model="office-model",
+            dimension=2,
+        )
+
+
+def test_candidate_batch_embeds_one_hundred_queries_once() -> None:
+    client = CountingBatchClient()
+    index = EmbeddingIndex(
+        item_ids=np.array([1]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="catalog-a",
+            normalization_version="match-v1",
+            created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    )
+    queries = [
+        MatchQuery(name=f"ROTARY SUPPORT {number}", spec=None, unit="EA")
+        for number in range(100)
+    ]
+
+    results = rank_candidate_batch(
+        queries=queries,
+        items=[CandidateItem(1, "BALL BEARING", unit="EA")],
+        embedding_client=client,
+        embedding_index=index,
+    )
+
+    assert len(client.calls) == 1
+    assert len(client.calls[0]) == 100
+    assert len(results) == 100
+    assert all(
+        row[0].embedding_status == "AVAILABLE"
+        and row[0].method == "EMBEDDING_CANDIDATE_V1"
+        for row in results
+    )
+
+
+class PartiallyMalformedClient:
+    def embed(self, texts):
+        class MalformedBatch:
+            vectors = np.array(
+                [[1.0, 0.0], [np.nan, 0.0]],
+                dtype=np.float32,
+            )
+            model = "office-model"
+            dimension = 2
+
+        return MalformedBatch()
+
+
+def test_candidate_batch_falls_back_per_malformed_query_vector() -> None:
+    index = EmbeddingIndex(
+        item_ids=np.array([1]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="catalog-a",
+            normalization_version="match-v1",
+            created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    )
+
+    results = rank_candidate_batch(
+        queries=[
+            MatchQuery(name="ROTARY SUPPORT", spec=None, unit="EA"),
+            MatchQuery(name="BALL BEARING", spec=None, unit="EA"),
+        ],
+        items=[CandidateItem(1, "BALL BEARING", unit="EA")],
+        embedding_client=PartiallyMalformedClient(),
+        embedding_index=index,
+    )
+
+    assert results[0][0].embedding_status == "AVAILABLE"
+    assert results[0][0].method == "EMBEDDING_CANDIDATE_V1"
+    assert results[1][0].embedding_status == "UNAVAILABLE"
+    assert results[1][0].embedding_score is None
+    assert results[1][0].method == "EXACT_RULE_V1"
+
+
+def test_candidate_batch_keeps_unit_and_model_gates() -> None:
+    client = CountingBatchClient()
+    index = EmbeddingIndex(
+        item_ids=np.array([1]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="catalog-a",
+            normalization_version="match-v1",
+            created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    )
+
+    results = rank_candidate_batch(
+        queries=[
+            MatchQuery(name="BEARING", spec="6204-ZZ", unit="M"),
+            MatchQuery(name="BEARING", spec="6204-2RS", unit="EA"),
+        ],
+        items=[
+            CandidateItem(
+                1,
+                "BEARING",
+                spec="6204-ZZ",
+                unit="EA",
+            )
+        ],
+        embedding_client=client,
+        embedding_index=index,
+    )
+
+    assert len(client.calls) == 1
+    assert results == [[], []]
