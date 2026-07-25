@@ -7,7 +7,7 @@ import httpx
 import numpy as np
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
@@ -22,6 +22,7 @@ from app.catalog.service import (
     build_candidate_embedding_runtime,
     candidate_matches,
     catalog_fingerprint,
+    standard_item_members,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import Settings
@@ -313,3 +314,79 @@ def test_only_currently_included_rows_can_receive_membership(
         )
 
     assert blocked.value.error_code == "RAW_ITEM_NOT_INCLUDED"
+
+
+def test_member_projection_eager_loads_source_in_constant_queries(
+    session: Session,
+) -> None:
+    first_raw = _raw_item(session)
+    item = _standard_item(session)
+    raw_items = [first_raw]
+    for row_number in (3, 4):
+        raw = RawQuoteItem(
+            source_variant=first_raw.source_variant,
+            source_row=row_number,
+            item_name_raw="BEARING",
+            parser_name="xlsx",
+            parser_version="1",
+        )
+        session.add_all(
+            [
+                CleanDecision(
+                    raw_item=raw,
+                    status=CleanStatus.INCLUDED,
+                    reason_code="VALID",
+                    item_name_norm="BEARING",
+                    rule_version="clean-v1",
+                ),
+                ItemMembershipDecision(
+                    raw_item=raw,
+                    standard_item=item,
+                    status=MembershipStatus.MATCHED,
+                    method="MANUAL",
+                    evidence_json="{}",
+                    decided_by="buyer-1",
+                ),
+            ]
+        )
+        raw_items.append(raw)
+    session.add(
+        ItemMembershipDecision(
+            raw_item=first_raw,
+            standard_item=item,
+            status=MembershipStatus.MATCHED,
+            method="MANUAL",
+            evidence_json="{}",
+            decided_by="buyer-1",
+        )
+    )
+    session.commit()
+    engine = session.get_bind()
+    item_id = item.id
+    counts: list[int] = []
+
+    for limit in (1, 3):
+        statements = 0
+
+        def count_query(_conn, _cursor, statement, *_args) -> None:
+            nonlocal statements
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements += 1
+
+        event.listen(engine, "before_cursor_execute", count_query)
+        try:
+            session.expire_all()
+            page, _ = standard_item_members(
+                session,
+                item_id,
+                after_id=None,
+                limit=limit,
+            )
+            for raw, _clean, _membership in page:
+                assert raw.source_variant.document.logical_name
+        finally:
+            event.remove(engine, "before_cursor_execute", count_query)
+        counts.append(statements)
+
+    assert counts[0] == counts[1]
+    assert counts[1] <= 2

@@ -279,6 +279,135 @@ def test_members_include_provenance_and_only_currently_included_rows(
     assert after.json()["members"] == []
 
 
+def test_members_use_stable_raw_item_cursor_pagination(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _, first_raw = _source(api_session)
+    item = _create_standard_item(client)
+    raw_items = [first_raw]
+    for row_number in (8, 9):
+        raw = RawQuoteItem(
+            source_variant=first_raw.source_variant,
+            source_sheet="Sheet1",
+            source_row=row_number,
+            source_cells=f"A{row_number}:G{row_number}",
+            item_name_raw="Bearing",
+            spec_raw="6204 ZZ",
+            unit_raw="EA",
+            unit_price_raw="120",
+            parser_name="xlsx",
+            parser_version="1",
+        )
+        api_session.add(
+            CleanDecision(
+                raw_item=raw,
+                status=CleanStatus.INCLUDED,
+                reason_code="VALID",
+                item_name_norm="BEARING",
+                spec_norm="6204 ZZ",
+                unit_norm="EA",
+                unit_price=Decimal("120"),
+                rule_version="clean-v1",
+            )
+        )
+        raw_items.append(raw)
+    api_session.commit()
+    for raw in raw_items:
+        response = client.post(
+            f"/api/catalog/raw-items/{raw.id}/memberships",
+            json={
+                "standard_item_id": item["id"],
+                "status": "MATCHED",
+                "expected_current_decision_id": None,
+                "candidate_score": None,
+                "method": "MANUAL",
+                "evidence": {},
+                "decided_by": "buyer-1",
+                "reason_detail": "pagination fixture",
+            },
+        )
+        assert response.status_code == 201
+
+    first_page = client.get(
+        f"/api/catalog/standard-items/{item['id']}/members?limit=2"
+    )
+    first_payload = first_page.json()
+    second_page = client.get(
+        f"/api/catalog/standard-items/{item['id']}/members",
+        params={
+            "limit": 2,
+            "after_id": first_payload["next_cursor"],
+        },
+    )
+    second_payload = second_page.json()
+
+    assert first_page.status_code == 200
+    assert [row["raw_item_id"] for row in first_payload["members"]] == [
+        raw_items[0].id,
+        raw_items[1].id,
+    ]
+    assert first_payload["next_cursor"] == raw_items[1].id
+    assert first_payload["limit"] == 2
+    assert second_page.status_code == 200
+    assert [row["raw_item_id"] for row in second_payload["members"]] == [
+        raw_items[2].id
+    ]
+    assert second_payload["next_cursor"] is None
+
+
+def test_catalog_payload_bounds_are_enforced(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _, raw = _source(api_session)
+    oversized_alias = client.post(
+        "/api/catalog/standard-items",
+        json={
+            "canonical_name": "BEARING",
+            "canonical_spec": "6204",
+            "canonical_unit": "EA",
+            "aliases": ["X" * 501],
+            "created_by": "buyer-1",
+            "reason_detail": "invalid alias",
+        },
+    )
+    item = _create_standard_item(client)
+    nested: object = "value"
+    for _ in range(10):
+        nested = {"nested": nested}
+    deep_evidence = client.post(
+        f"/api/catalog/raw-items/{raw.id}/memberships",
+        json={
+            "standard_item_id": item["id"],
+            "status": "MATCHED",
+            "expected_current_decision_id": None,
+            "candidate_score": None,
+            "method": "MANUAL",
+            "evidence": {"root": nested},
+            "decided_by": "buyer-1",
+            "reason_detail": "invalid evidence",
+        },
+    )
+    oversized_evidence = client.post(
+        f"/api/catalog/raw-items/{raw.id}/memberships",
+        json={
+            "standard_item_id": item["id"],
+            "status": "MATCHED",
+            "expected_current_decision_id": None,
+            "candidate_score": None,
+            "method": "MANUAL",
+            "evidence": {"payload": "X" * 70_000},
+            "decided_by": "buyer-1",
+            "reason_detail": "invalid evidence size",
+        },
+    )
+
+    assert oversized_alias.status_code == 422
+    assert deep_evidence.status_code == 422
+    assert oversized_evidence.status_code == 422
+
+
 def test_item_metadata_and_document_metadata_append_versions(
     client: TestClient,
     api_session: Session,

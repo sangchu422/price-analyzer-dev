@@ -40,6 +40,10 @@ from app.quotes.models import RawQuoteItem
 
 
 router = APIRouter()
+MAX_ALIAS_LENGTH = 500
+MAX_ALIASES_TOTAL_LENGTH = 20_000
+MAX_EVIDENCE_JSON_BYTES = 65_536
+MAX_EVIDENCE_JSON_DEPTH = 8
 
 
 class AuditBody(BaseModel):
@@ -64,6 +68,12 @@ class StandardItemBody(AuditBody):
         cleaned = [value.strip() for value in values]
         if any(not value for value in cleaned):
             raise ValueError("aliases must not contain blank values")
+        if any(len(value) > MAX_ALIAS_LENGTH for value in cleaned):
+            raise ValueError(
+                f"each alias must be at most {MAX_ALIAS_LENGTH} characters"
+            )
+        if sum(map(len, cleaned)) > MAX_ALIASES_TOTAL_LENGTH:
+            raise ValueError("aliases payload is too large")
         if len(set(cleaned)) != len(cleaned):
             raise ValueError("aliases must be unique")
         return cleaned
@@ -99,6 +109,20 @@ class MembershipBody(AuditBody):
     def decision_actor_is_human(cls, value: str) -> str:
         if value.casefold() == "system":
             raise ValueError("SYSTEM cannot make a manual catalog decision")
+        return value
+
+    @field_validator("evidence")
+    @classmethod
+    def validate_evidence(cls, value: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) > MAX_EVIDENCE_JSON_BYTES:
+            raise ValueError("evidence JSON is too large")
+        if _json_depth_exceeds(value, MAX_EVIDENCE_JSON_DEPTH):
+            raise ValueError("evidence JSON is too deeply nested")
         return value
 
     @model_validator(mode="after")
@@ -275,12 +299,27 @@ class StandardItemMemberResponse(BaseModel):
 class StandardItemMembersResponse(BaseModel):
     standard_item_id: int
     members: list[StandardItemMemberResponse]
+    next_cursor: int | None
+    limit: int
 
 
 def _begin_immediate(session: Session) -> None:
     if session.in_transaction():
         raise RuntimeError("catalog mutation requires a fresh session")
     session.connection(execution_options={"sqlite_begin_mode": "IMMEDIATE"})
+
+
+def _json_depth_exceeds(value: Any, maximum: int) -> bool:
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > maximum:
+            return True
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+    return False
 
 
 def get_candidate_embedding_runtime(
@@ -588,9 +627,17 @@ def post_membership(
 def get_standard_item_members(
     standard_item_id: int,
     session: Session = Depends(get_session),
+    *,
+    after_id: int | None = Query(None, ge=0),
+    limit: int = Query(50, ge=1, le=100),
 ) -> dict[str, object]:
     try:
-        rows = standard_item_members(session, standard_item_id)
+        rows, next_cursor = standard_item_members(
+            session,
+            standard_item_id,
+            after_id=after_id,
+            limit=limit,
+        )
     except CatalogNotFound as exc:
         _raise_catalog_error(session, exc)
         raise AssertionError("unreachable")
@@ -618,6 +665,8 @@ def get_standard_item_members(
             }
             for raw, clean, membership in rows
         ],
+        "next_cursor": next_cursor,
+        "limit": limit,
     }
 
 

@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import httpx
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.catalog.models import (
     DocumentMetadataVersion,
@@ -234,7 +234,12 @@ def build_candidate_embedding_runtime(
     settings: Settings,
     transport: httpx.Client | None = None,
 ) -> CandidateEmbeddingRuntime:
-    """Build an optional runtime without networking until candidate scoring."""
+    """Build an optional runtime without networking until candidate scoring.
+
+    The index is intentionally revalidated per request for now. A later cache
+    must be keyed by the catalog fingerprint and invalidate atomically when a
+    standard-item version changes.
+    """
 
     if not settings.hchat_embedding_enabled:
         return CandidateEmbeddingRuntime(None, None, None)
@@ -590,7 +595,13 @@ def unmatched_included(
 def standard_item_members(
     session: Session,
     standard_item_id: int,
-) -> list[tuple[RawQuoteItem, CleanDecision, ItemMembershipDecision]]:
+    *,
+    after_id: int | None,
+    limit: int,
+) -> tuple[
+    list[tuple[RawQuoteItem, CleanDecision, ItemMembershipDecision]],
+    int | None,
+]:
     if session.get(StandardItem, standard_item_id) is None:
         raise CatalogNotFound("standard item not found")
     latest_membership = (
@@ -609,26 +620,38 @@ def standard_item_members(
         .group_by(CleanDecision.raw_item_id)
         .subquery()
     )
-    return [
-        (raw, clean, membership)
-        for raw, clean, membership in session.execute(
-            select(RawQuoteItem, CleanDecision, ItemMembershipDecision)
-            .join(
-                latest_membership,
-                latest_membership.c.raw_item_id == RawQuoteItem.id,
+    query = (
+        select(RawQuoteItem, CleanDecision, ItemMembershipDecision)
+        .options(
+            joinedload(RawQuoteItem.source_variant).joinedload(
+                SourceVariant.document
             )
-            .join(
-                ItemMembershipDecision,
-                ItemMembershipDecision.id
-                == latest_membership.c.decision_id,
-            )
-            .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
-            .join(CleanDecision, CleanDecision.id == latest_clean.c.decision_id)
-            .where(
-                ItemMembershipDecision.standard_item_id == standard_item_id,
-                ItemMembershipDecision.status == MembershipStatus.MATCHED,
-                CleanDecision.status == CleanStatus.INCLUDED,
-            )
-            .order_by(RawQuoteItem.id)
         )
+        .join(
+            latest_membership,
+            latest_membership.c.raw_item_id == RawQuoteItem.id,
+        )
+        .join(
+            ItemMembershipDecision,
+            ItemMembershipDecision.id == latest_membership.c.decision_id,
+        )
+        .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
+        .join(CleanDecision, CleanDecision.id == latest_clean.c.decision_id)
+        .where(
+            ItemMembershipDecision.standard_item_id == standard_item_id,
+            ItemMembershipDecision.status == MembershipStatus.MATCHED,
+            CleanDecision.status == CleanStatus.INCLUDED,
+        )
+    )
+    if after_id is not None:
+        query = query.where(RawQuoteItem.id > after_id)
+    rows = session.execute(
+        query.order_by(RawQuoteItem.id).limit(limit + 1)
+    ).all()
+    has_more = len(rows) > limit
+    page = [
+        (raw, clean, membership)
+        for raw, clean, membership in rows[:limit]
     ]
+    next_cursor = page[-1][0].id if has_more and page else None
+    return page, next_cursor
