@@ -198,11 +198,12 @@ class StandardPriceObservation(Base):
     standard_item_id: Mapped[int]
     raw_item_id: Mapped[int]
     clean_decision_id: Mapped[int]
+    clean_status: Mapped[CleanStatus]  # DB-constrained to INCLUDED
     membership_decision_id: Mapped[int]
     membership_status: Mapped[MembershipStatus]
 ```
 
-`StandardPriceObservation` uses composite `RESTRICT` foreign keys to prove that its clean decision and `MATCHED` membership belong to the same raw row and standard item as the price version. It has per-version unique constraints for raw rows, clean decisions, and membership decisions. Register all models in `app/db/models.py` and all history tables with the existing ORM and bulk-DML immutability guards. `StandardItem` is a stable identity row; its descriptive state exists only in append-only `StandardItemVersion`.
+`StandardPriceObservation` uses composite `RESTRICT` foreign keys to prove that its `INCLUDED` clean decision and `MATCHED` membership belong to the same raw row and standard item as the price version. It has per-version unique constraints for raw rows, clean decisions, and membership decisions. `StandardPriceVersion` and its observations must be created atomically through ORM construction; Session-level Core inserts are rejected because they bypass observation-count validation. Register all models in `app/db/models.py` and all history tables with the existing ORM and bulk-DML immutability guards. `StandardItem` is a stable identity row; its descriptive state exists only in append-only `StandardItemVersion`.
 
 - [ ] **Step 4: Add Alembic `0004`**
 

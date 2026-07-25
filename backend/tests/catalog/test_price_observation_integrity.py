@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, delete, text, update
+from sqlalchemy import create_engine, delete, insert, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -135,6 +135,36 @@ def test_new_price_version_requires_matching_observation_count() -> None:
             session.flush()
 
 
+@pytest.mark.parametrize("target", ["orm", "table"])
+def test_session_core_insert_cannot_create_parent_without_observations(
+    target: str,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        item = StandardItem()
+        session.add(item)
+        session.commit()
+        statement = insert(
+            StandardPriceVersion
+            if target == "orm"
+            else StandardPriceVersion.__table__
+        ).values(
+            standard_item_id=item.id,
+            version_number=1,
+            observation_count=1,
+            supplier_count=0,
+            minimum_price=1000000,
+            median_price=1000000,
+            average_price=1000000,
+            maximum_price=1000000,
+            calculation_version="v1",
+            approved_by="buyer",
+        )
+        with pytest.raises(ImmutableEvidenceError):
+            session.execute(statement)
+
+
 def test_observation_cannot_be_appended_to_persisted_price_version() -> None:
     engine = _engine()
     Base.metadata.create_all(engine)
@@ -164,6 +194,32 @@ def test_observation_cannot_be_appended_to_persisted_price_version() -> None:
             )
         with pytest.raises(CatalogIntegrityError):
             session.flush()
+
+
+@pytest.mark.parametrize("target", ["orm", "table"])
+def test_session_core_insert_cannot_append_to_persisted_price_version(
+    target: str,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    graph = _graph()
+    with Session(engine) as session:
+        session.add_all([graph[0], graph[1], graph[5]])
+        session.commit()
+        statement = insert(
+            StandardPriceObservation
+            if target == "orm"
+            else StandardPriceObservation.__table__
+        ).values(
+            standard_price_version_id=graph[5].id,
+            standard_item_id=graph[1].id,
+            raw_item_id=graph[2].id,
+            clean_decision_id=graph[3].id,
+            membership_decision_id=graph[4].id,
+            membership_status=MembershipStatus.MATCHED,
+        )
+        with pytest.raises(ImmutableEvidenceError):
+            session.execute(statement)
 
 
 @pytest.mark.parametrize(
@@ -296,6 +352,75 @@ def test_direct_sql_rejects_false_or_cross_target_evidence(
     with engine.begin() as connection:
         with pytest.raises(IntegrityError):
             _insert_observation(connection, **values)
+
+
+@pytest.mark.parametrize(
+    "clean_status",
+    [CleanStatus.EXCLUDED, CleanStatus.REVIEW_REQUIRED],
+)
+def test_orm_rejects_non_included_clean_evidence(
+    clean_status: CleanStatus,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    graph = _graph()
+    graph[3].status = clean_status
+    with Session(engine) as session:
+        session.add_all([graph[0], graph[1], graph[5]])
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@pytest.mark.parametrize(
+    "clean_status",
+    [CleanStatus.EXCLUDED, CleanStatus.REVIEW_REQUIRED],
+)
+def test_direct_sql_rejects_non_included_clean_evidence(
+    clean_status: CleanStatus,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    ids = _persist_adversarial_fixture(engine)
+    with engine.begin() as connection:
+        price_result = connection.execute(
+            text(
+                """
+                INSERT INTO standard_price_version (
+                    standard_item_id, version_number, observation_count,
+                    supplier_count, minimum_price, median_price,
+                    average_price, maximum_price, calculation_version,
+                    approved_by
+                ) VALUES (
+                    :item_id, 2, 1, 0, 120000000, 120000000,
+                    120000000, 120000000, 'v1', 'buyer'
+                )
+                """
+            ),
+            {"item_id": ids["item_id"]},
+        )
+        result = connection.execute(
+            text(
+                """
+                INSERT INTO clean_decision (
+                    raw_item_id, status, reason_code, rule_version
+                ) VALUES (:raw_item_id, :status, 'MANUAL', 'clean-v2')
+                """
+            ),
+            {
+                "raw_item_id": ids["raw_id"],
+                "status": clean_status.value,
+            },
+        )
+        with pytest.raises(IntegrityError):
+            _insert_observation(
+                connection,
+                price_id=price_result.lastrowid,
+                item_id=ids["item_id"],
+                raw_id=ids["raw_id"],
+                clean_id=result.lastrowid,
+                membership_id=ids["membership_id"],
+                membership_status=MembershipStatus.MATCHED.value,
+            )
 
 
 @pytest.mark.parametrize(

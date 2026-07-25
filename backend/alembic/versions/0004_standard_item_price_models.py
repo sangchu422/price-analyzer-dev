@@ -20,8 +20,8 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     with op.batch_alter_table("clean_decision") as batch_op:
         batch_op.create_unique_constraint(
-            "uq_clean_decision_id_raw_item",
-            ["id", "raw_item_id"],
+            "uq_clean_decision_evidence_key",
+            ["id", "raw_item_id", "status"],
         )
 
     op.create_table(
@@ -286,6 +286,20 @@ def upgrade() -> None:
         sa.Column("standard_item_id", sa.Integer(), nullable=False),
         sa.Column("raw_item_id", sa.Integer(), nullable=False),
         sa.Column("clean_decision_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "clean_status",
+            sa.Enum(
+                "INCLUDED",
+                "EXCLUDED",
+                "REVIEW_REQUIRED",
+                name="price_observation_clean_status",
+                native_enum=False,
+                create_constraint=True,
+                validate_strings=True,
+            ),
+            server_default=sa.text("'INCLUDED'"),
+            nullable=False,
+        ),
         sa.Column("membership_decision_id", sa.Integer(), nullable=False),
         sa.Column(
             "membership_status",
@@ -301,12 +315,20 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
+            "clean_status = 'INCLUDED'",
+            name="ck_standard_price_observation_included",
+        ),
+        sa.CheckConstraint(
             "membership_status = 'MATCHED'",
             name="ck_standard_price_observation_matched",
         ),
         sa.ForeignKeyConstraint(
-            ["clean_decision_id", "raw_item_id"],
-            ["clean_decision.id", "clean_decision.raw_item_id"],
+            ["clean_decision_id", "raw_item_id", "clean_status"],
+            [
+                "clean_decision.id",
+                "clean_decision.raw_item_id",
+                "clean_decision.status",
+            ],
             name="fk_price_observation_clean_raw",
             ondelete="RESTRICT",
         ),
@@ -458,6 +480,6 @@ def downgrade() -> None:
     op.drop_table("standard_item")
     with op.batch_alter_table("clean_decision") as batch_op:
         batch_op.drop_constraint(
-            "uq_clean_decision_id_raw_item",
+            "uq_clean_decision_evidence_key",
             type_="unique",
         )

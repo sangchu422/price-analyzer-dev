@@ -752,7 +752,9 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
             "standard_price_observation",
         )
     }
-    assert ("id", "raw_item_id") in unique_columns["clean_decision"]
+    assert ("id", "raw_item_id", "status") in unique_columns[
+        "clean_decision"
+    ]
     assert {
         ("id", "raw_item_id"),
         ("id", "raw_item_id", "standard_item_id", "status"),
@@ -776,8 +778,8 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         )
     }
     assert observation_foreign_keys[
-        ("clean_decision_id", "raw_item_id")
-    ] == ("clean_decision", ("id", "raw_item_id"))
+        ("clean_decision_id", "raw_item_id", "clean_status")
+    ] == ("clean_decision", ("id", "raw_item_id", "status"))
     assert observation_foreign_keys[
         (
             "membership_decision_id",
@@ -874,7 +876,7 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         assert connection.exec_driver_sql(
             "SELECT COUNT(*) FROM raw_quote_item"
         ).scalar_one() == 1
-    assert ("id", "raw_item_id") not in {
+    assert ("id", "raw_item_id", "status") not in {
         tuple(constraint["column_names"])
         for constraint in inspect(engine).get_unique_constraints(
             "clean_decision"

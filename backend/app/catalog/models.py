@@ -19,7 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
-from app.cleansing.models import CleanDecision
+from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
 from app.db.time import utc_now
 from app.db.types import ExactDecimal, NaiveUTCDateTime
@@ -242,6 +242,7 @@ class ItemMembershipDecision(_ImmutableCatalogRow, Base):
 
 
 class StandardPriceVersion(_ImmutableCatalogRow, Base):
+    __session_core_insert_forbidden__: ClassVar[bool] = True
     __tablename__ = "standard_price_version"
     __table_args__ = (
         UniqueConstraint(
@@ -278,7 +279,12 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             "AND average_price <= maximum_price",
             name="ck_standard_price_value_order",
         ),
-        {"info": {"evidence_immutable": True}},
+        {
+            "info": {
+                "evidence_immutable": True,
+                "session_core_insert_forbidden": True,
+            }
+        },
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -317,6 +323,7 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
     """Normalized evidence link belonging to one immutable price version."""
 
     __tablename__ = "standard_price_observation"
+    __session_core_insert_forbidden__: ClassVar[bool] = True
     __table_args__ = (
         UniqueConstraint(
             "standard_price_version_id",
@@ -334,6 +341,10 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
             name="uq_standard_price_observation_membership",
         ),
         CheckConstraint(
+            "clean_status = 'INCLUDED'",
+            name="ck_standard_price_observation_included",
+        ),
+        CheckConstraint(
             "membership_status = 'MATCHED'",
             name="ck_standard_price_observation_matched",
         ),
@@ -347,8 +358,12 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
-            ["clean_decision_id", "raw_item_id"],
-            ["clean_decision.id", "clean_decision.raw_item_id"],
+            ["clean_decision_id", "raw_item_id", "clean_status"],
+            [
+                "clean_decision.id",
+                "clean_decision.raw_item_id",
+                "clean_decision.status",
+            ],
             name="fk_price_observation_clean_raw",
             ondelete="RESTRICT",
         ),
@@ -368,7 +383,12 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
             name="fk_price_observation_membership_evidence",
             ondelete="RESTRICT",
         ),
-        {"info": {"evidence_immutable": True}},
+        {
+            "info": {
+                "evidence_immutable": True,
+                "session_core_insert_forbidden": True,
+            }
+        },
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -376,6 +396,17 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
     standard_item_id: Mapped[int] = mapped_column(index=True)
     raw_item_id: Mapped[int] = mapped_column(index=True)
     clean_decision_id: Mapped[int] = mapped_column(index=True)
+    clean_status: Mapped[CleanStatus] = mapped_column(
+        Enum(
+            CleanStatus,
+            name="price_observation_clean_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=CleanStatus.INCLUDED,
+        server_default=text("'INCLUDED'"),
+    )
     membership_decision_id: Mapped[int] = mapped_column(index=True)
     membership_status: Mapped[MembershipStatus] = mapped_column(
         Enum(
@@ -397,7 +428,7 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
     )
     clean_decision: Mapped[CleanDecision] = relationship(
         "CleanDecision",
-        foreign_keys=[clean_decision_id, raw_item_id],
+        foreign_keys=[clean_decision_id, raw_item_id, clean_status],
         overlaps="membership_decision,standard_price_version",
     )
     membership_decision: Mapped[ItemMembershipDecision] = relationship(

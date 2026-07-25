@@ -34,7 +34,8 @@ class CleanDecision(Base):
         UniqueConstraint(
             "id",
             "raw_item_id",
-            name="uq_clean_decision_id_raw_item",
+            "status",
+            name="uq_clean_decision_evidence_key",
         ),
         {"info": {"evidence_immutable": True}},
     )
