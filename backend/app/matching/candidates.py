@@ -7,6 +7,11 @@ from typing import Iterable
 
 from rapidfuzz import fuzz
 
+from app.embeddings.base import (
+    EmbeddingClient,
+    EmbeddingUnavailableError,
+)
+from app.embeddings.index import EmbeddingIndex, IndexMismatchError
 from app.matching.normalization import (
     is_rating_token,
     model_tokens,
@@ -56,6 +61,7 @@ class CandidateScore:
     spec_score: Decimal
     token_score: Decimal
     embedding_score: Decimal | None
+    embedding_status: str
     final_score: Decimal
     matched_tokens: tuple[str, ...]
     method: str
@@ -184,11 +190,42 @@ def _evidence_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
     )
 
 
+def _embedding_scores(
+    *,
+    query: MatchQuery,
+    embedding_client: EmbeddingClient | None,
+    embedding_index: EmbeddingIndex | None,
+) -> tuple[dict[int, float], str]:
+    if embedding_client is None and embedding_index is None:
+        return {}, "DISABLED"
+    if embedding_client is None or embedding_index is None:
+        return {}, "UNAVAILABLE"
+    try:
+        batch = embedding_client.embed(
+            [f"{query.name} {query.spec or ''}".strip()]
+        )
+        if batch.model != embedding_index.metadata.model:
+            raise IndexMismatchError("embedding model mismatch")
+        if batch.dimension != embedding_index.metadata.dimension:
+            raise IndexMismatchError("embedding dimension mismatch")
+        scores = embedding_index.scores(batch.vectors[0])
+    except (
+        EmbeddingUnavailableError,
+        IndexMismatchError,
+        ValueError,
+    ):
+        return {}, "UNAVAILABLE"
+    status = "MOCK_ONLY" if batch.model == "local-mock-v1" else "AVAILABLE"
+    return scores, status
+
+
 def rank_candidates(
     *,
     query: MatchQuery,
     items: Iterable[CandidateItem],
     top_n: int = 10,
+    embedding_client: EmbeddingClient | None = None,
+    embedding_index: EmbeddingIndex | None = None,
 ) -> list[CandidateScore]:
     """Rank compatible candidates without making a membership decision."""
 
@@ -201,6 +238,11 @@ def rank_candidates(
     query_spec = normalize_search_text(query.spec)
     query_unit = normalize_search_text(query.unit)
     query_tokens = _normalized_tokens(query.name, query.spec)
+    semantic_scores, embedding_status = _embedding_scores(
+        query=query,
+        embedding_client=embedding_client,
+        embedding_index=embedding_index,
+    )
     results: list[CandidateScore] = []
 
     for item in items:
@@ -228,6 +270,14 @@ def rank_candidates(
             query_tokens=query_tokens,
             item=item,
         )
+        raw_embedding_score = semantic_scores.get(item.standard_item_id)
+        embedding_score = (
+            _quantize(
+                Decimal(str(max(0.0, min(1.0, raw_embedding_score))))
+            )
+            if raw_embedding_score is not None
+            else None
+        )
         exact = (
             query_name == item_name
             and query_spec == item_spec
@@ -254,9 +304,16 @@ def rank_candidates(
                 + SPEC_WEIGHT * spec_score
                 + TOKEN_WEIGHT * token_score
             )
+            if (
+                embedding_score is not None
+                and embedding_score > final_score
+            ):
+                final_score = embedding_score
+                method = "EMBEDDING_CANDIDATE_V1"
+            else:
+                method = "LEXICAL_RULE_V1"
             if score_tokens:
                 final_score = min(final_score, RATING_ONLY_SCORE_CEILING)
-            method = "LEXICAL_RULE_V1"
             if final_score < LEXICAL_THRESHOLD:
                 continue
 
@@ -266,7 +323,8 @@ def rank_candidates(
                 name_score=name_score,
                 spec_score=spec_score,
                 token_score=token_score,
-                embedding_score=None,
+                embedding_score=embedding_score,
+                embedding_status=embedding_status,
                 final_score=final_score,
                 matched_tokens=matched_tokens,
                 method=method,
