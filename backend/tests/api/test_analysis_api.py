@@ -87,6 +87,9 @@ def test_analysis_document_list_and_typed_detail(
     assert payload["document"]["id"] == document.id
     assert len(payload["lines"]) == 1
     assert payload["lines"][0]["match_status"] == "NO_MATCH"
+    assert payload["lines"][0]["canonical_name"] is None
+    assert payload["lines"][0]["canonical_spec"] is None
+    assert payload["lines"][0]["canonical_unit"] is None
     assert payload["lines"][0]["source"]["path"] == "quotes/new.xlsx"
     assert payload["next_cursor"] == payload["lines"][0]["raw_item_id"]
 

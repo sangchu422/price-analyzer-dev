@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.catalog.models import (
     DocumentMetadataVersion,
     ItemMembershipDecision,
+    StandardItem,
     StandardItemVersion,
 )
 from app.catalog.service import CandidateEmbeddingRuntime
@@ -83,6 +84,129 @@ def _create_standard_item(client: TestClient) -> dict[str, object]:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_catalog_workspace_lists_current_items_and_cas_context(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document, raw = _source(api_session)
+    item = _create_standard_item(client)
+    rejected = client.post(
+        f"/api/catalog/raw-items/{raw.id}/memberships",
+        json={
+            "standard_item_id": None,
+            "status": "REJECTED",
+            "expected_current_decision_id": None,
+            "candidate_score": None,
+            "method": "MANUAL_NO_MATCH",
+            "evidence": {},
+            "decided_by": "buyer-1",
+            "reason_detail": "no suitable candidate",
+        },
+    )
+    metadata = client.post(
+        f"/api/catalog/documents/{document.id}/metadata",
+        json={
+            "supplier_name": "SUPPLIER A",
+            "quote_date": "2026-07-01",
+            "project_name": "PUNE LINE",
+            "expected_current_version_id": None,
+            "decided_by": "buyer-1",
+            "reason_detail": "read from quote header",
+        },
+    )
+    assert rejected.status_code == 201
+    assert metadata.status_code == 201
+
+    listing = client.get("/api/catalog/standard-items?limit=20")
+    unmatched = client.get("/api/catalog/unmatched?limit=20")
+    candidates = client.get(
+        f"/api/catalog/raw-items/{raw.id}/candidates"
+    )
+
+    assert listing.status_code == 200
+    assert listing.json() == {
+        "items": [
+            {
+                "id": item["id"],
+                "current_version": item["current_version"],
+                "member_count": 0,
+            }
+        ],
+        "next_cursor": None,
+        "limit": 20,
+    }
+    assert unmatched.status_code == 200
+    assert unmatched.json()["items"][0][
+        "current_membership_decision_id"
+    ] == rejected.json()["id"]
+    assert candidates.status_code == 200
+    assert candidates.json()["current_membership_decision_id"] == (
+        rejected.json()["id"]
+    )
+    assert candidates.json()["current_document_metadata"] == metadata.json()
+
+
+def test_create_and_match_is_atomic_when_membership_cas_is_stale(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _, raw = _source(api_session)
+    raw_id = raw.id
+    rejected = client.post(
+        f"/api/catalog/raw-items/{raw_id}/memberships",
+        json={
+            "standard_item_id": None,
+            "status": "REJECTED",
+            "expected_current_decision_id": None,
+            "candidate_score": None,
+            "method": "MANUAL_NO_MATCH",
+            "evidence": {},
+            "decided_by": "buyer-1",
+            "reason_detail": "no suitable candidate",
+        },
+    )
+    before = api_session.scalar(select(func.count(StandardItem.id)))
+    api_session.rollback()
+
+    stale = client.post(
+        f"/api/catalog/raw-items/{raw_id}/standard-item",
+        json={
+            "canonical_name": "BEARING",
+            "canonical_spec": "6204 ZZ",
+            "canonical_unit": "EA",
+            "aliases": [],
+            "created_by": "buyer-2",
+            "reason_detail": "create and group from reviewed source",
+            "expected_current_decision_id": None,
+        },
+    )
+
+    assert rejected.status_code == 201
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["error_code"] == "STALE_CATALOG_DECISION"
+    api_session.expire_all()
+    assert api_session.scalar(select(func.count(StandardItem.id))) == before
+    api_session.rollback()
+
+    created = client.post(
+        f"/api/catalog/raw-items/{raw_id}/standard-item",
+        json={
+            "canonical_name": "BEARING",
+            "canonical_spec": "6204 ZZ",
+            "canonical_unit": "EA",
+            "aliases": [],
+            "created_by": "buyer-2",
+            "reason_detail": "create and group from reviewed source",
+            "expected_current_decision_id": rejected.json()["id"],
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["standard_item"]["current_version"][
+        "canonical_name"
+    ] == "BEARING"
+    assert created.json()["membership"]["status"] == "MATCHED"
 
 
 def test_candidate_api_returns_evidence_without_auto_matching(

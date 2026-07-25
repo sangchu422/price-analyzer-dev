@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.catalog.models import (
@@ -99,8 +99,16 @@ class CandidateResult:
     current_cleansing_decision: CleanDecision
     source_variant: SourceVariant
     source_document: SourceDocument
+    current_membership_decision: ItemMembershipDecision | None
+    current_document_metadata: DocumentMetadataVersion | None
     candidates: tuple[CatalogCandidate, ...]
     embedding_model: str | None
+
+
+@dataclass(frozen=True)
+class StandardItemSummary:
+    current_version: StandardItemVersion
+    member_count: int
 
 
 def _latest_clean_decision(
@@ -340,9 +348,103 @@ def candidate_matches(
         current_cleansing_decision=clean,
         source_variant=variant,
         source_document=variant.document,
+        current_membership_decision=current_membership(session, raw_item_id),
+        current_document_metadata=current_document_metadata(
+            session,
+            variant.document_id,
+        ),
         candidates=candidates,
         embedding_model=runtime.model if embedding_was_used else None,
     )
+
+
+def list_standard_items(
+    session: Session,
+    *,
+    after_id: int | None,
+    limit: int,
+) -> tuple[list[StandardItemSummary], int | None]:
+    """List current catalog versions with current, included member counts."""
+
+    latest_versions = (
+        select(
+            StandardItemVersion.standard_item_id,
+            func.max(StandardItemVersion.id).label("version_id"),
+        )
+        .group_by(StandardItemVersion.standard_item_id)
+        .subquery()
+    )
+    query = (
+        select(StandardItemVersion)
+        .join(
+            latest_versions,
+            latest_versions.c.version_id == StandardItemVersion.id,
+        )
+        .order_by(StandardItemVersion.standard_item_id)
+        .limit(limit + 1)
+    )
+    if after_id is not None:
+        query = query.where(StandardItemVersion.standard_item_id > after_id)
+    versions = list(session.scalars(query))
+    has_more = len(versions) > limit
+    versions = versions[:limit]
+    item_ids = [row.standard_item_id for row in versions]
+    if not item_ids:
+        return [], None
+
+    latest_membership = (
+        select(
+            ItemMembershipDecision.raw_item_id,
+            func.max(ItemMembershipDecision.id).label("decision_id"),
+        )
+        .group_by(ItemMembershipDecision.raw_item_id)
+        .subquery()
+    )
+    latest_clean = (
+        select(
+            CleanDecision.raw_item_id,
+            func.max(CleanDecision.id).label("decision_id"),
+        )
+        .group_by(CleanDecision.raw_item_id)
+        .subquery()
+    )
+    counts = dict(
+        session.execute(
+            select(
+                ItemMembershipDecision.standard_item_id,
+                func.count(ItemMembershipDecision.id),
+            )
+            .join(
+                latest_membership,
+                latest_membership.c.decision_id
+                == ItemMembershipDecision.id,
+            )
+            .join(
+                latest_clean,
+                latest_clean.c.raw_item_id
+                == ItemMembershipDecision.raw_item_id,
+            )
+            .join(
+                CleanDecision,
+                and_(
+                    CleanDecision.id == latest_clean.c.decision_id,
+                    CleanDecision.status == CleanStatus.INCLUDED,
+                ),
+            )
+            .where(
+                ItemMembershipDecision.standard_item_id.in_(item_ids),
+                ItemMembershipDecision.status == MembershipStatus.MATCHED,
+            )
+            .group_by(ItemMembershipDecision.standard_item_id)
+        ).tuples().all()
+    )
+    return [
+        StandardItemSummary(
+            current_version=version,
+            member_count=counts.get(version.standard_item_id, 0),
+        )
+        for version in versions
+    ], (versions[-1].standard_item_id if has_more else None)
 
 
 def append_membership_decision(
@@ -527,7 +629,10 @@ def unmatched_included(
     after_id: int | None,
     limit: int,
     search: str | None,
-) -> tuple[list[tuple[RawQuoteItem, CleanDecision]], int | None]:
+) -> tuple[
+    list[tuple[RawQuoteItem, CleanDecision, int | None]],
+    int | None,
+]:
     latest_clean = (
         select(
             CleanDecision.raw_item_id,
@@ -548,7 +653,7 @@ def unmatched_included(
         "current_membership"
     )
     query = (
-        select(RawQuoteItem, CleanDecision)
+        select(RawQuoteItem, CleanDecision, current_membership.c.id)
         .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
         .join(CleanDecision, CleanDecision.id == latest_clean.c.decision_id)
         .outerjoin(
@@ -588,7 +693,10 @@ def unmatched_included(
         query.order_by(RawQuoteItem.id).limit(limit + 1)
     ).all()
     has_more = len(rows) > limit
-    page = [(raw, clean) for raw, clean in rows[:limit]]
+    page = [
+        (raw, clean, membership_id)
+        for raw, clean, membership_id in rows[:limit]
+    ]
     return page, page[-1][0].id if has_more and page else None
 
 

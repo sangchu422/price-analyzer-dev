@@ -104,6 +104,9 @@ class AnalysisLine:
     membership_decision_id: int | None
     standard_item_id: int | None
     standard_item_version_id: int | None
+    canonical_name: str | None
+    canonical_spec: str | None
+    canonical_unit: str | None
     standard_price_version_id: int | None
     standard_price_item_version_id: int | None
     market_price_lookup_required: bool
@@ -444,6 +447,13 @@ def _classify_line(
         parser_name=raw.parser_name,
         parser_version=raw.parser_version,
     )
+    matched_item_version = (
+        projection.versions.get(membership.standard_item_id)
+        if membership is not None
+        and membership.status == MembershipStatus.MATCHED
+        and membership.standard_item_id is not None
+        else None
+    )
     base = {
         "raw_item_id": raw.id,
         "item_name": (
@@ -468,6 +478,21 @@ def _classify_line(
         ),
         "standard_item_id": (
             None if membership is None else membership.standard_item_id
+        ),
+        "canonical_name": (
+            None
+            if matched_item_version is None
+            else matched_item_version.canonical_name
+        ),
+        "canonical_spec": (
+            None
+            if matched_item_version is None
+            else matched_item_version.canonical_spec
+        ),
+        "canonical_unit": (
+            None
+            if matched_item_version is None
+            else matched_item_version.canonical_unit
         ),
         "source": source,
     }
@@ -560,6 +585,9 @@ def _unpriced_line(
     clean_decision_id: int | None,
     membership_decision_id: int | None,
     standard_item_id: int | None,
+    canonical_name: str | None,
+    canonical_spec: str | None,
+    canonical_unit: str | None,
     source: AnalysisSource,
     match_status: MatchStatus,
     assessment: Assessment,
@@ -585,6 +613,9 @@ def _unpriced_line(
         membership_decision_id=membership_decision_id,
         standard_item_id=standard_item_id,
         standard_item_version_id=standard_item_version_id,
+        canonical_name=canonical_name,
+        canonical_spec=canonical_spec,
+        canonical_unit=canonical_unit,
         standard_price_version_id=None,
         standard_price_item_version_id=None,
         market_price_lookup_required=market_lookup,

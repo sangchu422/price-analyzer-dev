@@ -18,7 +18,12 @@ from pydantic import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.catalog.models import MembershipStatus, StandardItemVersion
+from app.catalog.models import (
+    DocumentMetadataVersion,
+    ItemMembershipDecision,
+    MembershipStatus,
+    StandardItemVersion,
+)
 from app.catalog.service import (
     CandidateEmbeddingRuntime,
     CatalogConflict,
@@ -29,6 +34,7 @@ from app.catalog.service import (
     build_candidate_embedding_runtime,
     candidate_matches,
     create_standard_item,
+    list_standard_items,
     standard_item_members,
     unmatched_included,
 )
@@ -88,6 +94,10 @@ class StandardItemBody(AuditBody):
 
 class StandardItemVersionBody(StandardItemBody):
     expected_current_version_id: int = Field(gt=0)
+
+
+class CreateAndMatchBody(StandardItemBody):
+    expected_current_decision_id: int | None = Field(default=None, gt=0)
 
 
 class MembershipBody(AuditBody):
@@ -173,6 +183,16 @@ class StandardItemResponse(BaseModel):
     current_version: StandardItemVersionResponse
 
 
+class StandardItemSummaryResponse(StandardItemResponse):
+    member_count: int
+
+
+class StandardItemListResponse(BaseModel):
+    items: list[StandardItemSummaryResponse]
+    next_cursor: int | None
+    limit: int
+
+
 class MembershipResponse(BaseModel):
     id: int
     raw_item_id: int
@@ -184,6 +204,11 @@ class MembershipResponse(BaseModel):
     supersedes_decision_id: int | None
     decided_by: str
     decided_at: datetime
+
+
+class CreateAndMatchResponse(BaseModel):
+    standard_item: StandardItemResponse
+    membership: MembershipResponse
 
 
 class DocumentMetadataResponse(BaseModel):
@@ -204,6 +229,7 @@ class UnmatchedItemResponse(BaseModel):
     spec: str | None
     unit: str | None
     current_cleansing_decision_id: int
+    current_membership_decision_id: int | None
 
 
 class UnmatchedResponse(BaseModel):
@@ -280,6 +306,8 @@ class CandidateResponse(BaseModel):
     raw_item: CandidateRawResponse
     normalized: CandidateNormalizedResponse
     current_cleansing_decision: CandidateCleanDecisionResponse
+    current_membership_decision_id: int | None
+    current_document_metadata: DocumentMetadataResponse | None
     source: CandidateSourceResponse
     candidates: list[CandidateEvidenceResponse]
 
@@ -412,6 +440,72 @@ def _source_payload(
     }
 
 
+def _metadata_payload(
+    row: DocumentMetadataVersion,
+) -> dict[str, object]:
+    return {
+        "id": row.id,
+        "source_document_id": row.source_document_id,
+        "version_number": row.version_number,
+        "supplier_name": row.supplier_name,
+        "quote_date": row.quote_date,
+        "project_name": row.project_name,
+        "decided_by": row.decided_by,
+        "reason_detail": row.reason_detail,
+        "created_at": row.created_at,
+    }
+
+
+def _membership_payload(
+    row: ItemMembershipDecision,
+) -> dict[str, object]:
+    return {
+        "id": row.id,
+        "raw_item_id": row.raw_item_id,
+        "standard_item_id": row.standard_item_id,
+        "status": row.status.value,
+        "candidate_score": (
+            None
+            if row.candidate_score is None
+            else format(row.candidate_score, "f")
+        ),
+        "method": row.method,
+        "evidence": json.loads(row.evidence_json),
+        "supersedes_decision_id": row.supersedes_decision_id,
+        "decided_by": row.decided_by,
+        "decided_at": row.decided_at,
+    }
+
+
+@router.get(
+    "/standard-items",
+    response_model=StandardItemListResponse,
+)
+def get_standard_items(
+    session: Session = Depends(get_session),
+    *,
+    after_id: int | None = Query(None, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+) -> dict[str, object]:
+    rows, next_cursor = list_standard_items(
+        session,
+        after_id=after_id,
+        limit=limit,
+    )
+    return {
+        "items": [
+            {
+                "id": row.current_version.standard_item_id,
+                "current_version": _version_payload(row.current_version),
+                "member_count": row.member_count,
+            }
+            for row in rows
+        ],
+        "next_cursor": next_cursor,
+        "limit": limit,
+    }
+
+
 @router.get("/unmatched", response_model=UnmatchedResponse)
 def get_unmatched(
     session: Session = Depends(get_session),
@@ -434,8 +528,9 @@ def get_unmatched(
                 "spec": clean.spec_norm,
                 "unit": clean.unit_norm,
                 "current_cleansing_decision_id": clean.id,
+                "current_membership_decision_id": membership_id,
             }
-            for raw, clean in rows
+            for raw, clean, membership_id in rows
         ],
         "next_cursor": next_cursor,
         "limit": limit,
@@ -483,6 +578,16 @@ def get_candidates(
             "unit": clean.unit_norm,
         },
         "current_cleansing_decision": _clean_decision_payload(clean),
+        "current_membership_decision_id": (
+            None
+            if result.current_membership_decision is None
+            else result.current_membership_decision.id
+        ),
+        "current_document_metadata": (
+            None
+            if result.current_document_metadata is None
+            else _metadata_payload(result.current_document_metadata)
+        ),
         "source": _source_payload(raw, variant, document),
         "candidates": [
             {
@@ -540,6 +645,58 @@ def post_standard_item(
         _raise_catalog_error(session, exc)
         raise AssertionError("unreachable")
     return {"id": item.id, "current_version": _version_payload(version)}
+
+
+@router.post(
+    "/raw-items/{raw_item_id}/standard-item",
+    status_code=201,
+    response_model=CreateAndMatchResponse,
+)
+def post_standard_item_and_membership(
+    raw_item_id: int,
+    body: CreateAndMatchBody,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    """Create a catalog identity and its first membership atomically."""
+
+    _begin_immediate(session)
+    try:
+        item, version = create_standard_item(
+            session,
+            canonical_name=body.canonical_name,
+            canonical_spec=body.canonical_spec,
+            canonical_unit=body.canonical_unit,
+            aliases=body.aliases,
+            created_by=body.created_by,
+            reason_detail=body.reason_detail,
+        )
+        membership = append_membership_decision(
+            session,
+            raw_item_id=raw_item_id,
+            standard_item_id=item.id,
+            status=MembershipStatus.MATCHED,
+            expected_current_decision_id=(
+                body.expected_current_decision_id
+            ),
+            candidate_score=None,
+            method="MANUAL_NEW_STANDARD_ITEM",
+            evidence={
+                "created_standard_item_version_id": version.id,
+            },
+            decided_by=body.created_by,
+            reason_detail=body.reason_detail,
+        )
+        _commit(session)
+    except Exception as exc:
+        _raise_catalog_error(session, exc)
+        raise AssertionError("unreachable")
+    return {
+        "standard_item": {
+            "id": item.id,
+            "current_version": _version_payload(version),
+        },
+        "membership": _membership_payload(membership),
+    }
 
 
 @router.post(
@@ -602,22 +759,7 @@ def post_membership(
     except Exception as exc:
         _raise_catalog_error(session, exc)
         raise AssertionError("unreachable")
-    return {
-        "id": row.id,
-        "raw_item_id": row.raw_item_id,
-        "standard_item_id": row.standard_item_id,
-        "status": row.status.value,
-        "candidate_score": (
-            None
-            if row.candidate_score is None
-            else format(row.candidate_score, "f")
-        ),
-        "method": row.method,
-        "evidence": json.loads(row.evidence_json),
-        "supersedes_decision_id": row.supersedes_decision_id,
-        "decided_by": row.decided_by,
-        "decided_at": row.decided_at,
-    }
+    return _membership_payload(row)
 
 
 @router.get(
@@ -704,14 +846,4 @@ def post_document_metadata(
     except Exception as exc:
         _raise_catalog_error(session, exc)
         raise AssertionError("unreachable")
-    return {
-        "id": row.id,
-        "source_document_id": row.source_document_id,
-        "version_number": row.version_number,
-        "supplier_name": row.supplier_name,
-        "quote_date": row.quote_date,
-        "project_name": row.project_name,
-        "decided_by": row.decided_by,
-        "reason_detail": row.reason_detail,
-        "created_at": row.created_at,
-    }
+    return _metadata_payload(row)

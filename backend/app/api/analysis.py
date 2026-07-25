@@ -99,6 +99,9 @@ class AnalysisLineResponse(BaseModel):
     membership_decision_id: int | None
     standard_item_id: int | None
     standard_item_version_id: int | None
+    canonical_name: str | None
+    canonical_spec: str | None
+    canonical_unit: str | None
     standard_price_version_id: int | None
     standard_price_item_version_id: int | None
     market_price_lookup_required: bool
