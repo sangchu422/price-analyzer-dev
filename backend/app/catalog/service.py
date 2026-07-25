@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
 
+import httpx
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -19,7 +21,15 @@ from app.catalog.models import (
     StandardItemVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
+from app.core.config import Settings
 from app.documents.models import SourceDocument, SourceVariant
+from app.embeddings.base import EmbeddingClient
+from app.embeddings.hchat import build_embedding_client
+from app.embeddings.index import (
+    EmbeddingIndex,
+    IndexMismatchError,
+    load_index,
+)
 from app.matching.candidates import (
     CandidateItem,
     CandidateScore,
@@ -76,6 +86,13 @@ class CatalogCandidate:
 
 
 @dataclass(frozen=True)
+class CandidateEmbeddingRuntime:
+    client: EmbeddingClient | None
+    index: EmbeddingIndex | None
+    model: str | None
+
+
+@dataclass(frozen=True)
 class CandidateResult:
     match_status: Literal["CANDIDATE", "NO_MATCH"]
     raw_item: RawQuoteItem
@@ -83,6 +100,7 @@ class CandidateResult:
     source_variant: SourceVariant
     source_document: SourceDocument
     candidates: tuple[CatalogCandidate, ...]
+    embedding_model: str | None
 
 
 def _latest_clean_decision(
@@ -167,15 +185,9 @@ def _parse_aliases(value: str) -> tuple[str, ...]:
     return tuple(alias for alias in parsed if isinstance(alias, str))
 
 
-def candidate_matches(
+def _current_standard_item_versions(
     session: Session,
-    raw_item_id: int,
-    *,
-    top_n: int = 10,
-) -> CandidateResult:
-    """Return replaceable evidence and never create a membership row."""
-
-    raw_item, clean = _require_included(session, raw_item_id)
+) -> list[StandardItemVersion]:
     latest_ids = (
         select(
             StandardItemVersion.standard_item_id,
@@ -184,14 +196,100 @@ def candidate_matches(
         .group_by(StandardItemVersion.standard_item_id)
         .subquery()
     )
-    versions = list(
+    return list(
         session.scalars(
             select(StandardItemVersion)
             .join(latest_ids, latest_ids.c.version_id == StandardItemVersion.id)
             .order_by(StandardItemVersion.standard_item_id)
         )
     )
+
+
+def catalog_fingerprint(session: Session) -> str:
+    """Fingerprint the exact catalog projection used by an embedding index."""
+
+    payload = [
+        {
+            "standard_item_id": version.standard_item_id,
+            "version_id": version.id,
+            "canonical_name": version.canonical_name,
+            "canonical_spec": version.canonical_spec,
+            "canonical_unit": version.canonical_unit,
+            "aliases": _parse_aliases(version.aliases_json),
+        }
+        for version in _current_standard_item_versions(session)
+    ]
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def build_candidate_embedding_runtime(
+    session: Session,
+    *,
+    settings: Settings,
+    transport: httpx.Client | None = None,
+) -> CandidateEmbeddingRuntime:
+    """Build an optional runtime without networking until candidate scoring."""
+
+    if not settings.hchat_embedding_enabled:
+        return CandidateEmbeddingRuntime(None, None, None)
+    fully_configured = bool(
+        settings.hchat_embedding_endpoint
+        and settings.hchat_embedding_api_key
+        and settings.hchat_embedding_model
+    )
+    if (
+        not fully_configured
+        or settings.hchat_embedding_api_style != "openai"
+    ):
+        return CandidateEmbeddingRuntime(
+            build_embedding_client(settings, transport=transport),
+            None,
+            None,
+        )
+    configured_model = settings.hchat_embedding_model
+    if configured_model is None:
+        return CandidateEmbeddingRuntime(None, None, None)
+    client = build_embedding_client(settings, transport=transport)
+    versions = _current_standard_item_versions(session)
+    try:
+        index = load_index(
+            settings.embedding_index_path,
+            expected_model=configured_model,
+            expected_catalog_fingerprint=catalog_fingerprint(session),
+        )
+        expected_ids = {version.standard_item_id for version in versions}
+        if set(index.item_ids.tolist()) != expected_ids:
+            raise IndexMismatchError(
+                "embedding index item ids do not match current catalog"
+            )
+        if index.metadata.normalization_version != "match-v1":
+            raise IndexMismatchError(
+                "embedding index normalization version mismatch"
+            )
+    except IndexMismatchError:
+        return CandidateEmbeddingRuntime(client, None, None)
+    return CandidateEmbeddingRuntime(client, index, configured_model)
+
+
+def candidate_matches(
+    session: Session,
+    raw_item_id: int,
+    *,
+    top_n: int = 10,
+    embedding_runtime: CandidateEmbeddingRuntime | None = None,
+) -> CandidateResult:
+    """Return replaceable evidence and never create a membership row."""
+
+    raw_item, clean = _require_included(session, raw_item_id)
+    versions = _current_standard_item_versions(session)
     by_id = {version.standard_item_id: version for version in versions}
+    runtime = embedding_runtime or CandidateEmbeddingRuntime(None, None, None)
     scores = rank_candidates(
         query=MatchQuery(
             name=clean.item_name_norm or raw_item.item_name_raw or "",
@@ -209,6 +307,8 @@ def candidate_matches(
             for version in versions
         ],
         top_n=top_n,
+        embedding_client=runtime.client,
+        embedding_index=runtime.index,
     )
     candidates = tuple(
         CatalogCandidate(
@@ -225,6 +325,10 @@ def candidate_matches(
         for score in scores
     )
     variant = raw_item.source_variant
+    embedding_was_used = any(
+        candidate.score.embedding_status in {"AVAILABLE", "MOCK_ONLY"}
+        for candidate in candidates
+    )
     return CandidateResult(
         match_status="CANDIDATE" if candidates else "NO_MATCH",
         raw_item=raw_item,
@@ -232,6 +336,7 @@ def candidate_matches(
         source_variant=variant,
         source_document=variant.document,
         candidates=candidates,
+        embedding_model=runtime.model if embedding_was_used else None,
     )
 
 
@@ -522,6 +627,7 @@ def standard_item_members(
             .where(
                 ItemMembershipDecision.standard_item_id == standard_item_id,
                 ItemMembershipDecision.status == MembershipStatus.MATCHED,
+                CleanDecision.status == CleanStatus.INCLUDED,
             )
             .order_by(RawQuoteItem.id)
         )

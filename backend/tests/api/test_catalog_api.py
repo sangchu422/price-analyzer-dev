@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
+import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,8 +14,13 @@ from app.catalog.models import (
     ItemMembershipDecision,
     StandardItemVersion,
 )
+from app.catalog.service import CandidateEmbeddingRuntime
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
+from app.embeddings.base import EmbeddingBatch
+from app.embeddings.index import EmbeddingIndex, IndexMetadata
+from app.main import app
+from app.api.catalog import get_candidate_embedding_runtime
 from app.quotes.models import RawQuoteItem
 
 
@@ -99,6 +107,50 @@ def test_candidate_api_returns_evidence_without_auto_matching(
     )
 
 
+class _StaticEmbeddingClient:
+    def embed(self, texts) -> EmbeddingBatch:
+        return EmbeddingBatch(
+            vectors=np.array([[1.0, 0.0] for _ in texts], dtype=np.float32),
+            model="office-model",
+            dimension=2,
+        )
+
+
+def test_candidate_api_reports_injected_embedding_result(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _, raw = _source(api_session)
+    item = _create_standard_item(client)
+    runtime = CandidateEmbeddingRuntime(
+        client=_StaticEmbeddingClient(),
+        index=EmbeddingIndex(
+            item_ids=np.array([item["id"]]),
+            vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+            metadata=IndexMetadata(
+                model="office-model",
+                dimension=2,
+                item_count=1,
+                catalog_fingerprint="injected-test",
+                normalization_version="match-v1",
+                created_at=datetime.now(timezone.utc),
+            ),
+        ),
+        model="office-model",
+    )
+    app.dependency_overrides[get_candidate_embedding_runtime] = (
+        lambda: runtime
+    )
+
+    response = client.get(f"/api/catalog/raw-items/{raw.id}/candidates")
+
+    assert response.status_code == 200
+    candidate = response.json()["candidates"][0]
+    assert candidate["embedding_status"] == "AVAILABLE"
+    assert candidate["embedding_model"] == "office-model"
+    assert candidate["embedding_score"] == "1.000000"
+
+
 def test_match_approval_uses_optimistic_concurrency(
     client: TestClient,
     api_session: Session,
@@ -154,6 +206,77 @@ def test_rejected_or_not_included_rows_are_never_matched(
 
     assert response.status_code == 409
     assert response.json()["detail"]["error_code"] == "RAW_ITEM_NOT_INCLUDED"
+
+
+@pytest.mark.parametrize(
+    "later_status",
+    [CleanStatus.EXCLUDED, CleanStatus.REVIEW_REQUIRED],
+)
+def test_members_include_provenance_and_only_currently_included_rows(
+    client: TestClient,
+    api_session: Session,
+    later_status: CleanStatus,
+) -> None:
+    _, raw = _source(api_session)
+    item = _create_standard_item(client)
+    approved = client.post(
+        f"/api/catalog/raw-items/{raw.id}/memberships",
+        json={
+            "standard_item_id": item["id"],
+            "status": "MATCHED",
+            "expected_current_decision_id": None,
+            "candidate_score": "0.920000",
+            "method": "MANUAL_CANDIDATE",
+            "evidence": {"matched_tokens": ["6204-ZZ"]},
+            "decided_by": "buyer-1",
+            "reason_detail": "verified source row",
+        },
+    )
+    assert approved.status_code == 201
+
+    before = client.get(
+        f"/api/catalog/standard-items/{item['id']}/members"
+    )
+
+    assert before.status_code == 200
+    member = before.json()["members"][0]
+    assert member["source"] == {
+        "document_id": raw.source_variant.document_id,
+        "logical_name": "quotes/api-sample.xlsx",
+        "variant_id": raw.source_variant_id,
+        "path": "quotes/api-sample.xlsx",
+        "sha256": "b" * 64,
+        "security_state": "UNLOCKED",
+        "selected_for_parsing_at_ingest": True,
+        "sheet": "Sheet1",
+        "page": None,
+        "row": 7,
+        "cells": "A7:G7",
+        "parser_name": "xlsx",
+        "parser_version": "1",
+        "parser_warnings": [],
+    }
+    assert member["current_cleansing_decision"]["status"] == "INCLUDED"
+
+    api_session.add(
+        CleanDecision(
+            raw_item_id=raw.id,
+            status=later_status,
+            reason_code="LATER_REVIEW",
+            item_name_norm="BEARING",
+            spec_norm="6204 ZZ",
+            unit_norm="EA",
+            unit_price=Decimal("120"),
+            rule_version="clean-v2",
+        )
+    )
+    api_session.commit()
+
+    after = client.get(
+        f"/api/catalog/standard-items/{item['id']}/members"
+    )
+    assert after.status_code == 200
+    assert after.json()["members"] == []
 
 
 def test_item_metadata_and_document_metadata_append_versions(

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
+import httpx
+import numpy as np
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -15,12 +19,16 @@ from app.catalog.models import (
 from app.catalog.service import (
     CatalogConflict,
     append_membership_decision,
+    build_candidate_embedding_runtime,
     candidate_matches,
+    catalog_fingerprint,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
+from app.core.config import Settings
 from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
+from app.embeddings.index import IndexMetadata, save_index
 from app.quotes.models import RawQuoteItem
 
 
@@ -105,6 +113,113 @@ def test_candidate_search_never_creates_membership(session: Session) -> None:
     assert result.candidates[0].unit_compatible is True
     assert result.candidates[0].model_tokens_compatible is True
     assert session.scalar(select(func.count(ItemMembershipDecision.id))) == 0
+
+
+def test_valid_configured_openai_index_enriches_candidates(
+    session: Session,
+    tmp_path,
+) -> None:
+    raw = _raw_item(session)
+    item = _standard_item(session)
+    index_path = tmp_path / "standard-items.npz"
+    save_index(
+        index_path,
+        item_ids=np.array([item.id]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint=catalog_fingerprint(session),
+            normalization_version="match-v1",
+            created_at=datetime.now(timezone.utc),
+        ),
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "office-model",
+                "data": [{"index": 0, "embedding": [1.0, 0.0]}],
+            },
+        )
+
+    runtime = build_candidate_embedding_runtime(
+        session,
+        settings=Settings(
+            hchat_embedding_enabled=True,
+            hchat_embedding_endpoint="https://intranet.invalid/embeddings",
+            hchat_embedding_api_key=SecretStr("office-key"),
+            hchat_embedding_model="office-model",
+            hchat_embedding_api_style="openai",
+            embedding_index_file=index_path,
+        ),
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    result = candidate_matches(
+        session,
+        raw.id,
+        top_n=5,
+        embedding_runtime=runtime,
+    )
+
+    assert result.embedding_model == "office-model"
+    assert result.candidates[0].score.embedding_status == "AVAILABLE"
+    assert result.candidates[0].score.embedding_score == Decimal("1.000000")
+    assert len(requests) == 1
+
+
+def test_index_mismatch_falls_back_without_http(
+    session: Session,
+    tmp_path,
+) -> None:
+    raw = _raw_item(session)
+    item = _standard_item(session)
+    index_path = tmp_path / "stale-index.npz"
+    save_index(
+        index_path,
+        item_ids=np.array([item.id]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="stale-catalog",
+            normalization_version="match-v1",
+            created_at=datetime.now(timezone.utc),
+        ),
+    )
+    runtime = build_candidate_embedding_runtime(
+        session,
+        settings=Settings(
+            hchat_embedding_enabled=True,
+            hchat_embedding_endpoint="https://intranet.invalid/embeddings",
+            hchat_embedding_api_key=SecretStr("office-key"),
+            hchat_embedding_model="office-model",
+            hchat_embedding_api_style="openai",
+            embedding_index_file=index_path,
+        ),
+        transport=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: pytest.fail("stale index must prevent HTTP")
+            )
+        ),
+    )
+
+    result = candidate_matches(
+        session,
+        raw.id,
+        top_n=5,
+        embedding_runtime=runtime,
+    )
+
+    assert result.embedding_model is None
+    assert result.candidates[0].score.embedding_status == "UNAVAILABLE"
+    assert result.candidates[0].score.embedding_score is None
 
 
 def test_membership_append_is_human_only_and_compare_and_swap(

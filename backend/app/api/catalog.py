@@ -20,17 +20,23 @@ from sqlalchemy.orm import Session
 
 from app.catalog.models import MembershipStatus, StandardItemVersion
 from app.catalog.service import (
+    CandidateEmbeddingRuntime,
     CatalogConflict,
     CatalogNotFound,
     append_document_metadata,
     append_membership_decision,
     append_standard_item_version,
+    build_candidate_embedding_runtime,
     candidate_matches,
     create_standard_item,
     standard_item_members,
     unmatched_included,
 )
+from app.cleansing.models import CleanDecision, CleanStatus
+from app.core.config import settings
 from app.db.session import get_session
+from app.documents.models import SourceDocument, SourceVariant
+from app.quotes.models import RawQuoteItem
 
 
 router = APIRouter()
@@ -197,7 +203,7 @@ class CandidateNormalizedResponse(BaseModel):
 
 class CandidateCleanDecisionResponse(BaseModel):
     id: int
-    status: str
+    status: CleanStatus
     reason_code: str
     reason_detail: str | None
     rule_version: str
@@ -231,7 +237,12 @@ class CandidateEvidenceResponse(BaseModel):
     spec_score: str
     token_score: str
     embedding_score: str | None
-    embedding_status: str
+    embedding_status: Literal[
+        "DISABLED",
+        "UNAVAILABLE",
+        "AVAILABLE",
+        "MOCK_ONLY",
+    ]
     embedding_model: str | None
     final_score: str
     matched_tokens: list[str]
@@ -257,6 +268,8 @@ class StandardItemMemberResponse(BaseModel):
     unit_price: str | None
     clean_decision_id: int
     membership_decision_id: int
+    current_cleansing_decision: CandidateCleanDecisionResponse
+    source: CandidateSourceResponse
 
 
 class StandardItemMembersResponse(BaseModel):
@@ -268,6 +281,12 @@ def _begin_immediate(session: Session) -> None:
     if session.in_transaction():
         raise RuntimeError("catalog mutation requires a fresh session")
     session.connection(execution_options={"sqlite_begin_mode": "IMMEDIATE"})
+
+
+def get_candidate_embedding_runtime(
+    session: Session = Depends(get_session),
+) -> CandidateEmbeddingRuntime:
+    return build_candidate_embedding_runtime(session, settings=settings)
 
 
 def _conflict_detail(exc: CatalogConflict) -> dict[str, object]:
@@ -319,6 +338,41 @@ def _version_payload(version: StandardItemVersion) -> dict[str, object]:
     }
 
 
+def _clean_decision_payload(clean: CleanDecision) -> dict[str, object]:
+    return {
+        "id": clean.id,
+        "status": clean.status.value,
+        "reason_code": clean.reason_code,
+        "reason_detail": clean.reason_detail,
+        "rule_version": clean.rule_version,
+    }
+
+
+def _source_payload(
+    raw: RawQuoteItem,
+    variant: SourceVariant,
+    document: SourceDocument,
+) -> dict[str, object]:
+    return {
+        "document_id": document.id,
+        "logical_name": document.logical_name,
+        "variant_id": variant.id,
+        "path": variant.path,
+        "sha256": variant.sha256,
+        "security_state": variant.security_state,
+        "selected_for_parsing_at_ingest": (
+            variant.selected_for_parsing_at_ingest
+        ),
+        "sheet": raw.source_sheet,
+        "page": raw.source_page,
+        "row": raw.source_row,
+        "cells": raw.source_cells,
+        "parser_name": raw.parser_name,
+        "parser_version": raw.parser_version,
+        "parser_warnings": _parser_warnings(raw.parse_warnings_json),
+    }
+
+
 @router.get("/unmatched", response_model=UnmatchedResponse)
 def get_unmatched(
     session: Session = Depends(get_session),
@@ -356,11 +410,19 @@ def get_unmatched(
 def get_candidates(
     raw_item_id: int,
     session: Session = Depends(get_session),
+    embedding_runtime: CandidateEmbeddingRuntime = Depends(
+        get_candidate_embedding_runtime
+    ),
     *,
     top_n: int = Query(10, ge=1, le=50),
 ) -> dict[str, object]:
     try:
-        result = candidate_matches(session, raw_item_id, top_n=top_n)
+        result = candidate_matches(
+            session,
+            raw_item_id,
+            top_n=top_n,
+            embedding_runtime=embedding_runtime,
+        )
     except (CatalogNotFound, CatalogConflict) as exc:
         _raise_catalog_error(session, exc)
         raise AssertionError("unreachable")
@@ -381,31 +443,8 @@ def get_candidates(
             "spec": clean.spec_norm,
             "unit": clean.unit_norm,
         },
-        "current_cleansing_decision": {
-            "id": clean.id,
-            "status": clean.status.value,
-            "reason_code": clean.reason_code,
-            "reason_detail": clean.reason_detail,
-            "rule_version": clean.rule_version,
-        },
-        "source": {
-            "document_id": document.id,
-            "logical_name": document.logical_name,
-            "variant_id": variant.id,
-            "path": variant.path,
-            "sha256": variant.sha256,
-            "security_state": variant.security_state,
-            "selected_for_parsing_at_ingest": (
-                variant.selected_for_parsing_at_ingest
-            ),
-            "sheet": raw.source_sheet,
-            "page": raw.source_page,
-            "row": raw.source_row,
-            "cells": raw.source_cells,
-            "parser_name": raw.parser_name,
-            "parser_version": raw.parser_version,
-            "parser_warnings": _parser_warnings(raw.parse_warnings_json),
-        },
+        "current_cleansing_decision": _clean_decision_payload(clean),
+        "source": _source_payload(raw, variant, document),
         "candidates": [
             {
                 "standard_item_id": candidate.standard_item_id,
@@ -423,7 +462,7 @@ def get_candidates(
                     else format(candidate.score.embedding_score, "f")
                 ),
                 "embedding_status": candidate.score.embedding_status,
-                "embedding_model": None,
+                "embedding_model": result.embedding_model,
                 "final_score": format(candidate.score.final_score, "f"),
                 "matched_tokens": list(candidate.score.matched_tokens),
                 "method": candidate.score.method,
@@ -570,6 +609,12 @@ def get_standard_item_members(
                 ),
                 "clean_decision_id": clean.id,
                 "membership_decision_id": membership.id,
+                "current_cleansing_decision": _clean_decision_payload(clean),
+                "source": _source_payload(
+                    raw,
+                    raw.source_variant,
+                    raw.source_variant.document,
+                ),
             }
             for raw, clean, membership in rows
         ],
