@@ -18,6 +18,146 @@ from app.db.models import (
 from app.db.sqlite import configure_sqlite
 
 
+def _run_alembic(
+    backend_path: Path,
+    environment: dict[str, str],
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(backend_path / "alembic.ini"),
+            *arguments,
+        ],
+        cwd=backend_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _seed_variant_rows(
+    database_path: Path,
+    *,
+    duplicate_sha: bool,
+) -> None:
+    migration_engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}"
+    )
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO source_document (logical_name) VALUES (?)",
+            ("migration-evidence",),
+        )
+        sha_values = ["e" * 64]
+        if duplicate_sha:
+            sha_values.append("e" * 64)
+        for index, digest in enumerate(sha_values, start=1):
+            connection.exec_driver_sql(
+                """
+                INSERT INTO source_variant (
+                    document_id,
+                    path,
+                    sha256,
+                    extension,
+                    security_state,
+                    preferred_for_parsing
+                ) VALUES (1, ?, ?, '.xlsx', ?, ?)
+                """,
+                (
+                    f"quotes/evidence-{index}.xlsx",
+                    digest,
+                    "UNLOCKED" if index == 2 else "UNKNOWN",
+                    index == 2,
+                ),
+            )
+
+
+def test_0002_downgrade_refuses_duplicate_sha_without_changing_evidence(
+    tmp_path: Path,
+) -> None:
+    backend_path = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "duplicate-evidence.sqlite3"
+    environment = os.environ.copy()
+    environment["DATABASE_FILE"] = str(database_path)
+    upgrade = _run_alembic(backend_path, environment, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
+    _seed_variant_rows(database_path, duplicate_sha=True)
+
+    downgrade = _run_alembic(
+        backend_path,
+        environment,
+        "downgrade",
+        "0001",
+    )
+
+    output = downgrade.stdout + downgrade.stderr
+    assert downgrade.returncode != 0
+    assert "duplicate SHA-256 evidence paths" in output
+    assert "remove or consolidate" not in output
+    migration_engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}"
+    )
+    with migration_engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one() == "0002"
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM source_variant"
+        ).scalar_one() == 2
+    sha_indexes = [
+        index
+        for index in inspect(migration_engine).get_indexes("source_variant")
+        if index["column_names"] == ["sha256"]
+    ]
+    assert len(sha_indexes) == 1
+    assert sha_indexes[0]["name"] == "ix_source_variant_sha256"
+    assert not sha_indexes[0]["unique"]
+
+
+def test_0002_downgrade_restores_unique_sha_when_evidence_is_compatible(
+    tmp_path: Path,
+) -> None:
+    backend_path = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "compatible-evidence.sqlite3"
+    environment = os.environ.copy()
+    environment["DATABASE_FILE"] = str(database_path)
+    upgrade = _run_alembic(backend_path, environment, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
+    _seed_variant_rows(database_path, duplicate_sha=False)
+
+    downgrade = _run_alembic(
+        backend_path,
+        environment,
+        "downgrade",
+        "0001",
+    )
+
+    assert downgrade.returncode == 0, downgrade.stdout + downgrade.stderr
+    migration_engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}"
+    )
+    with migration_engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one() == "0001"
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM source_variant"
+        ).scalar_one() == 1
+    sha_indexes = [
+        index
+        for index in inspect(migration_engine).get_indexes("source_variant")
+        if index["column_names"] == ["sha256"]
+    ]
+    assert len(sha_indexes) == 1
+    assert sha_indexes[0]["name"] == "ux_source_variant_sha256"
+    assert sha_indexes[0]["unique"]
+
+
 def test_raw_quote_text_remains_unchanged_after_cleaning_decision() -> None:
     engine = configure_sqlite(create_engine("sqlite:///:memory:"))
     Base.metadata.create_all(engine)
