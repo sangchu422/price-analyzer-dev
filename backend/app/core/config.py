@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -28,6 +29,8 @@ class Settings(BaseSettings):
     embedding_index_file: Path = Path(
         "backend/.local/standard-items.npz"
     )
+    price_variance_review_percent: Decimal = Decimal("10")
+    price_variance_high_percent: Decimal = Decimal("20")
 
     @property
     def quote_path(self) -> Path:
