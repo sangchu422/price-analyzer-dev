@@ -248,7 +248,7 @@ def test_initial_migration_creates_source_and_cleansing_tables(
     assert ("path",) in unique_constraints["source_variant"]
 
     variant_indexes = inspector.get_indexes("source_variant")
-    assert [
+    assert not [
         index
         for index in variant_indexes
         if index["column_names"] == ["sha256"] and index["unique"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -12,7 +13,12 @@ from app.db.base import Base
 from app.db.models import RawQuoteItem, SourceDocument, SourceVariant
 from app.db.sqlite import configure_sqlite
 from app.ingestion.readers import ParsedRow, read_quote
-from app.ingestion.service import ingest_group, ingest_path
+from app.ingestion.service import (
+    ingest_group,
+    ingest_path,
+    parsing_variant_for,
+    preferred_variant_for,
+)
 from app.ingestion.source_selector import build_source_groups
 
 
@@ -41,6 +47,51 @@ def _write_quote(
         [item_name, "AC 220V", "EA", "2", unit_price, "1000000", "ACME"]
     )
     workbook.save(path)
+
+
+def _write_layout_fixture(
+    path: Path,
+    fixture_name: str,
+) -> None:
+    fixtures_path = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "parser_layouts.json"
+    )
+    fixture = json.loads(fixtures_path.read_text(encoding="utf-8"))[
+        fixture_name
+    ]
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = fixture["sheet"]
+    for row in fixture["rows"]:
+        sheet.append(row)
+    workbook.save(path)
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_item"),
+    [
+        ("standard", "SERVO MOTOR"),
+        ("assembly_device", "ROBOT"),
+        ("assembly_content", "SAFETY FENCE"),
+        ("assembly_fallback", "CONTROL PANEL"),
+    ],
+)
+def test_verified_legacy_layouts_do_not_silently_return_zero_rows(
+    tmp_path: Path,
+    fixture_name: str,
+    expected_item: str,
+) -> None:
+    quote = tmp_path / f"{fixture_name}.xlsx"
+    _write_layout_fixture(quote, fixture_name)
+
+    rows = read_quote(quote)
+
+    assert len(rows) == 1
+    assert rows[0].item_name == expected_item
+    assert rows[0].sheet is not None
+    assert rows[0].row == 3
 
 
 def test_ingestion_preserves_exact_variant_and_cell_provenance(
@@ -120,7 +171,7 @@ def test_existing_path_identity_is_case_insensitive_on_windows(
     assert session.scalar(select(func.count(SourceVariant.id))) == 1
 
 
-def test_duplicate_content_cannot_be_silently_attributed_to_another_document(
+def test_duplicate_content_at_different_paths_preserves_both_evidence_records(
     session: Session,
     tmp_path: Path,
 ) -> None:
@@ -129,17 +180,11 @@ def test_duplicate_content_cannot_be_silently_attributed_to_another_document(
     _write_quote(first)
     second.write_bytes(first.read_bytes())
     ingest_path(session, first, root=tmp_path)
+    ingest_path(session, second, root=tmp_path)
 
-    with pytest.raises(
-        ValueError,
-        match="duplicate content belongs to another logical source",
-    ):
-        ingest_path(session, second, root=tmp_path)
-
-    document = session.scalar(select(SourceDocument))
-    assert document is not None
-    assert document.logical_name == "첫 견적"
-    assert session.scalar(select(func.count(SourceVariant.id))) == 1
+    assert session.scalar(select(func.count(SourceDocument.id))) == 2
+    assert session.scalar(select(func.count(SourceVariant.id))) == 2
+    assert session.scalar(select(func.count(RawQuoteItem.id))) == 2
 
 
 def test_group_ingestion_registers_both_variants_but_parses_only_unlocked(
@@ -181,8 +226,36 @@ def test_identical_group_content_is_stored_and_parsed_only_once(
 
     assert first.id == second.id
     assert first.path == "동일 견적_보안해제.xlsx"
-    assert session.scalar(select(func.count(SourceVariant.id))) == 1
+    assert session.scalar(select(func.count(SourceVariant.id))) == 2
     assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
+    assert {variant.path for variant in first.document.variants} == {
+        "동일 견적.xlsx",
+        "동일 견적_보안해제.xlsx",
+    }
+
+
+def test_byte_identical_locked_then_unlocked_retains_unlocked_precedence(
+    session: Session,
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "동일 순차 견적.xlsx"
+    unlocked = tmp_path / "동일 순차 견적_보안해제.xlsx"
+    _write_quote(original, item_name="SHARED ROW")
+    unlocked.write_bytes(original.read_bytes())
+
+    original_variant = ingest_path(session, original, root=tmp_path)
+    unlocked_variant = ingest_path(session, unlocked, root=tmp_path)
+
+    assert original_variant.id != unlocked_variant.id
+    assert original_variant.path == "동일 순차 견적.xlsx"
+    assert unlocked_variant.path == "동일 순차 견적_보안해제.xlsx"
+    assert original_variant.security_state == "UNKNOWN"
+    assert unlocked_variant.security_state == "UNLOCKED"
+    assert not original_variant.preferred_for_parsing
+    assert unlocked_variant.preferred_for_parsing
+    assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
+    assert preferred_variant_for(unlocked_variant.document) is unlocked_variant
+    assert parsing_variant_for(session, unlocked_variant) is original_variant
 
 
 def test_locked_then_unlocked_keeps_evidence_and_selects_unlocked(

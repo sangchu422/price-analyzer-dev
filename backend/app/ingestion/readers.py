@@ -34,6 +34,8 @@ _FIELD_ALIASES = {
         "품명",
         "품목",
         "자재명",
+        "장치",
+        "내용",
         "item",
         "itemname",
         "description",
@@ -187,6 +189,12 @@ def _find_header(
             field = _field_for_header(value)
             if field is not None and field not in columns:
                 columns[field] = column_index
+        if "item_name" not in columns and (
+            "unit_price" in columns or "amount" in columns
+        ):
+            item_column = _fallback_item_column(row, columns)
+            if item_column is not None:
+                columns["item_name"] = item_column
         has_item = "item_name" in columns
         has_price = (
             "unit_price" in columns or "amount" in columns
@@ -206,6 +214,33 @@ def _field_for_header(value: Any) -> str | None:
     for field, aliases in _FIELD_ALIASES.items():
         if normalized in aliases:
             return field
+    undecorated = normalized.removesuffix("원").removesuffix("krw")
+    for field in ("unit_price", "amount"):
+        if undecorated in _FIELD_ALIASES[field]:
+            return field
+    return None
+
+
+def _fallback_item_column(
+    row: list[Any],
+    columns: dict[str, int],
+) -> int | None:
+    price_column = columns.get("unit_price", columns.get("amount"))
+    if price_column is None:
+        return None
+    mapped_columns = set(columns.values())
+    ignored = {"단위", "수량", "구분", "번호", "순번", "위치"}
+    for column in range(price_column - 1, -1, -1):
+        value = _HEADER_SEPARATORS.sub(
+            "",
+            _raw_text(row[column]) or "",
+        ).casefold()
+        if (
+            value
+            and column not in mapped_columns
+            and not any(word in value for word in ignored)
+        ):
+            return column
     return None
 
 

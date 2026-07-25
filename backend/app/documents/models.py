@@ -58,7 +58,7 @@ class SourceDocument(Base):
 class SourceVariant(Base):
     __tablename__ = "source_variant"
     __table_args__ = (
-        Index("ux_source_variant_sha256", "sha256", unique=True),
+        Index("ix_source_variant_sha256", "sha256"),
         {"info": {"evidence_immutable": True}},
     )
     __evidence_immutable__: ClassVar[bool] = True

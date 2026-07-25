@@ -107,6 +107,49 @@ def ingest_group(
     return preferred_variant
 
 
+def parsing_variant_for(
+    session: Session,
+    variant: SourceVariant,
+) -> SourceVariant:
+    """Resolve the variant that owns rows for identical document content.
+
+    Distinct evidence paths are always retained. When two paths in one
+    logical document have identical bytes, rows are stored once and this
+    projection exposes the exact variant from which they were parsed.
+    """
+    if variant.raw_items:
+        return variant
+    parsed_sibling = session.scalar(
+        select(SourceVariant)
+        .join(SourceVariant.raw_items)
+        .where(
+            SourceVariant.document_id == variant.document_id,
+            SourceVariant.sha256 == variant.sha256,
+        )
+        .order_by(SourceVariant.id)
+    )
+    return parsed_sibling or variant
+
+
+def preferred_variant_for(
+    document: SourceDocument,
+) -> SourceVariant:
+    """Project the current preferred path from immutable variant evidence."""
+    if not document.variants:
+        raise ValueError("source document has no variants")
+    groups = build_source_groups(
+        [Path(variant.path) for variant in document.variants]
+    )
+    if len(groups) != 1:
+        raise ValueError("source document variants have divergent identities")
+    preferred_path = ntpath.normcase(groups[0].preferred.as_posix())
+    return next(
+        variant
+        for variant in document.variants
+        if ntpath.normcase(variant.path) == preferred_path
+    )
+
+
 def _register_variant(
     session: Session,
     source_path: Path,
@@ -132,25 +175,20 @@ def _register_variant(
             )
         return existing_path
 
-    existing_hash = session.scalar(
-        select(SourceVariant).where(SourceVariant.sha256 == digest)
-    )
-    if existing_hash is not None:
-        if ntpath.normcase(existing_hash.document.logical_name) != (
-            ntpath.normcase(logical_name)
-        ):
-            raise ValueError(
-                "duplicate content belongs to another logical source: "
-                f"{existing_hash.document.logical_name}"
-            )
-        return existing_hash
-
-    rows = read_quote(source_path) if parse else []
     document = _find_document(session, logical_name)
     if document is None:
         document = SourceDocument(logical_name=logical_name)
         session.add(document)
 
+    same_content_has_rows = any(
+        sibling.sha256 == digest and bool(sibling.raw_items)
+        for sibling in document.variants
+    )
+    rows = (
+        read_quote(source_path)
+        if parse and not same_content_has_rows
+        else []
+    )
     variant = SourceVariant(
         document=document,
         path=stored_path,
