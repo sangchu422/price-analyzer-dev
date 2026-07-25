@@ -120,9 +120,12 @@ def test_documents_returns_variants_preference_and_current_counts(
     }
 
 
-def test_scan_empty_folder_is_explicit_not_silent(
+def test_scan_missing_folder_is_explicit_and_safe(
     client: TestClient,
 ) -> None:
+    from app.core.config import settings
+
+    settings.quote_folder = settings.quote_path / "missing"
     response = client.post("/api/documents/scan")
 
     assert response.status_code == 200
@@ -130,11 +133,19 @@ def test_scan_empty_folder_is_explicit_not_silent(
         "files_found": 0,
         "documents_found": 0,
         "documents_succeeded": 0,
-        "documents_failed": 0,
+        "documents_failed": 1,
         "variants_created": 0,
         "raw_items_created": 0,
         "decisions_created": 0,
-        "failures": [],
+        "failures": [
+            {
+                "logical_name": ".",
+                "error_code": "QUOTE_ROOT_NOT_FOUND",
+                "detail": (
+                    "configured quote root is not an accessible directory"
+                ),
+            }
+        ],
     }
 
 

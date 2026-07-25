@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import ntpath
 import os
@@ -11,6 +12,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.cleansing.models import CleanDecision, CleanStatus
+from app.cleansing.service import apply_rules
 from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceVariant
@@ -20,6 +22,7 @@ from app.ingestion.corpus import (
     prepare_source_groups,
     scan_supported_files,
 )
+from app.ingestion.service import ingest_path
 from app.quotes.models import RawQuoteItem
 
 
@@ -169,11 +172,121 @@ def test_failed_document_does_not_abort_good_documents_and_is_accounted(
     assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
 
 
+def test_failed_group_report_preserves_relative_variant_hash_evidence(
+    session: Session,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "quotes"
+    original = root / "unsupported.xlsx"
+    unlocked = root / "unsupported_보안해제.xlsx"
+    _write_quote(original, item_name="PROTECTED")
+    workbook = Workbook()
+    workbook.active.append(["unknown", "layout"])
+    workbook.save(unlocked)
+
+    report = ingest_corpus(session, root)
+
+    failure = report.failures[0].to_dict()
+    assert failure["preferred_path"] == "unsupported_보안해제.xlsx"
+    assert failure["preferred_sha256"] == hashlib.sha256(
+        unlocked.read_bytes()
+    ).hexdigest()
+    assert failure["variants"] == [
+        {
+            "path": "unsupported.xlsx",
+            "sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+        },
+        {
+            "path": "unsupported_보안해제.xlsx",
+            "sha256": hashlib.sha256(unlocked.read_bytes()).hexdigest(),
+        },
+    ]
+    assert str(tmp_path) not in json.dumps(
+        report.to_dict(),
+        ensure_ascii=False,
+    )
+
+
+def test_failed_group_reports_hash_unavailable_without_leaking_path(
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "quotes"
+    quote = root / "unsupported.xlsx"
+    quote.parent.mkdir()
+    workbook = Workbook()
+    workbook.active.append(["unknown", "layout"])
+    workbook.save(quote)
+
+    def fail_audit_hash(path: Path) -> str:
+        raise OSError(f"sensitive absolute path: {path}")
+
+    monkeypatch.setattr("app.ingestion.corpus.sha256", fail_audit_hash)
+
+    report = ingest_corpus(session, root)
+
+    failure = report.failures[0].to_dict()
+    assert failure["preferred_sha256"] is None
+    assert failure["variants"] == [
+        {
+            "path": "unsupported.xlsx",
+            "sha256": None,
+            "error_code": "HASH_UNAVAILABLE",
+        }
+    ]
+    assert str(tmp_path) not in json.dumps(
+        report.to_dict(),
+        ensure_ascii=False,
+    )
+
+
+def test_missing_root_does_not_append_outliers_or_mutate_existing_data(
+    session: Session,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "quotes"
+    for index, price in enumerate((1000, 1000, 100000), start=1):
+        quote = root / f"quote-{index}.xlsx"
+        _write_quote(quote, unit_price=price)
+        variant = ingest_path(session, quote, root=root)
+        apply_rules(session, variant.raw_items[0])
+    session.commit()
+    counts_before = (
+        session.scalar(select(func.count(SourceVariant.id))),
+        session.scalar(select(func.count(RawQuoteItem.id))),
+        session.scalar(select(func.count(CleanDecision.id))),
+    )
+
+    report = ingest_corpus(session, tmp_path / "missing")
+
+    assert report.documents_failed == 1
+    assert report.failures[0].error_code == "QUOTE_ROOT_NOT_FOUND"
+    assert report.documents[0].status == "FAILED"
+    assert (
+        session.scalar(select(func.count(SourceVariant.id))),
+        session.scalar(select(func.count(RawQuoteItem.id))),
+        session.scalar(select(func.count(CleanDecision.id))),
+    ) == counts_before
+
+
 def test_missing_root_is_an_explicit_preflight_error(tmp_path: Path) -> None:
     report = preflight_corpus(tmp_path / "missing")
 
     assert report.root_available is False
     assert report.issues[0].error_code == "QUOTE_ROOT_NOT_FOUND"
+
+
+def test_quote_root_file_is_reported_as_not_a_directory(
+    tmp_path: Path,
+) -> None:
+    root_file = tmp_path / "quote-root.xlsx"
+    _write_quote(root_file)
+
+    report = preflight_corpus(root_file)
+
+    assert report.root_available is False
+    assert report.issues[0].error_code == "QUOTE_ROOT_NOT_DIRECTORY"
 
 
 @pytest.mark.real_corpus

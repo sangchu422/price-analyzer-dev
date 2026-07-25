@@ -23,6 +23,7 @@ from app.ingestion.service import (
     UnsupportedQuoteLayoutError,
     ingest_group,
     parsing_variant_for,
+    sha256,
 )
 from app.ingestion.source_selector import SourceGroup, build_source_groups
 from app.quotes.models import RawQuoteItem
@@ -32,10 +33,43 @@ SUPPORTED_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
 
 
 @dataclass(frozen=True)
+class VariantEvidence:
+    path: str
+    sha256: str | None
+    error_code: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "path": self.path,
+            "sha256": self.sha256,
+        }
+        if self.error_code is not None:
+            result["error_code"] = self.error_code
+        return result
+
+
+@dataclass(frozen=True)
 class CorpusIssue:
     logical_name: str
     error_code: str
     detail: str
+    preferred_path: str | None = None
+    preferred_sha256: str | None = None
+    variants: tuple[VariantEvidence, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "logical_name": self.logical_name,
+            "error_code": self.error_code,
+            "detail": self.detail,
+        }
+        if self.preferred_path is not None:
+            result["preferred_path"] = self.preferred_path
+            result["preferred_sha256"] = self.preferred_sha256
+            result["variants"] = [
+                variant.to_dict() for variant in self.variants
+            ]
+        return result
 
 
 @dataclass(frozen=True)
@@ -53,7 +87,7 @@ class PreflightReport:
     def to_dict(self) -> dict[str, object]:
         return {
             **asdict(self),
-            "issues": [asdict(issue) for issue in self.issues],
+            "issues": [issue.to_dict() for issue in self.issues],
         }
 
 
@@ -106,7 +140,7 @@ class IngestReport:
             "raw_items_total": self.raw_items_total,
             "latest_status_counts": self.latest_status_counts,
             "documents": [asdict(item) for item in self.documents],
-            "failures": [asdict(issue) for issue in self.failures],
+            "failures": [issue.to_dict() for issue in self.failures],
         }
 
 
@@ -129,7 +163,23 @@ def scan_supported_files(root: Path) -> list[Path]:
 def preflight_corpus(root: Path) -> PreflightReport:
     """Inventory source metadata only; quote content is never opened."""
     root = Path(root)
-    if not root.is_dir():
+    try:
+        root_exists = root.exists()
+        root_is_directory = root.is_dir()
+    except OSError:
+        root_exists = False
+        root_is_directory = False
+    if not root_is_directory:
+        error_code = (
+            "QUOTE_ROOT_NOT_DIRECTORY"
+            if root_exists
+            else "QUOTE_ROOT_NOT_FOUND"
+        )
+        detail = (
+            "configured quote root is not a directory"
+            if root_exists
+            else "configured quote root is not an accessible directory"
+        )
         return PreflightReport(
             root_available=False,
             physical_files=0,
@@ -142,8 +192,8 @@ def preflight_corpus(root: Path) -> PreflightReport:
             issues=(
                 CorpusIssue(
                     logical_name=".",
-                    error_code="QUOTE_ROOT_NOT_FOUND",
-                    detail="configured quote root is not an accessible directory",
+                    error_code=error_code,
+                    detail=detail,
                 ),
             ),
         )
@@ -177,6 +227,30 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
     """Ingest each logical document independently and apply cleansing rules."""
     root = Path(root).resolve(strict=False)
     preflight = preflight_corpus(root)
+    if not preflight.root_available:
+        results = tuple(
+            DocumentIngestResult(
+                logical_name=issue.logical_name,
+                status="FAILED",
+                variants_created=0,
+                raw_items_created=0,
+                base_decisions_created=0,
+                error_code=issue.error_code,
+            )
+            for issue in preflight.issues
+        )
+        return IngestReport(
+            preflight=preflight,
+            documents=results,
+            variants_created=0,
+            raw_items_created=0,
+            base_decisions_created=0,
+            outlier_decisions_created=0,
+            variants_total=_count(session, SourceVariant.id),
+            raw_items_total=_count(session, RawQuoteItem.id),
+            latest_status_counts=_latest_status_counts(session),
+            failures=preflight.issues,
+        )
     paths = scan_supported_files(root)
     groups, preflight_issues = prepare_source_groups(paths, root)
     results: list[DocumentIngestResult] = [
@@ -207,7 +281,7 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
             session.commit()
         except EXPECTED_INGESTION_ERRORS as exc:
             session.rollback()
-            issue = ingestion_issue(group.logical_name, exc)
+            issue = ingestion_issue(group, exc, root=root)
             failures.append(issue)
             results.append(
                 DocumentIngestResult(
@@ -339,7 +413,12 @@ EXPECTED_INGESTION_ERRORS = (
 )
 
 
-def ingestion_issue(logical_name: str, exc: Exception) -> CorpusIssue:
+def ingestion_issue(
+    group: SourceGroup,
+    exc: Exception,
+    *,
+    root: Path,
+) -> CorpusIssue:
     if isinstance(exc, UnsupportedQuoteLayoutError):
         code = "UNSUPPORTED_LAYOUT"
         detail = "source layout is not currently supported"
@@ -358,11 +437,46 @@ def ingestion_issue(logical_name: str, exc: Exception) -> CorpusIssue:
     else:
         code = "INVALID_SOURCE_EVIDENCE"
         detail = "source evidence is invalid or changed"
+    variants = _variant_evidence(group, root)
+    preferred_path = _relative_name(group.preferred, root)
+    preferred = next(
+        item for item in variants if item.path == preferred_path
+    )
     return CorpusIssue(
-        logical_name=logical_name,
+        logical_name=group.logical_name,
         error_code=code,
         detail=detail,
+        preferred_path=preferred_path,
+        preferred_sha256=preferred.sha256,
+        variants=variants,
     )
+
+
+def _variant_evidence(
+    group: SourceGroup,
+    root: Path,
+) -> tuple[VariantEvidence, ...]:
+    evidence: list[VariantEvidence] = []
+    for path in sorted(
+        group.variants,
+        key=lambda item: _relative_name(item, root).casefold(),
+    ):
+        relative_path = _relative_name(path, root)
+        try:
+            digest = sha256(path)
+        except OSError:
+            evidence.append(
+                VariantEvidence(
+                    path=relative_path,
+                    sha256=None,
+                    error_code="HASH_UNAVAILABLE",
+                )
+            )
+        else:
+            evidence.append(
+                VariantEvidence(path=relative_path, sha256=digest)
+            )
+    return tuple(evidence)
 
 
 def _count(session: Session, column: object) -> int:

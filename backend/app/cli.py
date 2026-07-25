@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
+import stat
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -12,12 +14,18 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.util.exc import CommandError
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.sqlite import configure_sqlite
-from app.ingestion.corpus import ingest_corpus, preflight_corpus
+from app.ingestion.corpus import (
+    ingest_corpus,
+    preflight_corpus,
+    scan_supported_files,
+)
 
 
 EXIT_OK = 0
@@ -25,8 +33,8 @@ EXIT_PARTIAL_FAILURE = 1
 EXIT_CONFIGURATION_ERROR = 2
 
 
-class LocalSetupError(ValueError):
-    """A user-correctable local path or database setup problem."""
+class UnsafeOutputPathError(ValueError):
+    """An output path could overwrite or mutate quote evidence."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -45,31 +53,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit(payload, json_output=args.json, command="preflight")
         return EXIT_CONFIGURATION_ERROR
 
-    database_path = (
-        Path(args.database_file).expanduser().resolve(strict=False)
-    )
+    try:
+        database_path, report_path = _validate_output_targets(
+            quote_root=quote_root,
+            database_path=Path(args.database_file),
+            report_path=(
+                Path(args.report) if args.report is not None else None
+            ),
+        )
+    except UnsafeOutputPathError as exc:
+        return _emit_error(
+            "UNSAFE_OUTPUT_PATH",
+            str(exc),
+            json_output=args.json,
+        )
+    except OSError:
+        return _emit_error(
+            "UNSAFE_OUTPUT_PATH",
+            "output targets could not be safely resolved",
+            json_output=args.json,
+        )
+
     try:
         _upgrade_database(database_path)
-    except (OSError, LocalSetupError) as exc:
-        return _emit_setup_error(exc, json_output=args.json)
-
-    engine = configure_sqlite(
-        create_engine(
-            f"sqlite:///{database_path.as_posix()}",
-            connect_args={"check_same_thread": False},
+    except CommandError:
+        return _emit_error(
+            "DATABASE_MIGRATION_ERROR",
+            "database schema revision is incompatible",
+            json_output=args.json,
         )
-    )
+    except (SQLAlchemyError, sqlite3.DatabaseError) as exc:
+        return _emit_database_error(exc, json_output=args.json)
+    except OSError:
+        return _emit_error(
+            "DATABASE_UNAVAILABLE",
+            "database could not be created or accessed",
+            json_output=args.json,
+        )
+
     try:
-        with Session(engine, expire_on_commit=False) as session:
-            report = ingest_corpus(session, quote_root)
-    finally:
-        engine.dispose()
-    payload = report.to_dict()
-    if args.report is not None:
+        engine = configure_sqlite(
+            create_engine(
+                f"sqlite:///{database_path.as_posix()}",
+                connect_args={"check_same_thread": False},
+            )
+        )
         try:
-            _write_report(Path(args.report), payload)
-        except OSError as exc:
-            return _emit_setup_error(exc, json_output=args.json)
+            with Session(engine, expire_on_commit=False) as session:
+                report = ingest_corpus(session, quote_root)
+        finally:
+            engine.dispose()
+    except (SQLAlchemyError, sqlite3.DatabaseError) as exc:
+        return _emit_database_error(exc, json_output=args.json)
+    payload = report.to_dict()
+    if report_path is not None:
+        try:
+            _write_report(report_path, payload)
+        except OSError:
+            return _emit_error(
+                "REPORT_WRITE_ERROR",
+                "run report could not be written",
+                json_output=args.json,
+            )
 
     _emit(payload, json_output=args.json, command="ingest")
     return (
@@ -111,8 +156,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _upgrade_database(database_path: Path) -> None:
-    if database_path.exists() and database_path.is_dir():
-        raise LocalSetupError("database target is a directory")
     database_path.parent.mkdir(parents=True, exist_ok=True)
     backend_root = Path(__file__).resolve().parents[1]
     config = Config(str(backend_root / "alembic.ini"))
@@ -180,21 +223,119 @@ def _emit(
         )
 
 
-def _safe_setup_detail(exc: Exception) -> str:
-    if isinstance(exc, PermissionError):
-        return "local database or report path is not writable"
-    if isinstance(exc, LocalSetupError):
-        return str(exc)
-    return "local database or report setup failed"
-
-
-def _emit_setup_error(exc: Exception, *, json_output: bool) -> int:
+def _emit_error(
+    error_code: str,
+    detail: str,
+    *,
+    json_output: bool,
+) -> int:
     payload = {
-        "error_code": "LOCAL_SETUP_ERROR",
-        "detail": _safe_setup_detail(exc),
+        "error_code": error_code,
+        "detail": detail,
     }
     _emit(payload, json_output=json_output, command="error")
     return EXIT_CONFIGURATION_ERROR
+
+
+def _emit_database_error(exc: Exception, *, json_output: bool) -> int:
+    normalized = str(exc).casefold()
+    if "not a database" in normalized or "malformed" in normalized:
+        return _emit_error(
+            "DATABASE_INVALID",
+            "database file is not a valid compatible SQLite database",
+            json_output=json_output,
+        )
+    if "locked" in normalized:
+        return _emit_error(
+            "DATABASE_LOCKED",
+            "database is locked by another process",
+            json_output=json_output,
+        )
+    return _emit_error(
+        "DATABASE_UNAVAILABLE",
+        "database could not be initialized or accessed",
+        json_output=json_output,
+    )
+
+
+def _validate_output_targets(
+    *,
+    quote_root: Path,
+    database_path: Path,
+    report_path: Path | None,
+) -> tuple[Path, Path | None]:
+    source_paths = scan_supported_files(quote_root)
+    candidates = [database_path]
+    if report_path is not None:
+        candidates.append(report_path)
+
+    canonical: list[Path] = []
+    for candidate in candidates:
+        expanded = candidate.expanduser()
+        if _is_reparse_point(expanded):
+            raise UnsafeOutputPathError(
+                "output target must not be a symlink or reparse point"
+            )
+        if expanded.exists() and expanded.is_dir():
+            raise UnsafeOutputPathError(
+                "output target must be a file path"
+            )
+        if expanded.exists() and any(
+            _same_file(expanded, source_path)
+            for source_path in source_paths
+        ):
+            raise UnsafeOutputPathError(
+                "output target must not alias quote source evidence"
+            )
+        resolved = expanded.resolve(strict=False)
+        if _is_within(resolved, quote_root):
+            raise UnsafeOutputPathError(
+                "output targets must be outside quote root"
+            )
+        canonical.append(resolved)
+
+    resolved_database = canonical[0]
+    resolved_report = canonical[1] if report_path is not None else None
+    if (
+        resolved_report is not None
+        and (
+            resolved_database == resolved_report
+            or (
+                resolved_database.exists()
+                and resolved_report.exists()
+                and _same_file(resolved_database, resolved_report)
+            )
+        )
+    ):
+        raise UnsafeOutputPathError(
+            "database and report targets must be distinct"
+        )
+    return resolved_database, resolved_report
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except (AttributeError, FileNotFoundError):
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    try:
+        return os.path.samefile(first, second)
+    except FileNotFoundError:
+        return False
 
 
 if __name__ == "__main__":
