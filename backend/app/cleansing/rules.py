@@ -147,27 +147,13 @@ def parse_number(value: str | None) -> ParsedNumber:
     """Parse common quote number forms without accepting ambiguous text."""
     if value is None:
         return ParsedNumber(None, False)
-    normalized = unicodedata.normalize("NFKC", str(value)).strip()
-    if not normalized:
+    if not unicodedata.normalize("NFKC", str(value)).strip():
         return ParsedNumber(None, False)
 
-    negative_parentheses = (
-        normalized.startswith("(") and normalized.endswith(")")
-    )
-    if negative_parentheses:
-        normalized = normalized[1:-1].strip()
-    elif normalized.startswith("(") or normalized.endswith(")"):
+    token = _numeric_token(value)
+    if token is None:
         return ParsedNumber(None, True, "INVALID_FORMAT")
-
-    previous = None
-    while normalized != previous:
-        previous = normalized
-        normalized = _CURRENCY_EDGE.sub("", normalized).strip()
-    normalized = re.sub(r"^([+-])\s+", r"\1", normalized)
-    normalized = re.sub(r"(?<=\d)\s+(?=\d)", "", normalized)
-    normalized = normalized.replace("\u00a0", "")
-    if not _PLAIN_NUMBER.fullmatch(normalized):
-        return ParsedNumber(None, True, "INVALID_FORMAT")
+    normalized, negative_parentheses = token
     compact = normalized.replace(",", "")
     digit_count = sum(character.isdigit() for character in compact)
     has_nonzero_digit = any(
@@ -424,8 +410,7 @@ def _amount_mismatch(
 
 
 def _structural_anomaly(name: str, unit: str) -> str | None:
-    parsed_name = parse_number(name)
-    if parsed_name.value is not None:
+    if _numeric_token(name) is not None:
         return "item_name contains only a numeric value"
     if not unit or unit in _KNOWN_UNITS:
         return None
@@ -437,3 +422,26 @@ def _structural_anomaly(name: str, unit: str) -> str | None:
             f"matched_terms={matched_terms!r}"
         )
     return None
+
+
+def _numeric_token(value: str) -> tuple[str, bool] | None:
+    """Recognize numeric syntax without constructing an unbounded Decimal."""
+    normalized = unicodedata.normalize("NFKC", str(value)).strip()
+    negative_parentheses = (
+        normalized.startswith("(") and normalized.endswith(")")
+    )
+    if negative_parentheses:
+        normalized = normalized[1:-1].strip()
+    elif normalized.startswith("(") or normalized.endswith(")"):
+        return None
+
+    previous = None
+    while normalized != previous:
+        previous = normalized
+        normalized = _CURRENCY_EDGE.sub("", normalized).strip()
+    normalized = re.sub(r"^([+-])\s+", r"\1", normalized)
+    normalized = re.sub(r"(?<=[0-9])\s+(?=[0-9])", "", normalized)
+    normalized = normalized.replace("\u00a0", "")
+    if not _PLAIN_NUMBER.fullmatch(normalized):
+        return None
+    return normalized, negative_parentheses

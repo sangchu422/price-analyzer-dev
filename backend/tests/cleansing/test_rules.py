@@ -113,7 +113,17 @@ def test_summary_terms_do_not_match_legitimate_item_substrings(
     assert result.reason_code == "VALID"
 
 
-@pytest.mark.parametrize("item_name", ["12345", "1,234", " 100.25 "])
+@pytest.mark.parametrize(
+    "item_name",
+    [
+        "12345",
+        "1,234",
+        " 100.25 ",
+        "9223372036854775808",
+        "9" * 65,
+        "1.0000001",
+    ],
+)
 def test_numeric_only_item_name_requires_structural_review(
     make_raw,
     item_name: str,
