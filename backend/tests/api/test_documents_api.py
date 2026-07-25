@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,15 @@ def test_scan_isolates_bad_documents_and_reports_failures(
     assert payload["failures"][0]["detail"] == (
         "source file could not be read"
     )
+    assert payload["failures"][0]["preferred_path"] == "bad.xlsx"
+    expected_hash = hashlib.sha256(bad.read_bytes()).hexdigest()
+    assert payload["failures"][0]["preferred_sha256"] == expected_hash
+    assert payload["failures"][0]["variants"] == [
+        {
+            "path": "bad.xlsx",
+            "sha256": expected_hash,
+        }
+    ]
     assert api_session.scalar(select(func.count(SourceDocument.id))) == 1
     assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 1
 

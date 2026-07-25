@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from openpyxl import Workbook
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.exc import ArgumentError, InvalidRequestError
 
 from app.cli import _is_reparse_point, main
 
@@ -160,6 +161,105 @@ def test_ingest_does_not_disguise_unexpected_programmer_errors(
                 "--json",
             ]
         )
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [InvalidRequestError, ArgumentError],
+)
+def test_ingest_does_not_disguise_sqlalchemy_programming_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    root = tmp_path / "quotes"
+    _write_quote(root / "quote.xlsx")
+
+    def fail_unexpectedly(*args, **kwargs):
+        raise error_type("programming defect")
+
+    monkeypatch.setattr("app.cli.ingest_corpus", fail_unexpectedly)
+
+    with pytest.raises(error_type, match="programming defect"):
+        main(
+            [
+                "ingest",
+                "--quote-root",
+                str(root),
+                "--database-file",
+                str(tmp_path / "local.sqlite3"),
+                "--json",
+            ]
+        )
+
+
+def test_quote_root_resolution_failure_is_sanitized_before_any_write(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "quotes"
+    database = tmp_path / "local.sqlite3"
+    report = tmp_path / "run.json"
+    _write_quote(root / "quote.xlsx")
+    original_resolve = Path.resolve
+
+    def fail_root_resolution(self: Path, *args, **kwargs):
+        if self == root:
+            raise RuntimeError(f"symlink loop at sensitive path: {self}")
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_root_resolution)
+
+    exit_code = main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert exit_code == 2
+    assert payload == {
+        "error_code": "ROOT_UNAVAILABLE",
+        "detail": "quote root could not be safely resolved",
+    }
+    assert str(tmp_path) not in output
+    assert not database.exists()
+    assert not report.exists()
+
+
+def test_quote_root_symlink_loop_is_sanitized_when_supported(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    loop = tmp_path / "loop"
+    try:
+        loop.symlink_to(loop, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    exit_code = main(
+        [
+            "preflight",
+            "--quote-root",
+            str(loop),
+            "--json",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert exit_code == 2
+    assert payload["error_code"] == "ROOT_UNAVAILABLE"
+    assert str(tmp_path) not in output
 
 
 def test_rejects_report_that_is_the_database_before_writing(

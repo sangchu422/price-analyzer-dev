@@ -16,7 +16,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.util.exc import CommandError
 from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -40,7 +40,16 @@ class UnsafeOutputPathError(ValueError):
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    quote_root = Path(args.quote_root).expanduser().resolve(strict=False)
+    try:
+        quote_root = (
+            Path(args.quote_root).expanduser().resolve(strict=False)
+        )
+    except (OSError, RuntimeError):
+        return _emit_error(
+            "ROOT_UNAVAILABLE",
+            "quote root could not be safely resolved",
+            json_output=args.json,
+        )
 
     preflight = preflight_corpus(quote_root)
     if args.command == "preflight":
@@ -82,7 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "database schema revision is incompatible",
             json_output=args.json,
         )
-    except (SQLAlchemyError, sqlite3.DatabaseError) as exc:
+    except (DBAPIError, sqlite3.DatabaseError) as exc:
         return _emit_database_error(exc, json_output=args.json)
     except OSError:
         return _emit_error(
@@ -103,7 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report = ingest_corpus(session, quote_root)
         finally:
             engine.dispose()
-    except (SQLAlchemyError, sqlite3.DatabaseError) as exc:
+    except (DBAPIError, sqlite3.DatabaseError) as exc:
         return _emit_database_error(exc, json_output=args.json)
     payload = report.to_dict()
     if report_path is not None:

@@ -56,10 +56,19 @@ class DocumentListResponse(BaseModel):
     offset: int
 
 
+class VariantEvidenceResponse(BaseModel):
+    path: str
+    sha256: str | None = None
+    error_code: str | None = None
+
+
 class ScanFailureResponse(BaseModel):
     logical_name: str
     error_code: str
     detail: str
+    preferred_path: str | None = None
+    preferred_sha256: str | None = None
+    variants: list[VariantEvidenceResponse] | None = None
 
 
 class ScanResponse(BaseModel):
@@ -105,7 +114,11 @@ def list_documents(
     }
 
 
-@router.post("/scan", response_model=ScanResponse)
+@router.post(
+    "/scan",
+    response_model=ScanResponse,
+    response_model_exclude_none=True,
+)
 def scan_documents(
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
@@ -123,14 +136,7 @@ def scan_documents(
             report.base_decisions_created
             + report.outlier_decisions_created
         ),
-        "failures": [
-            {
-                "logical_name": failure.logical_name,
-                "error_code": failure.error_code,
-                "detail": failure.detail,
-            }
-            for failure in report.failures
-        ],
+        "failures": [failure.to_dict() for failure in report.failures],
     }
 
 
