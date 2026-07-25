@@ -104,6 +104,11 @@ class StandardItemVersion(_ImmutableCatalogRow, Base):
         server_default=text("'[]'"),
     )
     created_by: Mapped[str] = mapped_column(String(100))
+    change_reason: Mapped[str] = mapped_column(
+        Text,
+        default="INITIAL_CATALOG_VERSION",
+        server_default=text("'INITIAL_CATALOG_VERSION'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         NaiveUTCDateTime(),
         default=utc_now,
@@ -141,6 +146,11 @@ class DocumentMetadataVersion(_ImmutableCatalogRow, Base):
     quote_date: Mapped[date | None]
     project_name: Mapped[str | None] = mapped_column(Text)
     decided_by: Mapped[str] = mapped_column(String(100))
+    reason_detail: Mapped[str] = mapped_column(
+        Text,
+        default="DOCUMENT_METADATA_REVIEW",
+        server_default=text("'DOCUMENT_METADATA_REVIEW'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         NaiveUTCDateTime(),
         default=utc_now,
