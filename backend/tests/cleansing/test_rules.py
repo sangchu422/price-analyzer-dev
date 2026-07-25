@@ -52,6 +52,9 @@ def test_missing_name_has_priority_over_invalid_price(make_raw) -> None:
         "관리비.",
         "인 건 비",
         "(경비)",
+        "이 윤",
+        "(이윤)",
+        "노 무 비",
     ],
 )
 def test_summary_and_fee_variants_are_excluded(
@@ -67,6 +70,93 @@ def test_summary_and_fee_variants_are_excluded(
 def test_invalid_price_has_priority_over_summary_line(make_raw) -> None:
     result = evaluate(make_raw(item_name="합계", unit_price="0"))
 
+    assert result.reason_code == "INVALID_UNIT_PRICE"
+
+
+@pytest.mark.parametrize(
+    "item_name",
+    ["이윤조정기", "노무비계산기", "경비행기"],
+)
+def test_summary_terms_do_not_match_legitimate_item_substrings(
+    make_raw,
+    item_name: str,
+) -> None:
+    result = evaluate(make_raw(item_name=item_name))
+
+    assert result.status is CleanStatus.INCLUDED
+    assert result.reason_code == "VALID"
+
+
+@pytest.mark.parametrize("item_name", ["12345", "1,234", " 100.25 "])
+def test_numeric_only_item_name_requires_structural_review(
+    make_raw,
+    item_name: str,
+) -> None:
+    result = evaluate(make_raw(item_name=item_name))
+
+    assert result.status is CleanStatus.REVIEW_REQUIRED
+    assert result.reason_code == "COLUMN_SHIFT_SUSPECTED"
+    assert "item_name" in result.reason_detail
+
+
+@pytest.mark.parametrize(
+    "item_name",
+    ["6204 BEARING", "3M TAPE", "A100", "SENSOR 100"],
+)
+def test_alphanumeric_item_names_are_not_column_shift_false_positives(
+    make_raw,
+    item_name: str,
+) -> None:
+    result = evaluate(make_raw(item_name=item_name))
+
+    assert result.status is CleanStatus.INCLUDED
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["SERVO MOTOR", "BEARING", "베어링 6204", "모터"],
+)
+def test_item_like_unit_requires_structural_review(
+    make_raw,
+    unit: str,
+) -> None:
+    result = evaluate(make_raw(unit=unit))
+
+    assert result.status is CleanStatus.REVIEW_REQUIRED
+    assert result.reason_code == "COLUMN_SHIFT_SUSPECTED"
+    assert "unit" in result.reason_detail
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "EA",
+        "SET",
+        "식",
+        "대",
+        "M",
+        "KG",
+        "개",
+        "BOX",
+        "ROLL",
+        "M2",
+        "m³",
+        "인/일",
+    ],
+)
+def test_normal_units_do_not_trigger_structural_review(
+    make_raw,
+    unit: str,
+) -> None:
+    result = evaluate(make_raw(unit=unit))
+
+    assert result.status is CleanStatus.INCLUDED
+
+
+def test_invalid_price_has_priority_over_structural_anomaly(make_raw) -> None:
+    result = evaluate(make_raw(item_name="12345", unit_price="0"))
+
+    assert result.status is CleanStatus.EXCLUDED
     assert result.reason_code == "INVALID_UNIT_PRICE"
 
 

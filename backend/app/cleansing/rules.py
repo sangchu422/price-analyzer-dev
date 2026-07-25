@@ -30,6 +30,65 @@ _SUMMARY_NAMES = {
     "관리비",
     "인건비",
     "경비",
+    "이윤",
+    "노무비",
+}
+_KNOWN_UNITS = {
+    "EA",
+    "PC",
+    "PCS",
+    "SET",
+    "LOT",
+    "BOX",
+    "PACK",
+    "ROLL",
+    "UNIT",
+    "M",
+    "MM",
+    "CM",
+    "KM",
+    "M2",
+    "M3",
+    "G",
+    "KG",
+    "T",
+    "ML",
+    "L",
+    "H",
+    "HR",
+    "DAY",
+    "MONTH",
+    "MAN DAY",
+    "PERSON DAY",
+    "개",
+    "식",
+    "대",
+    "장",
+    "조",
+    "본",
+    "병",
+    "통",
+    "회",
+    "인/일",
+}
+_ITEMISH_UNIT_TERMS = {
+    "MOTOR",
+    "SERVO",
+    "BEARING",
+    "SENSOR",
+    "CABLE",
+    "SWITCH",
+    "VALVE",
+    "PUMP",
+    "PANEL",
+    "모터",
+    "베어링",
+    "센서",
+    "케이블",
+    "스위치",
+    "밸브",
+    "펌프",
+    "패널",
 }
 
 
@@ -136,6 +195,14 @@ def evaluate(raw: object) -> Evaluation:
             None,
             **common,
         )
+    structural_detail = _structural_anomaly(name, unit)
+    if structural_detail is not None:
+        return Evaluation(
+            CleanStatus.REVIEW_REQUIRED,
+            "COLUMN_SHIFT_SUSPECTED",
+            structural_detail,
+            **common,
+        )
     if quantity.supplied and (
         quantity.value is None or quantity.value <= 0
     ):
@@ -213,3 +280,19 @@ def _is_summary_or_fee(normalized_name: str) -> bool:
 def _invalid_detail(field: str, parsed: ParsedNumber) -> str:
     state = "unparseable" if parsed.supplied else "missing"
     return f"{field} is {state} or nonpositive"
+
+
+def _structural_anomaly(name: str, unit: str) -> str | None:
+    parsed_name = parse_number(name)
+    if parsed_name.value is not None:
+        return "item_name contains only a numeric value"
+    if not unit or unit in _KNOWN_UNITS:
+        return None
+    unit_terms = set(re.findall(r"[A-Z]+|[가-힣]+", unit))
+    matched_terms = sorted(unit_terms & _ITEMISH_UNIT_TERMS)
+    if matched_terms:
+        return (
+            "unit resembles an item-name column; "
+            f"matched_terms={matched_terms!r}"
+        )
+    return None

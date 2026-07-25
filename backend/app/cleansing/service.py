@@ -58,35 +58,49 @@ def current_decision(
 
 def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
     """Append review decisions for MAD outliers in exact normalized groups."""
-    latest_by_item: dict[int, CleanDecision] = {}
-    for decision in session.scalars(
-        select(CleanDecision).order_by(
-            CleanDecision.decided_at,
-            CleanDecision.id,
+    history: list[CleanDecision] = list(
+        session.scalars(
+            select(CleanDecision).order_by(
+                CleanDecision.decided_at,
+                CleanDecision.id,
+            )
         )
-    ):
+    )
+    latest_by_item: dict[int, CleanDecision] = {}
+    baseline_by_item: dict[int, CleanDecision] = {}
+    for decision in history:
         latest_by_item[decision.raw_item_id] = decision
+        if (
+            decision.decided_by == "SYSTEM"
+            and decision.rule_version.startswith("clean-")
+        ):
+            baseline_by_item[decision.raw_item_id] = decision
 
     grouped: dict[
         tuple[str, str, str],
         list[tuple[int, Decimal]],
     ] = defaultdict(list)
-    for decision in latest_by_item.values():
+    eligible_baselines: dict[int, CleanDecision] = {}
+    for raw_item_id, baseline in baseline_by_item.items():
+        latest = latest_by_item[raw_item_id]
         if (
-            decision.status is CleanStatus.INCLUDED
-            and decision.item_name_norm
-            and decision.spec_norm
-            and decision.unit_norm
-            and decision.unit_price is not None
+            latest.decided_by != "SYSTEM"
+            or baseline.status is not CleanStatus.INCLUDED
+            or not baseline.item_name_norm
+            or not baseline.spec_norm
+            or not baseline.unit_norm
+            or baseline.unit_price is None
         ):
-            group_key = (
-                decision.item_name_norm,
-                decision.spec_norm,
-                decision.unit_norm,
-            )
-            grouped[group_key].append(
-                (decision.raw_item_id, decision.unit_price)
-            )
+            continue
+        eligible_baselines[raw_item_id] = baseline
+        group_key = (
+            baseline.item_name_norm,
+            baseline.spec_norm,
+            baseline.unit_norm,
+        )
+        grouped[group_key].append(
+            (raw_item_id, baseline.unit_price)
+        )
 
     flagged_context: dict[int, tuple[tuple[str, str, str], int]] = {}
     for group_key, rows in grouped.items():
@@ -95,31 +109,72 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
 
     created: list[CleanDecision] = []
     with session.begin_nested():
-        for raw_item_id in sorted(flagged_context):
-            baseline = latest_by_item[raw_item_id]
-            group_key, group_size = flagged_context[raw_item_id]
-            decision = CleanDecision(
-                raw_item_id=raw_item_id,
-                status=CleanStatus.REVIEW_REQUIRED,
-                reason_code="UNIT_PRICE_MAD_OUTLIER",
-                reason_detail=(
+        for raw_item_id in sorted(eligible_baselines):
+            baseline = eligible_baselines[raw_item_id]
+            latest = latest_by_item[raw_item_id]
+            if raw_item_id in flagged_context:
+                group_key, group_size = flagged_context[raw_item_id]
+                reason_detail = (
                     "unit price is a group-local MAD outlier; "
                     f"baseline_decision_id={baseline.id}; "
                     f"group={group_key!r}; observations={group_size}"
-                ),
-                item_name_norm=baseline.item_name_norm,
-                spec_norm=baseline.spec_norm,
-                unit_norm=baseline.unit_norm,
-                maker_norm=baseline.maker_norm,
-                quantity=baseline.quantity,
-                unit_price=baseline.unit_price,
-                amount=baseline.amount,
-                rule_version=OUTLIER_RULE_VERSION,
-            )
+                )
+                if (
+                    latest.status is CleanStatus.REVIEW_REQUIRED
+                    and latest.reason_code == "UNIT_PRICE_MAD_OUTLIER"
+                    and latest.reason_detail == reason_detail
+                    and latest.rule_version == OUTLIER_RULE_VERSION
+                ):
+                    continue
+                decision = _outlier_decision(
+                    baseline,
+                    status=CleanStatus.REVIEW_REQUIRED,
+                    reason_code="UNIT_PRICE_MAD_OUTLIER",
+                    reason_detail=reason_detail,
+                )
+            elif (
+                latest.decided_by == "SYSTEM"
+                and latest.reason_code == "UNIT_PRICE_MAD_OUTLIER"
+            ):
+                decision = _outlier_decision(
+                    baseline,
+                    status=baseline.status,
+                    reason_code=baseline.reason_code,
+                    reason_detail=(
+                        "unit price is no longer a group-local MAD "
+                        f"outlier; baseline_decision_id={baseline.id}; "
+                        f"previous_outlier_decision_id={latest.id}"
+                    ),
+                )
+            else:
+                continue
             session.add(decision)
             created.append(decision)
         session.flush()
     return created
+
+
+def _outlier_decision(
+    baseline: CleanDecision,
+    *,
+    status: CleanStatus,
+    reason_code: str,
+    reason_detail: str,
+) -> CleanDecision:
+    return CleanDecision(
+        raw_item_id=baseline.raw_item_id,
+        status=status,
+        reason_code=reason_code,
+        reason_detail=reason_detail,
+        item_name_norm=baseline.item_name_norm,
+        spec_norm=baseline.spec_norm,
+        unit_norm=baseline.unit_norm,
+        maker_norm=baseline.maker_norm,
+        quantity=baseline.quantity,
+        unit_price=baseline.unit_price,
+        amount=baseline.amount,
+        rule_version=OUTLIER_RULE_VERSION,
+    )
 
 
 def _decision_from_evaluation(

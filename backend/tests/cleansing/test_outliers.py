@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -188,3 +189,197 @@ def test_repeating_full_rule_pipeline_keeps_existing_outlier_current(
     assert repeated_outliers == []
     assert current_decision(session, rows[2].id) is outlier
     assert session.scalar(select(func.count(CleanDecision.id))) == 4
+
+
+def test_manual_included_decision_is_never_superseded_by_outlier_rule(
+    session: Session,
+    make_raw,
+) -> None:
+    rows = [
+        make_raw(
+            item_name="Contactor",
+            spec="24 V",
+            unit="EA",
+            quantity="1",
+            unit_price=str(price),
+            amount=str(price),
+            source_row=index,
+        )
+        for index, price in enumerate((100, 100, 1000), start=1)
+    ]
+    for row in rows:
+        apply_rules(session, row)
+    manual = CleanDecision(
+        raw_item=rows[2],
+        status=CleanStatus.INCLUDED,
+        reason_code="MANUAL_REVIEW",
+        item_name_norm="CONTACTOR",
+        spec_norm="24 V",
+        unit_norm="EA",
+        quantity=Decimal("1"),
+        unit_price=Decimal("1000"),
+        amount=Decimal("1000"),
+        rule_version="manual-v1",
+        decided_by="reviewer",
+    )
+    session.add(manual)
+    session.flush()
+
+    created = apply_group_outlier_rules(session)
+
+    assert created == []
+    assert current_decision(session, rows[2].id) is manual
+
+
+def test_outlier_version_bump_appends_new_flagged_history(
+    session: Session,
+    make_raw,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        make_raw(
+            item_name="Breaker",
+            spec="30 A",
+            unit="EA",
+            quantity="1",
+            unit_price=str(price),
+            amount=str(price),
+            source_row=index,
+        )
+        for index, price in enumerate((100, 100, 1000), start=1)
+    ]
+    for row in rows:
+        apply_rules(session, row)
+    [first] = apply_group_outlier_rules(session)
+    monkeypatch.setattr(
+        "app.cleansing.service.OUTLIER_RULE_VERSION",
+        "outlier-mad-v2",
+    )
+
+    [second] = apply_group_outlier_rules(session)
+
+    assert first.raw_item_id == second.raw_item_id == rows[2].id
+    assert first.rule_version == "outlier-mad-v1"
+    assert second.rule_version == "outlier-mad-v2"
+    assert second.id > first.id
+    assert current_decision(session, rows[2].id) is second
+
+
+def test_changed_outlier_group_reason_appends_auditable_history(
+    session: Session,
+    make_raw,
+) -> None:
+    rows = [
+        make_raw(
+            item_name="Breaker",
+            spec="50 A",
+            unit="EA",
+            quantity="1",
+            unit_price=str(price),
+            amount=str(price),
+            source_row=index,
+        )
+        for index, price in enumerate((100, 100, 1000), start=1)
+    ]
+    for row in rows:
+        apply_rules(session, row)
+    [first] = apply_group_outlier_rules(session)
+    added = make_raw(
+        item_name="Breaker",
+        spec="50 A",
+        unit="EA",
+        quantity="1",
+        unit_price="100",
+        amount="100",
+        source_row=4,
+    )
+    apply_rules(session, added)
+
+    [second] = apply_group_outlier_rules(session)
+
+    assert first.raw_item_id == second.raw_item_id == rows[2].id
+    assert first.rule_version == second.rule_version
+    assert "observations=3" in first.reason_detail
+    assert "observations=4" in second.reason_detail
+    assert second.id > first.id
+
+
+def test_outlier_version_bump_appends_recovery_when_no_longer_flagged(
+    session: Session,
+    make_raw,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        make_raw(
+            item_name="Terminal",
+            spec="10 P",
+            unit="EA",
+            quantity="1",
+            unit_price=str(price),
+            amount=str(price),
+            source_row=index,
+        )
+        for index, price in enumerate((100, 100, 1000), start=1)
+    ]
+    for row in rows:
+        apply_rules(session, row)
+    [outlier] = apply_group_outlier_rules(session)
+    for index in (4, 5):
+        row = make_raw(
+            item_name="Terminal",
+            spec="10 P",
+            unit="EA",
+            quantity="1",
+            unit_price="1000",
+            amount="1000",
+            source_row=index,
+        )
+        apply_rules(session, row)
+    monkeypatch.setattr(
+        "app.cleansing.service.OUTLIER_RULE_VERSION",
+        "outlier-mad-v2",
+    )
+
+    created = apply_group_outlier_rules(session)
+    recovered = current_decision(session, rows[2].id)
+
+    assert outlier.raw_item_id == rows[2].id
+    assert recovered is not None
+    assert recovered.status is CleanStatus.INCLUDED
+    assert recovered.reason_code == "VALID"
+    assert recovered.rule_version == "outlier-mad-v2"
+    assert "no longer" in recovered.reason_detail
+    assert recovered in created
+
+
+def test_same_outlier_version_retry_is_idempotent_after_version_bump(
+    session: Session,
+    make_raw,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        make_raw(
+            item_name="Connector",
+            spec="12 P",
+            unit="EA",
+            quantity="1",
+            unit_price=str(price),
+            amount=str(price),
+            source_row=index,
+        )
+        for index, price in enumerate((100, 100, 1000), start=1)
+    ]
+    for row in rows:
+        apply_rules(session, row)
+    apply_group_outlier_rules(session)
+    monkeypatch.setattr(
+        "app.cleansing.service.OUTLIER_RULE_VERSION",
+        "outlier-mad-v2",
+    )
+
+    first = apply_group_outlier_rules(session)
+    second = apply_group_outlier_rules(session)
+
+    assert len(first) == 1
+    assert second == []
+    assert session.scalar(select(func.count(CleanDecision.id))) == 5
