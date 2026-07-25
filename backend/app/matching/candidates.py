@@ -209,6 +209,8 @@ def _embedding_scores(
             raise IndexMismatchError("embedding model mismatch")
         if batch.dimension != embedding_index.metadata.dimension:
             raise IndexMismatchError("embedding dimension mismatch")
+        if batch.vectors.shape[0] != 1 or batch.dimension <= 0:
+            raise IndexMismatchError("embedding query batch is invalid")
         scores = embedding_index.scores(batch.vectors[0])
         if any(
             not math.isfinite(float(score))
@@ -217,7 +219,9 @@ def _embedding_scores(
             raise IndexMismatchError("embedding scores must be finite")
     except (
         EmbeddingUnavailableError,
+        IndexError,
         IndexMismatchError,
+        OverflowError,
         TypeError,
         ValueError,
     ):

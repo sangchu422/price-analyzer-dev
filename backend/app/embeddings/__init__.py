@@ -3,6 +3,7 @@
 from app.embeddings.base import (
     EmbeddingBatch,
     EmbeddingClient,
+    EmbeddingContractError,
     EmbeddingContractNotConfiguredError,
     EmbeddingUnavailableError,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "DeterministicMockEmbeddingClient",
     "EmbeddingBatch",
     "EmbeddingClient",
+    "EmbeddingContractError",
     "EmbeddingContractNotConfiguredError",
     "EmbeddingIndex",
     "EmbeddingUnavailableError",

@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.embeddings.base import (
+    EmbeddingContractError,
     EmbeddingContractNotConfiguredError,
     EmbeddingUnavailableError,
 )
@@ -153,3 +154,70 @@ def test_network_or_contract_failure_is_reported_as_unavailable() -> None:
 
     with pytest.raises(EmbeddingUnavailableError, match="unavailable"):
         client.embed(["BEARING"])
+
+
+def make_openai_client(response_payload: object) -> HChatEmbeddingClient:
+    return HChatEmbeddingClient(
+        endpoint="https://intranet.invalid/embeddings",
+        api_key="office-key",
+        model="office-model",
+        api_style="openai",
+        transport=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json=response_payload)
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": []},
+        {"data": [{"index": 0, "embedding": []}]},
+        {
+            "data": [
+                {"index": 0, "embedding": [1.0, 0.0]},
+                {"index": 1, "embedding": [0.0, 1.0]},
+            ]
+        },
+        {
+            "data": [
+                {
+                    "index": 0,
+                    "embedding": [10**1000, 0],
+                }
+            ]
+        },
+    ],
+)
+def test_malformed_openai_batch_raises_safe_contract_error(
+    payload: object,
+) -> None:
+    client = make_openai_client(payload)
+
+    with pytest.raises(EmbeddingContractError):
+        client.embed(["BEARING"])
+
+
+@pytest.mark.parametrize("response_model", ["different-office-model", None])
+def test_openai_response_model_must_match_when_present(
+    response_model: object,
+) -> None:
+    client = make_openai_client(
+        {
+            "model": response_model,
+            "data": [{"index": 0, "embedding": [1.0, 0.0]}],
+        }
+    )
+
+    with pytest.raises(EmbeddingContractError, match="model"):
+        client.embed(["BEARING"])
+
+
+def test_openai_response_without_model_remains_compatible() -> None:
+    client = make_openai_client(
+        {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+    )
+
+    assert client.embed(["BEARING"]).model == "office-model"

@@ -190,6 +190,22 @@ class UnavailableClient:
         raise EmbeddingUnavailableError("disabled locally")
 
 
+class EmptyBatchClient:
+    def embed(self, texts):
+        from app.embeddings.base import EmbeddingBatch
+
+        return EmbeddingBatch(
+            vectors=np.empty((0, 2), dtype=np.float32),
+            model="office-model",
+            dimension=2,
+        )
+
+
+class OverflowClient:
+    def embed(self, texts):
+        raise OverflowError("malformed huge embedding value")
+
+
 def test_candidate_ranking_gracefully_falls_back_to_lexical() -> None:
     result = rank_candidates(
         query=MatchQuery(name="BALL BEARING", spec=None, unit="EA"),
@@ -207,6 +223,40 @@ def test_candidate_ranking_gracefully_falls_back_to_lexical() -> None:
     assert result.embedding_score is None
     assert result.embedding_status == "UNAVAILABLE"
     assert result.final_score == result.name_score
+
+
+@pytest.mark.parametrize("client", [EmptyBatchClient(), OverflowClient()])
+def test_candidate_ranking_falls_back_for_malformed_embedding_batch(
+    client,
+) -> None:
+    index = EmbeddingIndex(
+        item_ids=np.array([1]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="catalog-a",
+            normalization_version="match-v1",
+            created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    )
+
+    result = rank_candidates(
+        query=MatchQuery(name="BALL BEARING", spec=None, unit="EA"),
+        items=[
+            CandidateItem(
+                standard_item_id=1,
+                name="BALL BEARING",
+                unit="EA",
+            )
+        ],
+        embedding_client=client,
+        embedding_index=index,
+    )[0]
+
+    assert result.embedding_status == "UNAVAILABLE"
+    assert result.embedding_score is None
 
 
 class StaticClient:

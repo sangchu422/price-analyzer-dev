@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.embeddings.base import (
     EmbeddingBatch,
     EmbeddingClient,
+    EmbeddingContractError,
     EmbeddingContractNotConfiguredError,
     EmbeddingUnavailableError,
 )
@@ -72,9 +73,19 @@ class HChatEmbeddingClient:
             )
             response.raise_for_status()
             return self._parse_response(response.json(), len(values))
-        except EmbeddingContractNotConfiguredError:
+        except (
+            EmbeddingContractError,
+            EmbeddingContractNotConfiguredError,
+        ):
             raise
-        except (httpx.HTTPError, TypeError, ValueError, KeyError) as exc:
+        except (
+            httpx.HTTPError,
+            IndexError,
+            KeyError,
+            OverflowError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise EmbeddingUnavailableError(
                 "hChat embedding is unavailable; deterministic lexical "
                 "matching remains active"
@@ -98,23 +109,57 @@ class HChatEmbeddingClient:
                 "Update only _build_payload and _parse_response for custom "
                 "hChat"
             )
-        rows = payload["data"]
-        if not isinstance(rows, list) or len(rows) != expected_count:
-            raise ValueError("embedding response item count mismatch")
-        ordered = sorted(rows, key=lambda row: row["index"])
-        if [row["index"] for row in ordered] != list(range(expected_count)):
-            raise ValueError("embedding response indexes are invalid")
-        vectors = np.asarray(
-            [row["embedding"] for row in ordered],
-            dtype=np.float32,
-        )
-        if vectors.ndim != 2 or vectors.shape[0] != expected_count:
-            raise ValueError("embedding response vectors are invalid")
-        return EmbeddingBatch(
-            vectors=vectors,
-            model=self.model,
-            dimension=vectors.shape[1],
-        )
+        try:
+            if not isinstance(payload, dict):
+                raise TypeError("embedding response must be an object")
+            if (
+                "model" in payload
+                and payload["model"] != self.model
+            ):
+                raise EmbeddingContractError(
+                    "embedding response model does not match configured model"
+                )
+            rows = payload["data"]
+            if not isinstance(rows, list) or len(rows) != expected_count:
+                raise ValueError("embedding response item count mismatch")
+            if any(
+                not isinstance(row, dict)
+                or type(row.get("index")) is not int
+                for row in rows
+            ):
+                raise ValueError("embedding response rows are invalid")
+            ordered = sorted(rows, key=lambda row: row["index"])
+            if [row["index"] for row in ordered] != list(
+                range(expected_count)
+            ):
+                raise ValueError("embedding response indexes are invalid")
+            vectors = np.asarray(
+                [row["embedding"] for row in ordered],
+                dtype=np.float32,
+            )
+            if (
+                vectors.ndim != 2
+                or vectors.shape[0] != expected_count
+                or vectors.shape[1] <= 0
+            ):
+                raise ValueError("embedding response vectors are invalid")
+            return EmbeddingBatch(
+                vectors=vectors,
+                model=self.model,
+                dimension=vectors.shape[1],
+            )
+        except EmbeddingContractError:
+            raise
+        except (
+            IndexError,
+            KeyError,
+            OverflowError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise EmbeddingContractError(
+                "embedding response violates the OpenAI-compatible contract"
+            ) from exc
 
 
 def build_embedding_client(

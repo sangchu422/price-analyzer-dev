@@ -14,6 +14,10 @@ class EmbeddingUnavailableError(EmbeddingError):
     """Embedding cannot be used, so callers should retain lexical behavior."""
 
 
+class EmbeddingContractError(EmbeddingUnavailableError):
+    """An embedding service response violated the configured contract."""
+
+
 class EmbeddingContractNotConfiguredError(EmbeddingUnavailableError):
     """The office-specific hChat request/response contract is not configured."""
 
