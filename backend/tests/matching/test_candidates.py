@@ -121,19 +121,56 @@ def test_industrial_rating_does_not_create_model_boost(
     assert result == []
 
 
-def test_low_name_compatibility_prevents_unknown_token_model_boost() -> None:
+@pytest.mark.parametrize("unknown_measurement", ["400XYZ", "400-XYZ"])
+def test_low_name_compatibility_prevents_unknown_token_model_boost(
+    unknown_measurement: str,
+) -> None:
     result = rank_candidates(
-        query=MatchQuery(name="SERVO MOTOR", spec="400XYZ", unit="EA"),
+        query=MatchQuery(
+            name="SERVO MOTOR",
+            spec=unknown_measurement,
+            unit="EA",
+        ),
         items=[
             make_item(
                 item_id=1,
                 name="HEATER",
-                spec="400XYZ",
+                spec=unknown_measurement,
                 unit="EA",
             )
         ],
     )
     assert result == []
+
+
+@pytest.mark.parametrize(
+    ("query_name", "candidate_name", "model"),
+    [
+        ("DRIVE UNIT", "AC SERVO ASSEMBLY", "SGMAH-04AAA61"),
+        ("ACTUATOR", "SERVO MOTOR", "R88M-K40030H"),
+        ("ROTARY SUPPORT", "BALL BEARING", "6204-ZZ"),
+        ("구동 장치", "AC SERVO ASSEMBLY", "SGMAH-04AAA61"),
+    ],
+)
+def test_strong_model_identifier_ignores_name_language_or_synonym(
+    query_name: str,
+    candidate_name: str,
+    model: str,
+) -> None:
+    result = rank_candidates(
+        query=MatchQuery(name=query_name, spec=model, unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name=candidate_name,
+                spec=model,
+                unit="EA",
+            )
+        ],
+    )[0]
+    assert result.method == "MODEL_TOKEN_RULE_V1"
+    assert result.matched_tokens == (model,)
+    assert result.final_score >= Decimal("0.900000")
 
 
 def test_rating_only_match_stays_below_model_token_minimum() -> None:

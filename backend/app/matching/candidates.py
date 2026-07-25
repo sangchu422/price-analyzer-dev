@@ -135,6 +135,25 @@ def _identifier_tokens(tokens: tuple[str, ...]) -> set[str]:
     return {token for token in tokens if not is_rating_token(token)}
 
 
+def _strong_identifier_tokens(tokens: tuple[str, ...]) -> set[str]:
+    identifiers = _identifier_tokens(tokens)
+    strong: set[str] = set()
+    for token in identifiers:
+        prefix = token.split("-", 1)[0]
+        hyphenated_model = "-" in token and (
+            prefix[0].isalpha()
+            or (prefix.isdigit() and len(prefix) >= 4)
+        )
+        alpha_numeric_model = (
+            len(token) >= 5
+            and token[0].isalpha()
+            and any(character.isdigit() for character in token)
+        )
+        if hyphenated_model or alpha_numeric_model:
+            strong.add(token)
+    return strong
+
+
 def _evidence_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
     compound_prefixes = {
         token.split("-", 1)[0] for token in tokens if "-" in token
@@ -180,6 +199,10 @@ def rank_candidates(
         matched_identifiers = (
             _identifier_tokens(query_tokens) & _identifier_tokens(item_tokens)
         )
+        matched_strong_identifiers = (
+            _strong_identifier_tokens(query_tokens)
+            & _strong_identifier_tokens(item_tokens)
+        )
         name_score, spec_score, token_score = _lexical_score(
             query_name=query_name,
             query_spec=query_spec,
@@ -195,8 +218,11 @@ def rank_candidates(
             final_score = PERFECT_SCORE
             method = "EXACT_RULE_V1"
         elif (
-            matched_identifiers
-            and name_score >= MODEL_NAME_COMPATIBILITY_MINIMUM
+            matched_strong_identifiers
+            or (
+                matched_identifiers
+                and name_score >= MODEL_NAME_COMPATIBILITY_MINIMUM
+            )
         ):
             final_score = _quantize(
                 MODEL_TOKEN_MINIMUM
