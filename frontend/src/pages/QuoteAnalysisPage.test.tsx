@@ -141,6 +141,9 @@ it("uses server filters and never applies a price to candidate rows", async () =
   expect(within(candidateRow).getByText("후보만 있음")).toBeVisible();
   expect(within(candidateRow).getByText("적용 안 함")).toBeVisible();
   expect(within(candidateRow).queryByText("100.000000")).not.toBeInTheDocument();
+  expect(
+    within(candidateRow).getByRole("link", { name: "원천행 감사 보기" }),
+  ).toHaveAttribute("href", "/grouping?raw_item_id=8");
 
   await user.selectOptions(
     screen.getByRole("combobox", { name: "매칭 상태" }),

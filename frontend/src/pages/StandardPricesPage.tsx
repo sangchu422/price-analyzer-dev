@@ -1,5 +1,10 @@
-import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import {
   ApiError,
@@ -12,19 +17,63 @@ import {
 
 export function StandardPricesPage() {
   const queryClient = useQueryClient();
+  const linkedItemId = positiveIntegerParam("item_id");
+  const linkedVersionId = positiveIntegerParam("version_id");
+  const [requestedItemId, setRequestedItemId] = useState<number | null>(
+    linkedItemId,
+  );
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [actor, setActor] = useState("");
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
-  const catalog = useQuery({
+  const catalog = useInfiniteQuery({
     queryKey: ["standard-items"],
-    queryFn: ({ signal }) => getStandardItems(signal),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      getStandardItems({ afterId: pageParam, signal }),
+    getNextPageParam: safeNextCursor,
   });
+  const catalogItems = uniqueById(
+    catalog.data?.pages.flatMap((page) => page.items) ?? [],
+  );
+  const {
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = catalog;
+  const linkedItem = catalogItems.find((item) => item.id === requestedItemId);
+  const linkedItemPending =
+    requestedItemId !== null &&
+    !linkedItem &&
+    (catalog.isPending ||
+      hasNextPage ||
+      isFetchingNextPage);
   const effectiveId =
-    catalog.data?.items.some((item) => item.id === selectedId)
+    linkedItem?.id ??
+    (linkedItemPending
+      ? null
+      : catalogItems.some((item) => item.id === selectedId)
       ? selectedId
-      : catalog.data?.items[0]?.id ?? null;
+      : catalogItems[0]?.id ?? null);
   const selected =
-    catalog.data?.items.find((item) => item.id === effectiveId) ?? null;
+    catalogItems.find((item) => item.id === effectiveId) ?? null;
+
+  useEffect(() => {
+    if (
+      requestedItemId === null ||
+      linkedItem ||
+      !hasNextPage ||
+      isFetchingNextPage
+    ) {
+      return;
+    }
+    void fetchNextPage();
+  }, [
+    requestedItemId,
+    linkedItem,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  ]);
   const draft = useQuery({
     queryKey: ["price-draft", effectiveId],
     queryFn: ({ signal }) => getPriceDraft(effectiveId!, signal),
@@ -89,16 +138,17 @@ export function StandardPricesPage() {
       )}
       <div className="split-workspace price-workspace">
         <section className="work-list" aria-label="표준품목 목록">
-          <header><strong>표준품목</strong><span>{catalog.data?.items.length ?? 0}건</span></header>
+          <header><strong>표준품목</strong><span>{catalogItems.length}건</span></header>
           {catalog.isPending && <p className="inline-state">불러오는 중…</p>}
           {catalog.isError && <p className="inline-state is-error">표준품목을 불러오지 못했습니다.</p>}
           <ul>
-            {catalog.data?.items.map((item, index) => (
+            {catalogItems.map((item, index) => (
               <li key={item.id} style={{ "--row-index": index } as React.CSSProperties}>
                 <button
                   type="button"
                   className={effectiveId === item.id ? "work-row is-selected" : "work-row"}
                   onClick={() => {
+                    setRequestedItemId(null);
                     setSelectedId(item.id);
                     setNotice(null);
                     setActor("");
@@ -111,6 +161,18 @@ export function StandardPricesPage() {
               </li>
             ))}
           </ul>
+          {hasNextPage && (
+            <button
+              className="load-more-button"
+              type="button"
+              disabled={isFetchingNextPage}
+              onClick={() => void fetchNextPage()}
+            >
+              {isFetchingNextPage
+                ? "다음 표준품목 불러오는 중…"
+                : "다음 표준품목 불러오기"}
+            </button>
+          )}
         </section>
         <section className="work-detail" aria-label="표준단가 상세">
           {!selected && <div className="empty-detail"><p>표준품목을 선택하세요.</p></div>}
@@ -172,7 +234,14 @@ export function StandardPricesPage() {
                               <td>{row.supplier_name ?? "미등록"}</td>
                               <td className="numeric">{row.unit_price}</td>
                               <td>{row.quote_date ?? "—"}</td>
-                              <td>{row.source.path}</td>
+                              <td>
+                                <a
+                                  href={`/grouping?raw_item_id=${row.raw_item_id}`}
+                                  aria-label={`원천행 ${row.raw_item_id} 감사 보기`}
+                                >
+                                  {row.source.path}
+                                </a>
+                              </td>
                               <td>{row.source.row ?? row.source.page ?? "—"}</td>
                             </tr>
                           ))}
@@ -192,7 +261,12 @@ export function StandardPricesPage() {
                 {history.isError && <p className="inline-state is-error">승인 이력을 불러오지 못했습니다.</p>}
                 <ol className="version-ledger">
                   {history.data?.versions.map((version) => (
-                    <VersionRow key={version.id} version={version} />
+                    <VersionRow
+                      key={version.id}
+                      version={version}
+                      standardItemId={selected.id}
+                      linkedVersionId={linkedVersionId}
+                    />
                   ))}
                 </ol>
               </section>
@@ -208,15 +282,33 @@ function PriceMetric({ label, value, featured = false }: { label: string; value:
   return <div className={featured ? "is-featured" : undefined}><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
-function VersionRow({ version }: { version: PriceVersion }) {
+function VersionRow({
+  version,
+  standardItemId,
+  linkedVersionId,
+}: {
+  version: PriceVersion;
+  standardItemId: number;
+  linkedVersionId: number | null;
+}) {
   return (
     <li>
       <div>
-        <strong>v{version.version_number} · {version.approved_by}</strong>
+        <strong>
+          <a
+            href={`/standard-prices?item_id=${standardItemId}&version_id=${version.id}`}
+            aria-label={`표준단가 v${version.version_number} 감사 링크`}
+          >
+            v{version.version_number} · {version.approved_by}
+          </a>
+        </strong>
         <span>{formatDateTime(version.approved_at)} · 관측값 {version.observation_count}개</span>
       </div>
       <div className="version-price"><span>중앙값</span><strong>{version.prices.median}</strong></div>
-      <details>
+      <details
+        aria-label="버전 근거"
+        {...(linkedVersionId === version.id ? { open: true } : {})}
+      >
         <summary>버전 근거</summary>
         <p>최저 {version.prices.minimum} · 평균 {version.prices.average} · 최고 {version.prices.maximum}</p>
         <p>표준품목 버전 {version.standard_item_version?.version_number ?? "레거시"} · 제외 {version.excluded_count}건 · 재검토 {version.review_required_count}건</p>
@@ -234,4 +326,34 @@ function priceDraftError(error: unknown) {
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function positiveIntegerParam(name: string) {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function safeNextCursor<T extends { next_cursor: number | null }>(
+  lastPage: T,
+  allPages: T[],
+  lastPageParam: number | undefined,
+) {
+  const next = lastPage.next_cursor;
+  if (
+    next === null ||
+    next === lastPageParam ||
+    allPages.slice(0, -1).some((page) => page.next_cursor === next)
+  ) {
+    return undefined;
+  }
+  return next;
+}
+
+function uniqueById<T extends { id: number }>(items: T[]) {
+  const seen = new Set<number>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 }

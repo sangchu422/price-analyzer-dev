@@ -47,7 +47,9 @@ def _source(
         item_name_raw="Bearing",
         spec_raw="6204 ZZ",
         unit_raw="EA",
+        quantity_raw="2",
         unit_price_raw="120",
+        amount_raw="240",
         parser_name="xlsx",
         parser_version="1",
     )
@@ -61,7 +63,9 @@ def _source(
                 item_name_norm="BEARING",
                 spec_norm="6204 ZZ",
                 unit_norm="EA",
+                quantity=Decimal("2"),
                 unit_price=Decimal("120"),
+                amount=Decimal("240"),
                 rule_version="clean-v1",
             ),
         ]
@@ -225,6 +229,23 @@ def test_candidate_api_returns_evidence_without_auto_matching(
     assert payload["source"]["path"] == "quotes/api-sample.xlsx"
     assert payload["source"]["row"] == 7
     assert payload["current_cleansing_decision"]["status"] == "INCLUDED"
+    assert payload["raw_item"] == {
+        "id": raw.id,
+        "name": "Bearing",
+        "spec": "6204 ZZ",
+        "unit": "EA",
+        "quantity": "2",
+        "unit_price": "120",
+        "amount": "240",
+    }
+    assert payload["normalized"] == {
+        "name": "BEARING",
+        "spec": "6204 ZZ",
+        "unit": "EA",
+        "quantity": "2.000000",
+        "unit_price": "120.000000",
+        "amount": "240.000000",
+    }
     assert payload["candidates"][0]["embedding_status"] == "DISABLED"
     assert (
         api_session.scalar(select(func.count(ItemMembershipDecision.id))) == 0

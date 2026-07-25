@@ -1,5 +1,10 @@
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import {
   ApiError,
@@ -15,23 +20,80 @@ type Notice = { kind: "success" | "error"; text: string };
 
 export function GroupingReviewPage() {
   const queryClient = useQueryClient();
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const linkedRawItemId = positiveIntegerParam("raw_item_id");
+  const [selectedId, setSelectedId] = useState<number | null>(linkedRawItemId);
   const [resolvedIds, setResolvedIds] = useState<Set<number>>(() => new Set());
   const [notice, setNotice] = useState<Notice | null>(null);
   const [staleLocked, setStaleLocked] = useState(false);
-  const unmatched = useQuery({
+  const rowRefs = useRef(new Map<number, HTMLButtonElement>());
+  const shouldFocusSelected = useRef(false);
+  const unmatched = useInfiniteQuery({
     queryKey: ["catalog-unmatched"],
-    queryFn: ({ signal }) => getUnmatched(signal),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      getUnmatched({ afterId: pageParam, signal }),
+    getNextPageParam: safeNextCursor,
   });
-  const items = (unmatched.data?.items ?? []).filter(
-    (item) => !resolvedIds.has(item.raw_item_id),
+  const allItems = uniqueById(
+    unmatched.data?.pages.flatMap((page) => page.items) ?? [],
+    (item) => item.raw_item_id,
   );
+  const items = allItems.filter((item) => !resolvedIds.has(item.raw_item_id));
   const selected = items.find((item) => item.raw_item_id === selectedId) ?? null;
   const detail = useQuery({
     queryKey: ["catalog-candidates", selectedId],
     queryFn: ({ signal }) => getCatalogCandidates(selectedId!, signal),
     enabled: selectedId !== null,
   });
+
+  useEffect(() => {
+    if (!shouldFocusSelected.current || selectedId === null) return;
+    const row = rowRefs.current.get(selectedId);
+    if (!row) return;
+    row.focus();
+    shouldFocusSelected.current = false;
+  }, [items, selectedId]);
+
+  const advanceAfterResolution = async (resolvedId: number) => {
+    setResolvedIds((current) => new Set(current).add(resolvedId));
+    const currentIndex = items.findIndex(
+      (item) => item.raw_item_id === resolvedId,
+    );
+    const nextVisible =
+      currentIndex >= 0
+        ? items.slice(currentIndex + 1).find(
+            (item) => !resolvedIds.has(item.raw_item_id),
+          )
+        : items.find((item) => item.raw_item_id !== resolvedId);
+    if (nextVisible) {
+      shouldFocusSelected.current = true;
+      setSelectedId(nextVisible.raw_item_id);
+      return;
+    }
+    if (unmatched.hasNextPage) {
+      const knownIds = new Set(allItems.map((item) => item.raw_item_id));
+      let nextResult = await unmatched.fetchNextPage();
+      while (true) {
+        const nextItem = uniqueById(
+          nextResult.data?.pages.flatMap((page) => page.items) ?? [],
+          (item) => item.raw_item_id,
+        ).find(
+          (item) =>
+            !knownIds.has(item.raw_item_id) &&
+            item.raw_item_id !== resolvedId &&
+            !resolvedIds.has(item.raw_item_id),
+        );
+        if (nextItem) {
+          shouldFocusSelected.current = true;
+          setSelectedId(nextItem.raw_item_id);
+          return;
+        }
+        if (!nextResult.hasNextPage) break;
+        nextResult = await unmatched.fetchNextPage();
+      }
+    }
+    setSelectedId(null);
+  };
 
   const handleError = (error: unknown) => {
     if (error instanceof ApiError && error.status === 409) {
@@ -98,12 +160,11 @@ export function GroupingReviewPage() {
         decided_by: actor,
         reason_detail: reason,
       }),
-    onSuccess: () => {
+    onSuccess: async () => {
       setNotice({ kind: "success", text: "그룹핑 판정을 저장했습니다." });
       if (selectedId !== null) {
-        setResolvedIds((current) => new Set(current).add(selectedId));
+        await advanceAfterResolution(selectedId);
       }
-      void queryClient.invalidateQueries({ queryKey: ["catalog-unmatched"] });
     },
     onError: handleError,
   });
@@ -157,12 +218,11 @@ export function GroupingReviewPage() {
           selected?.current_membership_decision_id ??
           null,
       }),
-    onSuccess: () => {
+    onSuccess: async () => {
       setNotice({ kind: "success", text: "새 표준품목을 생성하고 확정했습니다." });
       if (selectedId !== null) {
-        setResolvedIds((current) => new Set(current).add(selectedId));
+        await advanceAfterResolution(selectedId);
       }
-      void queryClient.invalidateQueries({ queryKey: ["catalog-unmatched"] });
       void queryClient.invalidateQueries({ queryKey: ["standard-items"] });
     },
     onError: handleError,
@@ -200,6 +260,10 @@ export function GroupingReviewPage() {
             {items.map((item, index) => (
               <li key={item.raw_item_id} style={{ "--row-index": index } as React.CSSProperties}>
                 <button
+                  ref={(element) => {
+                    if (element) rowRefs.current.set(item.raw_item_id, element);
+                    else rowRefs.current.delete(item.raw_item_id);
+                  }}
                   type="button"
                   className={selectedId === item.raw_item_id ? "work-row is-selected" : "work-row"}
                   onClick={() => {
@@ -216,32 +280,44 @@ export function GroupingReviewPage() {
               </li>
             ))}
           </ul>
+          {unmatched.hasNextPage && (
+            <button
+              className="load-more-button"
+              type="button"
+              disabled={unmatched.isFetchingNextPage || busy}
+              onClick={() => void unmatched.fetchNextPage()}
+            >
+              {unmatched.isFetchingNextPage
+                ? "다음 품목 불러오는 중…"
+                : "다음 품목 불러오기"}
+            </button>
+          )}
           {!unmatched.isPending && items.length === 0 && (
             <p className="inline-state">그룹핑을 기다리는 품목이 없습니다.</p>
           )}
         </section>
 
         <section className="work-detail" aria-label="그룹핑 상세">
-          {!selected && (
+          {selectedId === null && (
             <div className="empty-detail">
               <span>01</span>
               <p>왼쪽 목록에서 검토할 품목을 선택하세요.</p>
             </div>
           )}
-          {selected && detail.isPending && (
+          {selectedId !== null && detail.isPending && (
             <div className="empty-detail"><p>후보와 근거를 불러오는 중…</p></div>
           )}
-          {selected && detail.isError && (
+          {selectedId !== null && detail.isError && (
             <div className="empty-detail is-error" role="alert">
               <p>후보 정보를 불러오지 못했습니다.</p>
               <button type="button" onClick={() => void detail.refetch()}>다시 시도</button>
             </div>
           )}
-          {selected && detail.data && (
+          {selectedId !== null && detail.data && (
             <div className="detail-content">
               <header className="record-heading">
                 <div>
-                  <p className="section-kicker">원천행 #{selected.raw_item_id}</p>
+                  <p className="section-kicker">원천행 #{detail.data.raw_item.id}</p>
                   <h1>{detail.data.normalized.name ?? "품명 없음"}</h1>
                   <p>{detail.data.normalized.spec ?? "사양 없음"} · {detail.data.normalized.unit ?? "단위 없음"}</p>
                 </div>
@@ -250,11 +326,25 @@ export function GroupingReviewPage() {
                 </span>
               </header>
 
+              {!selected && linkedRawItemId === selectedId && (
+                <p className="deep-link-context">딥링크로 연 원천행</p>
+              )}
               <section className="provenance-strip" aria-label="원본 근거">
-                <div><span>원본 파일</span><strong>{detail.data.source.path}</strong></div>
+                <div>
+                  <span>원본 파일</span>
+                  <strong>{detail.data.source.path}</strong>
+                  <a href={`/grouping?raw_item_id=${detail.data.raw_item.id}`}>
+                    원천행 감사 보기
+                  </a>
+                </div>
                 <div><span>위치</span><strong>{sourcePosition(detail.data.source)}</strong></div>
                 <div><span>정제 버전</span><strong>{detail.data.current_cleansing_decision.rule_version}</strong></div>
               </section>
+
+              <ValueComparison
+                raw={detail.data.raw_item}
+                normalized={detail.data.normalized}
+              />
 
               <section className="candidate-section">
                 <div className="section-heading">
@@ -299,7 +389,7 @@ export function GroupingReviewPage() {
                 onSave={(body) => metadata.mutate(body)}
               />
               <NewItemForm
-                key={`new-${selected.raw_item_id}`}
+                key={`new-${detail.data.raw_item.id}`}
                 defaults={detail.data.normalized}
                 disabled={busy || staleLocked}
                 onCreate={(body) => createAndMatch.mutate(body)}
@@ -339,10 +429,23 @@ function CandidateRow({
         <dl className="evidence-metrics">
           <div><dt>품명 유사도</dt><dd>{formatScore(candidate.name_score)}</dd></div>
           <div><dt>사양 유사도</dt><dd>{formatScore(candidate.spec_score)}</dd></div>
+          <div><dt>토큰 점수</dt><dd>{formatScore(candidate.token_score)}</dd></div>
           <div><dt>단위 호환</dt><dd>{candidate.unit_compatible ? "통과" : "차단"}</dd></div>
           <div>
-            <dt>임베딩</dt>
-            <dd>{embeddingLabel(candidate.embedding_status)}</dd>
+            <dt>모델 토큰 호환</dt>
+            <dd>{candidate.model_tokens_compatible ? "통과" : "차단"}</dd>
+          </div>
+          <div>
+            <dt>임베딩 근거</dt>
+            <dd>
+              {embeddingLabel(candidate.embedding_status)}
+              {candidate.embedding_score
+                ? ` · ${formatScore(candidate.embedding_score)}`
+                : ""}
+              {candidate.embedding_model
+                ? ` · ${candidate.embedding_model}`
+                : ""}
+            </dd>
           </div>
         </dl>
         <p className="token-evidence">
@@ -369,6 +472,49 @@ function CandidateRow({
         </div>
       </div>
     </article>
+  );
+}
+
+function ValueComparison({
+  raw,
+  normalized,
+}: {
+  raw: import("../api/client").CandidateResponse["raw_item"];
+  normalized: import("../api/client").CandidateResponse["normalized"];
+}) {
+  const fields = [
+    ["품명", "name"],
+    ["사양", "spec"],
+    ["단위", "unit"],
+    ["수량", "quantity"],
+    ["단가", "unit_price"],
+    ["금액", "amount"],
+  ] as const;
+  return (
+    <section className="value-comparison">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Normalization audit</p>
+          <h2>원본과 정제 값 비교</h2>
+        </div>
+      </div>
+      <div className="table-scroll">
+        <table className="data-table" aria-label="원본과 정제 값 비교">
+          <thead>
+            <tr><th>필드</th><th>원본</th><th>정제</th></tr>
+          </thead>
+          <tbody>
+            {fields.map(([label, key]) => (
+              <tr key={key}>
+                <th scope="row">{label}</th>
+                <td>{raw[key] ?? "—"}</td>
+                <td>{normalized[key] ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -491,4 +637,35 @@ function sourcePosition(source: import("../api/client").SourceEvidence) {
     source.page ? `${source.page}쪽` : null,
     source.row ? `${source.row}행` : null,
   ].filter(Boolean).join(" · ") || "위치 정보 없음";
+}
+
+function positiveIntegerParam(name: string) {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function safeNextCursor<T extends { next_cursor: number | null }>(
+  lastPage: T,
+  allPages: T[],
+  lastPageParam: number | undefined,
+) {
+  const next = lastPage.next_cursor;
+  if (
+    next === null ||
+    next === lastPageParam ||
+    allPages.slice(0, -1).some((page) => page.next_cursor === next)
+  ) {
+    return undefined;
+  }
+  return next;
+}
+
+function uniqueById<T>(items: T[], getId: (item: T) => number) {
+  const seen = new Set<number>();
+  return items.filter((item) => {
+    const id = getId(item);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }

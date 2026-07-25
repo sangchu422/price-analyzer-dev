@@ -243,12 +243,18 @@ class CandidateRawResponse(BaseModel):
     name: str | None
     spec: str | None
     unit: str | None
+    quantity: str | None
+    unit_price: str | None
+    amount: str | None
 
 
 class CandidateNormalizedResponse(BaseModel):
     name: str | None
     spec: str | None
     unit: str | None
+    quantity: str | None
+    unit_price: str | None
+    amount: str | None
 
 
 class CandidateCleanDecisionResponse(BaseModel):
@@ -571,11 +577,29 @@ def get_candidates(
             "name": raw.item_name_raw,
             "spec": raw.spec_raw,
             "unit": raw.unit_raw,
+            "quantity": raw.quantity_raw,
+            "unit_price": raw.unit_price_raw,
+            "amount": raw.amount_raw,
         },
         "normalized": {
             "name": clean.item_name_norm,
             "spec": clean.spec_norm,
             "unit": clean.unit_norm,
+            "quantity": (
+                None
+                if clean.quantity is None
+                else format(clean.quantity, ".6f")
+            ),
+            "unit_price": (
+                None
+                if clean.unit_price is None
+                else format(clean.unit_price, ".6f")
+            ),
+            "amount": (
+                None
+                if clean.amount is None
+                else format(clean.amount, ".6f")
+            ),
         },
         "current_cleansing_decision": _clean_decision_payload(clean),
         "current_membership_decision_id": (

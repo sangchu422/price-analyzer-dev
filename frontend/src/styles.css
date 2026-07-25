@@ -200,6 +200,28 @@
   animation-delay: calc(var(--row-index) * 24ms);
 }
 
+.load-more-button {
+  width: calc(100% - 28px);
+  margin: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font: 11px/1.2 "IBM Plex Mono", monospace;
+  cursor: pointer;
+}
+
+.load-more-button:focus-visible,
+.load-more-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.load-more-button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
 .work-row {
   width: 100%;
   min-height: 92px;
@@ -339,6 +361,7 @@
 }
 
 .candidate-section,
+.value-comparison,
 .editor-section,
 .price-draft-section,
 .source-table-section,
@@ -410,7 +433,7 @@
 
 .evidence-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
   margin: 15px 0 0;
   border-top: 1px solid var(--soft-line);
   border-bottom: 1px solid var(--soft-line);
@@ -425,6 +448,10 @@
 }
 
 .evidence-metrics > div:last-child {
+  border-right: 0;
+}
+
+.evidence-metrics > div:nth-child(3n) {
   border-right: 0;
 }
 

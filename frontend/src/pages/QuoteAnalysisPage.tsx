@@ -191,7 +191,20 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
           <div>
             <strong>{line.source.path}</strong>
             <span>{line.source.sheet ?? "시트 없음"} · {line.source.row ? `${line.source.row}행` : line.source.page ? `${line.source.page}쪽` : "위치 없음"}</span>
-            {line.standard_price_version_id && <span>표준단가 vID {line.standard_price_version_id}</span>}
+            <a
+              href={`/grouping?raw_item_id=${line.raw_item_id}`}
+              aria-label="원천행 감사 보기"
+            >
+              원천행 감사 보기
+            </a>
+            {line.standard_item_id && line.standard_price_version_id && (
+              <a
+                href={`/standard-prices?item_id=${line.standard_item_id}&version_id=${line.standard_price_version_id}`}
+                aria-label="표준단가 버전 감사 보기"
+              >
+                표준단가 vID {line.standard_price_version_id}
+              </a>
+            )}
             {candidate?.matched_tokens.length ? <span>모델 토큰 {candidate.matched_tokens.join(", ")}</span> : null}
           </div>
         </details>

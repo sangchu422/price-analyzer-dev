@@ -168,7 +168,16 @@ it("shows a draft, immutable history, and records the approval actor", async () 
   expect((await screen.findAllByText("110.000000"))[0]).toBeVisible();
   expect(screen.getByText("공급사 2곳")).toBeVisible();
   expect(screen.getByText("quotes/a.xlsx")).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "원천행 7 감사 보기" }),
+  ).toHaveAttribute("href", "/grouping?raw_item_id=7");
   expect(screen.getByText("v1 · buyer-old")).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "표준단가 v1 감사 링크" }),
+  ).toHaveAttribute(
+    "href",
+    "/standard-prices?item_id=2&version_id=70",
+  );
   await user.type(screen.getByLabelText("승인자"), "buyer-2");
   await user.click(screen.getByRole("button", { name: "표준단가 버전 승인" }));
 
@@ -186,4 +195,108 @@ it("shows a draft, immutable history, and records the approval actor", async () 
       requests.filter(({ url }) => url.includes("/versions")).length,
     ).toBeGreaterThanOrEqual(3),
   );
+});
+
+it("follows catalog cursors without duplicates and opens a linked version", async () => {
+  const catalogUrls: string[] = [];
+  const item = (id: number, name: string) => ({
+    id,
+    member_count: id,
+    current_version: {
+      id: id + 10,
+      standard_item_id: id,
+      version_number: 1,
+      canonical_name: name,
+      canonical_spec: `SPEC-${id}`,
+      canonical_unit: "EA",
+      aliases: [],
+      created_by: "buyer",
+      reason_detail: "initial",
+      created_at: "2026-07-25T10:00:00",
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        catalogUrls.push(url);
+        return url.includes("after_id=1")
+          ? jsonResponse({ items: [item(2, "ITEM TWO")], next_cursor: null, limit: 50 })
+          : jsonResponse({ items: [item(1, "ITEM ONE")], next_cursor: 1, limit: 50 });
+      }
+      if (url.endsWith("/standard-items/2/draft")) {
+        return jsonResponse({
+          standard_item_id: 2,
+          standard_item_version_id: 12,
+          canonical_unit: "EA",
+          observation_count: 1,
+          supplier_count: 1,
+          latest_quote_date: "2026-07-01",
+          prices: {
+            minimum: "10.000000",
+            median: "10.000000",
+            average: "10.000000",
+            maximum: "10.000000",
+          },
+          observations: [],
+          exclusions: [],
+          context: {},
+          calculation_version: "standard-price-v1",
+          fingerprint: "c".repeat(64),
+        });
+      }
+      if (url.includes("/standard-items/2/versions?")) {
+        return jsonResponse({
+          standard_item_id: 2,
+          versions: [
+            {
+              id: 71,
+              standard_item_id: 2,
+              version_number: 3,
+              observation_count: 1,
+              supplier_count: 1,
+              latest_quote_date: "2026-07-01",
+              prices: {
+                minimum: "10.000000",
+                median: "10.000000",
+                average: "10.000000",
+                maximum: "10.000000",
+              },
+              calculation_version: "standard-price-v1",
+              audit_status: "CAPTURED",
+              draft_fingerprint: "c".repeat(64),
+              standard_item_version: null,
+              excluded_count: 0,
+              review_required_count: 0,
+              exclusions: [],
+              exclusion_context_valid: true,
+              exclusion_context_error: null,
+              approved_by: "buyer-linked",
+              approved_at: "2026-07-26T10:00:00",
+              observations: [],
+            },
+          ],
+          next_cursor: null,
+          limit: 50,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/standard-prices?item_id=2&version_id=71");
+
+  expect(
+    await screen.findByRole("heading", { name: "ITEM TWO" }),
+  ).toBeVisible();
+  expect(await screen.findByText("v3 · buyer-linked")).toBeVisible();
+  expect(
+    screen.getByRole("group", { name: "버전 근거" }),
+  ).toHaveAttribute("open");
+  expect(catalogUrls.filter((url) => url.includes("after_id=1"))).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: /ITEM/ })).toHaveLength(2);
+  expect(
+    screen.queryByRole("button", { name: "다음 표준품목 불러오기" }),
+  ).not.toBeInTheDocument();
 });

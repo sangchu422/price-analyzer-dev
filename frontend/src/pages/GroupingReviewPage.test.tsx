@@ -21,8 +21,23 @@ const unmatched = {
 
 const candidate = {
   match_status: "CANDIDATE",
-  raw_item: { id: 7, name: " Bearing ", spec: "6204-ZZ", unit: "EA" },
-  normalized: { name: "BEARING", spec: "6204 ZZ", unit: "EA" },
+  raw_item: {
+    id: 7,
+    name: " Bearing ",
+    spec: "6204-ZZ",
+    unit: "EA",
+    quantity: "2",
+    unit_price: "2,800",
+    amount: "5,600",
+  },
+  normalized: {
+    name: "BEARING",
+    spec: "6204 ZZ",
+    unit: "EA",
+    quantity: "2.000000",
+    unit_price: "2800.000000",
+    amount: "5600.000000",
+  },
   current_cleansing_decision: {
     id: 41,
     status: "INCLUDED",
@@ -114,7 +129,17 @@ describe("GroupingReviewPage", () => {
     );
     expect(screen.getByText("단위 호환")).toBeVisible();
     expect(screen.getByText("모델 토큰 6204")).toBeVisible();
+    expect(screen.getByText("토큰 점수")).toBeVisible();
+    expect(screen.getByText("모델 토큰 호환")).toBeVisible();
+    expect(
+      within(
+        screen.getByRole("table", { name: "원본과 정제 값 비교" }),
+      ).getByRole("row", { name: "단가 2,800 2800.000000" }),
+    ).toBeVisible();
     expect(screen.getByText("quotes/sample.xlsx")).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "원천행 감사 보기" }),
+    ).toHaveAttribute("href", "/grouping?raw_item_id=7");
     await user.type(screen.getByLabelText("후보 검토자"), "buyer-1");
     await user.type(
       screen.getByLabelText("후보 판정 근거"),
@@ -133,6 +158,100 @@ describe("GroupingReviewPage", () => {
       candidate_score: "0.960000",
       decided_by: "buyer-1",
     });
+  });
+
+  it("loads the next cursor once and focuses the next row after approval", async () => {
+    const urls: string[] = [];
+    const second = {
+      ...unmatched.items[0],
+      raw_item_id: 8,
+      name: "SENSOR",
+      spec: "PX-01",
+      current_cleansing_decision_id: 42,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.includes("/unmatched") && url.includes("after_id=7")) {
+          return jsonResponse({
+            items: [unmatched.items[0], second],
+            next_cursor: null,
+            limit: 50,
+          });
+        }
+        if (url.includes("/unmatched")) {
+          return jsonResponse({
+            items: unmatched.items,
+            next_cursor: 7,
+            limit: 50,
+          });
+        }
+        if (url.includes("/raw-items/7/candidates")) {
+          return jsonResponse(candidate);
+        }
+        if (url.includes("/raw-items/8/candidates")) {
+          return jsonResponse({
+            ...candidate,
+            raw_item: { ...candidate.raw_item, id: 8, name: "SENSOR" },
+            normalized: {
+              ...candidate.normalized,
+              name: "SENSOR",
+              spec: "PX-01",
+            },
+            candidates: [],
+          });
+        }
+        if (url.includes("/memberships") && init?.method === "POST") {
+          return jsonResponse({ id: 91, status: "MATCHED" }, { status: 201 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/grouping");
+
+    await user.click(await screen.findByRole("button", { name: /BEARING/ }));
+    await user.type(screen.getByLabelText("후보 검토자"), "buyer-1");
+    await user.type(screen.getByLabelText("후보 판정 근거"), "근거 확인");
+    await user.click(screen.getByRole("button", { name: "표준품목으로 확정" }));
+
+    const nextRow = await screen.findByRole("button", { name: /SENSOR/ });
+    expect(nextRow).toHaveFocus();
+    expect(
+      await screen.findByRole("heading", { name: "SENSOR" }),
+    ).toBeVisible();
+    expect(
+      urls.filter((url) => url.includes("after_id=7")),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /SENSOR/ })).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: "다음 품목 불러오기" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens a linked raw item even when it is absent from the unmatched page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/unmatched")) {
+          return jsonResponse({ items: [], next_cursor: null, limit: 50 });
+        }
+        if (url.includes("/raw-items/7/candidates")) {
+          return jsonResponse(candidate);
+        }
+        throw new Error(`unexpected request: ${url}`);
+      }),
+    );
+
+    renderApp("/grouping?raw_item_id=7");
+
+    expect(
+      await screen.findByRole("heading", { name: "BEARING" }),
+    ).toBeVisible();
+    expect(screen.getByText("딥링크로 연 원천행")).toBeVisible();
   });
 
   it("creates an item, edits metadata, and locks stale 409 writes", async () => {

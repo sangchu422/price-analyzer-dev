@@ -138,8 +138,23 @@ export interface CatalogCandidate {
 
 export interface CandidateResponse {
   match_status: "CANDIDATE" | "NO_MATCH";
-  raw_item: { id: number; name: string | null; spec: string | null; unit: string | null };
-  normalized: { name: string | null; spec: string | null; unit: string | null };
+  raw_item: {
+    id: number;
+    name: string | null;
+    spec: string | null;
+    unit: string | null;
+    quantity: string | null;
+    unit_price: string | null;
+    amount: string | null;
+  };
+  normalized: {
+    name: string | null;
+    spec: string | null;
+    unit: string | null;
+    quantity: string | null;
+    unit_price: string | null;
+    amount: string | null;
+  };
   current_cleansing_decision: {
     id: number;
     status: ReviewStatus;
@@ -411,8 +426,16 @@ export function submitManualDecision(
   });
 }
 
-export function getUnmatched(signal?: AbortSignal) {
-  return requestJson<UnmatchedResponse>("/api/catalog/unmatched?limit=50", {
+export function getUnmatched({
+  afterId,
+  signal,
+}: {
+  afterId?: number;
+  signal?: AbortSignal;
+} = {}) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (afterId !== undefined) params.set("after_id", String(afterId));
+  return requestJson<UnmatchedResponse>(`/api/catalog/unmatched?${params.toString()}`, {
     signal,
   });
 }
@@ -481,9 +504,17 @@ export function saveDocumentMetadata(
   );
 }
 
-export function getStandardItems(signal?: AbortSignal) {
+export function getStandardItems({
+  afterId,
+  signal,
+}: {
+  afterId?: number;
+  signal?: AbortSignal;
+} = {}) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<StandardItemListResponse>(
-    "/api/catalog/standard-items?limit=50",
+    `/api/catalog/standard-items?${params.toString()}`,
     { signal },
   );
 }
