@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -175,7 +175,9 @@ describe("CleansingReviewPage", () => {
     await user.type(screen.getByLabelText("판단 근거"), "원본 대조 완료");
     await user.click(screen.getByRole("button", { name: "포함" }));
 
-    expect(await screen.findByText("다른 검토자가 먼저 변경했습니다. 최신 내용으로 새로고침했습니다.")).toBeVisible();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "다른 검토자가 먼저 변경했습니다. 최신 내용으로 새로고침했습니다.",
+    );
     await waitFor(() => expect(getCount).toBeGreaterThan(1));
   });
 
@@ -213,6 +215,117 @@ describe("CleansingReviewPage", () => {
     expect(await screen.findByText("판단이 저장되었습니다.")).toBeVisible();
   });
 
+  it("keeps selection and decision target inside the filtered result", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => jsonResponse(queue([firstItem, secondItem]))));
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.selectOptions(screen.getByRole("combobox", { name: "검토 사유 필터" }), "PRICE_OUTLIER");
+
+    expect(screen.queryByRole("button", { name: /BEARING/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "SENSOR", level: 1 })).toBeVisible();
+    expect(screen.getByRole("region", { name: "검토 판단" })).toBeVisible();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "검토 사유 필터" }), "AMOUNT_MISMATCH");
+    await user.type(screen.getByRole("searchbox", { name: "품목 또는 파일 검색" }), "없는 품목");
+    expect(screen.getByText("검색 조건에 맞는 검토 항목이 없습니다.")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "검토 판단" })).not.toBeInTheDocument();
+  });
+
+  it("shows filtered empty rather than server empty when a reason filter remains after resolution", async () => {
+    let resolvePost!: (value: Response) => void;
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Promise<Response>((resolve) => { resolvePost = resolve; });
+      }
+      return jsonResponse(queue([firstItem, secondItem]));
+    }));
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "검토 사유 필터" }),
+      "AMOUNT_MISMATCH",
+    );
+    await user.type(screen.getByLabelText("검토자"), "sangwoo");
+    await user.type(screen.getByLabelText("판단 근거"), "불일치 사유 확인");
+    await user.click(screen.getByRole("button", { name: "포함" }));
+    resolvePost(
+      await jsonResponse(
+        { ...firstItem.decision, id: 42, status: "INCLUDED", reason_code: "MANUAL_REVIEW" },
+        { status: 201 },
+      ),
+    );
+
+    expect(await screen.findByText("검색 조건에 맞는 검토 항목이 없습니다.")).toBeVisible();
+    expect(screen.getByText("판단이 저장되었습니다.")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "검토 사유 필터" })).toHaveValue(
+      "AMOUNT_MISMATCH",
+    );
+    expect(screen.queryByText("검토할 항목이 없습니다.")).not.toBeInTheDocument();
+  });
+
+  it("locks queue selection during save and resolves only the submitted item", async () => {
+    let resolvePost!: (value: Response) => void;
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Promise<Response>((resolve) => { resolvePost = resolve; });
+      }
+      return jsonResponse(queue([firstItem, secondItem]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    await user.type(screen.getByLabelText("검토자"), "sangwoo");
+    await user.type(screen.getByLabelText("판단 근거"), "A 항목 원본 대조 완료");
+    await user.click(screen.getByRole("button", { name: "포함" }));
+
+    const sensorRow = screen.getByRole("button", { name: /SENSOR/ });
+    expect(sensorRow).toBeDisabled();
+    await user.click(sensorRow);
+    expect(screen.getByRole("heading", { name: "BEARING", level: 1 })).toBeVisible();
+
+    resolvePost(
+      await jsonResponse(
+        { ...firstItem.decision, id: 42, status: "INCLUDED", reason_code: "MANUAL_REVIEW" },
+        { status: 201 },
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: "SENSOR", level: 1 })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /BEARING/ })).not.toBeInTheDocument();
+  });
+
+  it("rejects reserved or overlong manual decision fields without posting", async () => {
+    const fetchMock = vi.fn(() => jsonResponse(queue()));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "BEARING", level: 1 });
+    const actor = screen.getByLabelText("검토자");
+    const detail = screen.getByLabelText("판단 근거");
+    expect(actor).toHaveAttribute("maxlength", "100");
+    expect(detail).toHaveAttribute("maxlength", "2000");
+
+    await user.type(actor, "  SyStEm  ");
+    await user.type(detail, "원본 대조");
+    await user.click(screen.getByRole("button", { name: "포함" }));
+    expect(screen.getByText("SYSTEM은 자동 판단 전용 이름입니다.")).toBeVisible();
+
+    fireEvent.change(actor, { target: { value: "가".repeat(101) } });
+    fireEvent.change(detail, { target: { value: "나".repeat(2001) } });
+    await user.click(screen.getByRole("button", { name: "제외" }));
+    expect(screen.getByText("검토자는 100자 이내로 입력해 주세요.")).toBeVisible();
+    expect(screen.getByText("판단 근거는 2,000자 이내로 입력해 주세요.")).toBeVisible();
+    expect(screen.getByText("101 / 100")).toBeVisible();
+    expect(screen.getByText("2,001 / 2,000")).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("loads the next cursor page and keeps existing rows", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
@@ -245,7 +358,7 @@ describe("CleansingReviewPage", () => {
 
     vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ detail: "failure" }, { status: 500 })));
     renderPage();
-    expect(await screen.findByText("검토 목록을 불러오지 못했습니다.")).toBeVisible();
+    expect(await screen.findByRole("alert")).toHaveTextContent("검토 목록을 불러오지 못했습니다.");
   });
 
   it("offers labeled filters, keyboard row selection, and validates required decision fields", async () => {

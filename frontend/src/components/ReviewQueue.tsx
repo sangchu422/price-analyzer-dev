@@ -3,9 +3,11 @@ import { reasonLabel } from "./reasonLabels";
 
 interface ReviewQueueProps {
   items: ReviewQueueItem[];
+  availableReasons: string[];
   selectedId: number | null;
   search: string;
   reason: string;
+  isLocked: boolean;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   onSearchChange: (value: string) => void;
@@ -16,9 +18,11 @@ interface ReviewQueueProps {
 
 export function ReviewQueue({
   items,
+  availableReasons,
   selectedId,
   search,
   reason,
+  isLocked,
   hasNextPage,
   isFetchingNextPage,
   onSearchChange,
@@ -26,23 +30,8 @@ export function ReviewQueue({
   onSelect,
   onLoadMore,
 }: ReviewQueueProps) {
-  const reasons = [...new Set(items.map((item) => item.reason_code))];
-  const needle = search.trim().toLocaleLowerCase("ko");
-  const visibleItems = items.filter((item) => {
-    const searchable = [
-      item.raw.item_name,
-      item.normalized.item_name,
-      item.source.logical_name,
-      item.source.path,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLocaleLowerCase("ko");
-    return (!needle || searchable.includes(needle)) && (!reason || item.reason_code === reason);
-  });
-
   return (
-    <aside className="queue-panel" aria-label="검토 대기 목록">
+    <aside className="queue-panel" aria-label="검토 대기 목록" aria-busy={isLocked}>
       <div className="queue-tools">
         <label className="search-field">
           <span className="sr-only">품목 또는 파일 검색</span>
@@ -55,6 +44,7 @@ export function ReviewQueue({
             aria-label="품목 또는 파일 검색"
             placeholder="품목 또는 파일 검색"
             value={search}
+            disabled={isLocked}
             onChange={(event) => onSearchChange(event.target.value)}
           />
         </label>
@@ -63,10 +53,11 @@ export function ReviewQueue({
           <select
             aria-label="검토 사유 필터"
             value={reason}
+            disabled={isLocked}
             onChange={(event) => onReasonChange(event.target.value)}
           >
             <option value="">모든 사유</option>
-            {reasons.map((value) => (
+            {availableReasons.map((value) => (
               <option key={value} value={value}>
                 {reasonLabel(value)}
               </option>
@@ -77,10 +68,10 @@ export function ReviewQueue({
 
       <div className="queue-heading">
         <span>검토 항목</span>
-        <span>{visibleItems.length}건 표시</span>
+        <span>{items.length}건 표시</span>
       </div>
       <ol className="queue-list">
-        {visibleItems.map((item, index) => {
+        {items.map((item, index) => {
           const name = item.normalized.item_name ?? item.raw.item_name ?? "품명 없음";
           return (
             <li key={item.raw_item_id} style={{ "--row-index": index } as React.CSSProperties}>
@@ -88,6 +79,7 @@ export function ReviewQueue({
                 type="button"
                 className={item.raw_item_id === selectedId ? "queue-row is-selected" : "queue-row"}
                 aria-pressed={item.raw_item_id === selectedId}
+                disabled={isLocked}
                 onClick={() => onSelect(item.raw_item_id)}
               >
                 <span className="row-main">
@@ -97,21 +89,27 @@ export function ReviewQueue({
                 <span className="row-meta">
                   <span className="reason-mark">{reasonLabel(item.reason_code)}</span>
                   <span>{item.source.logical_name}</span>
-                  <span>{item.source.row ? `${item.source.row}행` : item.source.page ? `${item.source.page}쪽` : "위치 없음"}</span>
+                  <span>
+                    {item.source.row
+                      ? `${item.source.row}행`
+                      : item.source.page
+                        ? `${item.source.page}쪽`
+                        : "위치 없음"}
+                  </span>
                 </span>
               </button>
             </li>
           );
         })}
       </ol>
-      {visibleItems.length === 0 && search && (
-        <p className="queue-empty">검색 조건에 맞는 항목이 없습니다.</p>
+      {items.length === 0 && (
+        <p className="queue-empty">목록에 표시할 항목이 없습니다.</p>
       )}
       {hasNextPage && (
         <button
           className="load-more"
           type="button"
-          disabled={isFetchingNextPage}
+          disabled={isFetchingNextPage || isLocked}
           onClick={onLoadMore}
         >
           {isFetchingNextPage ? "불러오는 중…" : "다음 항목 불러오기"}

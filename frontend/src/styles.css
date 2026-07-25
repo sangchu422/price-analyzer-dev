@@ -233,6 +233,11 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, .46);
 }
 
+.queue-row:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
 .queue-row.is-selected {
   border-left-color: var(--accent);
   background: var(--paper);
@@ -517,6 +522,11 @@ textarea:focus-visible {
   font-size: 10px;
 }
 
+.decision-fields .character-count {
+  color: var(--muted);
+  text-align: right;
+}
+
 .decision-actions {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -583,6 +593,31 @@ textarea:focus-visible {
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--paper);
+}
+
+.filtered-empty {
+  min-height: calc(100vh - 68px);
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.filtered-empty p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.filtered-empty span {
+  font-size: 12px;
+}
+
+.filtered-empty strong {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 @keyframes row-enter {
