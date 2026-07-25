@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from app.documents.models import SourceVariant
 from app.ingestion.corpus import (
     ingest_corpus,
     preflight_corpus,
+    prepare_source_groups,
     scan_supported_files,
 )
 from app.quotes.models import RawQuoteItem
@@ -179,12 +181,42 @@ def test_missing_root_is_an_explicit_preflight_error(tmp_path: Path) -> None:
     not os.environ.get("PRICE_ANALYZER_REAL_QUOTE_ROOT"),
     reason="set PRICE_ANALYZER_REAL_QUOTE_ROOT for read-only local audit",
 )
-def test_real_corpus_preflight_is_read_only_and_records_current_observation() -> None:
+def test_real_corpus_preflight_is_read_only_and_records_current_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = Path(os.environ["PRICE_ANALYZER_REAL_QUOTE_ROOT"])
 
+    def forbid_content_reads(*args, **kwargs):
+        raise AssertionError("real corpus preflight must not read source content")
+
+    monkeypatch.setattr(Path, "open", forbid_content_reads)
+    monkeypatch.setattr(Path, "read_bytes", forbid_content_reads)
+
     report = preflight_corpus(root)
+    paths = scan_supported_files(root)
+    groups, issues = prepare_source_groups(paths, root)
+    paired_groups = [
+        group
+        for group in groups
+        if any(_is_unlocked_variant(path) for path in group.variants)
+        and any(not _is_unlocked_variant(path) for path in group.variants)
+    ]
 
     assert report.root_available
     assert report.physical_files == 48
+    assert report.logical_documents == 36
     assert report.unlocked_preferred == 15
-    assert len(scan_supported_files(root)) == report.physical_files
+    assert report.paired_documents == 12
+    assert len(paths) == report.physical_files
+    assert issues == []
+    assert len(paired_groups) == 12
+    assert all(
+        _is_unlocked_variant(group.preferred)
+        for group in paired_groups
+    )
+
+
+def _is_unlocked_variant(path: Path) -> bool:
+    stem = ntpath.normcase(path.stem.strip())
+    suffix = ntpath.normcase("_보안해제")
+    return stem.endswith(suffix)
