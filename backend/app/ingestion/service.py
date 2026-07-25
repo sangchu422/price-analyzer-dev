@@ -22,6 +22,14 @@ _PARSER_NAME = "quote-reader"
 _PARSER_VERSION = "reader-v1"
 
 
+class UnsupportedQuoteLayoutError(ValueError):
+    """Raised when a supported file has no safely recognizable quote rows."""
+
+
+class SourceFileChangedError(RuntimeError):
+    """Raised when source bytes change between hashing and parsing."""
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -40,25 +48,23 @@ def ingest_path(
 
     An absolute path requires a stable root so the stored identity remains
     portable. Original/protected paths are retained as evidence but are not
-    marked preferred; an unlocked path is the preferred parsing candidate.
+    selected at ingest; an unlocked path is the parsing candidate. The caller
+    owns the outer transaction and must commit when all related work succeeds.
     """
     canonical = build_source_groups([Path(path)], root=root)[0]
     source_path = canonical.variants[0]
     preferred = _is_unlocked(source_path)
-    try:
+    with session.begin_nested():
         variant = _register_variant(
             session,
             source_path,
             logical_name=canonical.logical_name,
             root=root,
             parse=True,
-            preferred=preferred,
+            selected_at_ingest=preferred,
         )
-        session.commit()
-        return variant
-    except Exception:
-        session.rollback()
-        raise
+        session.flush()
+    return variant
 
 
 def ingest_group(
@@ -67,7 +73,11 @@ def ingest_group(
     *,
     root: Path | None = None,
 ) -> SourceVariant:
-    """Register all evidence variants and parse only the selected variant."""
+    """Register all variants and parse the selected ingest-time snapshot.
+
+    The caller owns the outer transaction and must commit when all related
+    work succeeds.
+    """
     canonical_groups = build_source_groups(group.variants, root=root)
     if len(canonical_groups) != 1:
         raise ValueError("source group variants do not share one identity")
@@ -84,7 +94,7 @@ def ingest_group(
         ),
     )
     preferred_variant: SourceVariant | None = None
-    try:
+    with session.begin_nested():
         for source_path in ordered_paths:
             is_preferred = source_path == canonical.preferred
             variant = _register_variant(
@@ -93,14 +103,11 @@ def ingest_group(
                 logical_name=canonical.logical_name,
                 root=root,
                 parse=is_preferred,
-                preferred=is_preferred,
+                selected_at_ingest=is_preferred,
             )
             if is_preferred:
                 preferred_variant = variant
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+        session.flush()
 
     if preferred_variant is None:  # pragma: no cover - SourceGroup invariant
         raise RuntimeError("source group has no preferred variant")
@@ -157,7 +164,7 @@ def _register_variant(
     logical_name: str,
     root: Path | None,
     parse: bool,
-    preferred: bool,
+    selected_at_ingest: bool,
 ) -> SourceVariant:
     extension = source_path.suffix.lower()
     if extension not in _SUPPORTED_EXTENSIONS:
@@ -184,11 +191,17 @@ def _register_variant(
         sibling.sha256 == digest and bool(sibling.raw_items)
         for sibling in document.variants
     )
-    rows = (
-        read_quote(source_path)
-        if parse and not same_content_has_rows
-        else []
-    )
+    should_parse = parse and not same_content_has_rows
+    rows = read_quote(source_path) if should_parse else []
+    verified_digest = sha256(source_path)
+    if verified_digest != digest:
+        raise SourceFileChangedError(
+            f"source file changed while parsing: {stored_path}"
+        )
+    if should_parse and not rows:
+        raise UnsupportedQuoteLayoutError(
+            f"no quote rows matched a supported layout: {stored_path}"
+        )
     variant = SourceVariant(
         document=document,
         path=stored_path,
@@ -197,7 +210,7 @@ def _register_variant(
         security_state=(
             "UNLOCKED" if _is_unlocked(source_path) else "UNKNOWN"
         ),
-        preferred_for_parsing=preferred,
+        selected_for_parsing_at_ingest=selected_at_ingest,
     )
     session.add(variant)
     for parsed in rows:

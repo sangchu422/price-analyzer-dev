@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -137,7 +138,11 @@ def _parse_tabular_rows(
 ) -> list[ParsedRow]:
     header_index, columns = _find_header(rows)
     if header_index is None:
-        return []
+        return (
+            _parse_fixed_column_fallback(rows, sheet=sheet, page=page)
+            if cell_ranges
+            else []
+        )
 
     parsed: list[ParsedRow] = []
     mapped_columns = sorted(columns.values())
@@ -250,3 +255,77 @@ def _raw_text(value: Any) -> str | None:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
+
+
+def _parse_fixed_column_fallback(
+    rows: list[list[Any]],
+    *,
+    sheet: str | None,
+    page: int | None,
+) -> list[ParsedRow]:
+    """Conservatively recognize the observed C/E/F/H headerless layout."""
+    parsed: list[ParsedRow] = []
+    for row_index, values in enumerate(rows, start=1):
+        if len(values) < 8:
+            continue
+        item_name = _raw_text(values[2])
+        quantity = _raw_text(values[4])
+        unit = _raw_text(values[5])
+        unit_price = _raw_text(values[7])
+        if not _is_safe_fixed_column_row(
+            item_name,
+            quantity,
+            unit,
+            unit_price,
+        ):
+            continue
+        parsed.append(
+            ParsedRow(
+                sheet=sheet,
+                page=page,
+                row=row_index,
+                cells=f"C{row_index}:H{row_index}",
+                item_name=item_name,
+                spec=None,
+                unit=unit,
+                quantity=quantity,
+                unit_price=unit_price,
+                amount=None,
+                maker=None,
+                warnings=("FALLBACK_FIXED_C_E_F_H",),
+            )
+        )
+    return parsed
+
+
+def _is_safe_fixed_column_row(
+    item_name: str | None,
+    quantity: str | None,
+    unit: str | None,
+    unit_price: str | None,
+) -> bool:
+    item = (item_name or "").strip()
+    normalized_unit = (unit or "").strip()
+    return bool(
+        len(item) >= 2
+        and not _is_number(item)
+        and normalized_unit
+        and len(normalized_unit) <= 20
+        and _positive_number(quantity)
+        and _positive_number(unit_price)
+    )
+
+
+def _positive_number(value: str | None) -> bool:
+    try:
+        return Decimal((value or "").replace(",", "").strip()) > 0
+    except InvalidOperation:
+        return False
+
+
+def _is_number(value: str) -> bool:
+    try:
+        Decimal(value.replace(",", "").strip())
+        return True
+    except InvalidOperation:
+        return False

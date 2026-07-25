@@ -30,5 +30,13 @@
       ["위치", "설명", "규격", "수량", "단가(원)", "금액(원)"],
       ["C-1", "CONTROL PANEL", "800x1200", "1", "5000000", "5000000"]
     ]
+  },
+  "headerless_fixed_columns": {
+    "sheet": "내역",
+    "rows": [
+      ["프로젝트", null, null, null, null, null, null, null],
+      ["1", "A", "PHOTO SENSOR", null, "2", "EA", null, "11100"],
+      ["2", "B", "BEARING", null, "4", "EA", null, "2400"]
+    ]
   }
 }

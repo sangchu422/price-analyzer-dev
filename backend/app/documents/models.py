@@ -73,7 +73,7 @@ class SourceVariant(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     extension: Mapped[str] = mapped_column(String(32))
     security_state: Mapped[str] = mapped_column(String(32))
-    preferred_for_parsing: Mapped[bool] = mapped_column(
+    selected_for_parsing_at_ingest: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         server_default=text("0"),

@@ -84,7 +84,7 @@ def test_0002_downgrade_refuses_duplicate_sha_without_changing_evidence(
     database_path = tmp_path / "duplicate-evidence.sqlite3"
     environment = os.environ.copy()
     environment["DATABASE_FILE"] = str(database_path)
-    upgrade = _run_alembic(backend_path, environment, "upgrade", "head")
+    upgrade = _run_alembic(backend_path, environment, "upgrade", "0002")
     assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
     _seed_variant_rows(database_path, duplicate_sha=True)
 
@@ -126,7 +126,7 @@ def test_0002_downgrade_restores_unique_sha_when_evidence_is_compatible(
     database_path = tmp_path / "compatible-evidence.sqlite3"
     environment = os.environ.copy()
     environment["DATABASE_FILE"] = str(database_path)
-    upgrade = _run_alembic(backend_path, environment, "upgrade", "head")
+    upgrade = _run_alembic(backend_path, environment, "upgrade", "0002")
     assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
     _seed_variant_rows(database_path, duplicate_sha=False)
 
@@ -158,6 +158,71 @@ def test_0002_downgrade_restores_unique_sha_when_evidence_is_compatible(
     assert sha_indexes[0]["unique"]
 
 
+def test_0003_renames_historical_selection_field_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    backend_path = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "selection-rename.sqlite3"
+    environment = os.environ.copy()
+    environment["DATABASE_FILE"] = str(database_path)
+    upgrade_0002 = _run_alembic(
+        backend_path,
+        environment,
+        "upgrade",
+        "0002",
+    )
+    assert upgrade_0002.returncode == 0, (
+        upgrade_0002.stdout + upgrade_0002.stderr
+    )
+    _seed_variant_rows(database_path, duplicate_sha=False)
+
+    upgrade_head = _run_alembic(
+        backend_path,
+        environment,
+        "upgrade",
+        "head",
+    )
+
+    assert upgrade_head.returncode == 0, (
+        upgrade_head.stdout + upgrade_head.stderr
+    )
+    migration_engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}"
+    )
+    columns = {
+        column["name"]
+        for column in inspect(migration_engine).get_columns("source_variant")
+    }
+    assert "selected_for_parsing_at_ingest" in columns
+    assert "preferred_for_parsing" not in columns
+    with migration_engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            """
+            SELECT selected_for_parsing_at_ingest
+            FROM source_variant
+            """
+        ).scalar_one() == 0
+
+    downgrade = _run_alembic(
+        backend_path,
+        environment,
+        "downgrade",
+        "0002",
+    )
+
+    assert downgrade.returncode == 0, downgrade.stdout + downgrade.stderr
+    columns = {
+        column["name"]
+        for column in inspect(migration_engine).get_columns("source_variant")
+    }
+    assert "preferred_for_parsing" in columns
+    assert "selected_for_parsing_at_ingest" not in columns
+    with migration_engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT preferred_for_parsing FROM source_variant"
+        ).scalar_one() == 0
+
+
 def test_raw_quote_text_remains_unchanged_after_cleaning_decision() -> None:
     engine = configure_sqlite(create_engine("sqlite:///:memory:"))
     Base.metadata.create_all(engine)
@@ -170,7 +235,7 @@ def test_raw_quote_text_remains_unchanged_after_cleaning_decision() -> None:
         sha256="a" * 64,
         extension=".xlsx",
         security_state="UNLOCKED",
-        preferred_for_parsing=True,
+        selected_for_parsing_at_ingest=True,
     )
     document.variants.append(variant)
     raw_item = RawQuoteItem(
@@ -291,10 +356,13 @@ def test_initial_migration_creates_source_and_cleansing_tables(
         "sha256": False,
         "extension": False,
         "security_state": False,
-        "preferred_for_parsing": False,
+        "selected_for_parsing_at_ingest": False,
         "registered_at": False,
     }
-    assert variant_columns["preferred_for_parsing"]["default"] == "0"
+    assert (
+        variant_columns["selected_for_parsing_at_ingest"]["default"]
+        == "0"
+    )
     assert variant_columns["registered_at"]["default"] == "CURRENT_TIMESTAMP"
 
     raw_columns = {

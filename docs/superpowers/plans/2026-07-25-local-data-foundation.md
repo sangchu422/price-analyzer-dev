@@ -238,7 +238,7 @@ def test_source_raw_and_decisions_are_separate():
                 sha256="a" * 64,
                 extension=".xlsx",
                 security_state="UNLOCKED",
-                preferred_for_parsing=True,
+                selected_for_parsing_at_ingest=True,
             )
         )
         raw = RawQuoteItem(
@@ -297,7 +297,10 @@ class SourceVariant(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     extension: Mapped[str] = mapped_column(String(8))
     security_state: Mapped[str] = mapped_column(String(32))
-    preferred_for_parsing: Mapped[bool] = mapped_column(Boolean, default=False)
+    selected_for_parsing_at_ingest: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+    )
     registered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     document: Mapped[SourceDocument] = relationship(back_populates="variants")
 ```
@@ -601,12 +604,12 @@ def ingest_path(session: Session, path: Path) -> SourceVariant:
         sha256=digest,
         extension=path.suffix.lower(),
         security_state="UNLOCKED" if path.stem.endswith("_보안해제") else "UNKNOWN",
-        preferred_for_parsing=path.stem.endswith("_보안해제"),
+        selected_for_parsing_at_ingest=path.stem.endswith("_보안해제"),
     )
     session.add(variant)
     session.flush()
 
-    if variant.preferred_for_parsing or not document.raw_items:
+    if variant.selected_for_parsing_at_ingest or not document.raw_items:
         for parsed in read_quote(path):
             document.raw_items.append(
                 RawQuoteItem(

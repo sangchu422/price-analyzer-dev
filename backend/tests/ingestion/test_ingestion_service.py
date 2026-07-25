@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, inspect as sa_inspect, select
 from sqlalchemy.orm import Session
 
 from app.db.base import Base
@@ -14,6 +14,8 @@ from app.db.models import RawQuoteItem, SourceDocument, SourceVariant
 from app.db.sqlite import configure_sqlite
 from app.ingestion.readers import ParsedRow, read_quote
 from app.ingestion.service import (
+    SourceFileChangedError,
+    UnsupportedQuoteLayoutError,
     ingest_group,
     ingest_path,
     parsing_variant_for,
@@ -92,6 +94,28 @@ def test_verified_legacy_layouts_do_not_silently_return_zero_rows(
     assert rows[0].item_name == expected_item
     assert rows[0].sheet is not None
     assert rows[0].row == 3
+
+
+def test_headerless_fixed_column_fallback_is_auditable(
+    session: Session,
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "headerless.xlsx"
+    _write_layout_fixture(quote, "headerless_fixed_columns")
+
+    rows = read_quote(quote)
+
+    assert [row.item_name for row in rows] == ["PHOTO SENSOR", "BEARING"]
+    assert rows[0].quantity == "2"
+    assert rows[0].unit == "EA"
+    assert rows[0].unit_price == "11100"
+    assert rows[0].row == 2
+    assert rows[0].cells == "C2:H2"
+    assert rows[0].warnings == ("FALLBACK_FIXED_C_E_F_H",)
+    variant = ingest_path(session, quote, root=tmp_path)
+    assert json.loads(variant.raw_items[0].parse_warnings_json) == [
+        "FALLBACK_FIXED_C_E_F_H"
+    ]
 
 
 def test_ingestion_preserves_exact_variant_and_cell_provenance(
@@ -205,7 +229,10 @@ def test_group_ingestion_registers_both_variants_but_parses_only_unlocked(
     rows = session.scalars(select(RawQuoteItem)).all()
     assert preferred.path == "설비 견적_보안해제.xlsx"
     assert len(variants) == 2
-    assert sum(variant.preferred_for_parsing for variant in variants) == 1
+    assert sum(
+        variant.selected_for_parsing_at_ingest
+        for variant in variants
+    ) == 1
     assert len(rows) == 1
     assert rows[0].item_name_raw == "UNLOCKED COPY"
     assert rows[0].source_variant.path == "설비 견적_보안해제.xlsx"
@@ -251,8 +278,8 @@ def test_byte_identical_locked_then_unlocked_retains_unlocked_precedence(
     assert unlocked_variant.path == "동일 순차 견적_보안해제.xlsx"
     assert original_variant.security_state == "UNKNOWN"
     assert unlocked_variant.security_state == "UNLOCKED"
-    assert not original_variant.preferred_for_parsing
-    assert unlocked_variant.preferred_for_parsing
+    assert not original_variant.selected_for_parsing_at_ingest
+    assert unlocked_variant.selected_for_parsing_at_ingest
     assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
     assert preferred_variant_for(unlocked_variant.document) is unlocked_variant
     assert parsing_variant_for(session, unlocked_variant) is original_variant
@@ -273,8 +300,8 @@ def test_locked_then_unlocked_keeps_evidence_and_selects_unlocked(
     document = session.scalar(select(SourceDocument))
     assert document is not None
     assert original_variant.document_id == unlocked_variant.document_id
-    assert not original_variant.preferred_for_parsing
-    assert unlocked_variant.preferred_for_parsing
+    assert not original_variant.selected_for_parsing_at_ingest
+    assert unlocked_variant.selected_for_parsing_at_ingest
     assert {row.item_name_raw for row in document.raw_items} == {
         "ORIGINAL EVIDENCE",
         "UNLOCKED EVIDENCE",
@@ -309,6 +336,110 @@ def test_parse_errors_leave_no_partial_database_rows(
     assert session.scalar(select(func.count(SourceDocument.id))) == 0
     assert session.scalar(select(func.count(SourceVariant.id))) == 0
     assert session.scalar(select(func.count(RawQuoteItem.id))) == 0
+
+
+def test_supported_file_with_unknown_layout_rolls_back_visibly(
+    session: Session,
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "unknown-layout.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["알 수 없는", "양식"])
+    workbook.save(quote)
+
+    with pytest.raises(
+        UnsupportedQuoteLayoutError,
+        match="no quote rows matched",
+    ):
+        ingest_path(session, quote, root=tmp_path)
+
+    assert session.scalar(select(func.count(SourceDocument.id))) == 0
+    assert session.scalar(select(func.count(SourceVariant.id))) == 0
+
+
+def test_file_swap_between_hash_and_parse_rolls_back_all_ingestion(
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quote = tmp_path / "changing.xlsx"
+    _write_quote(quote, item_name="BEFORE")
+    from app.ingestion import service as ingestion_service
+
+    actual_reader = ingestion_service.read_quote
+
+    def read_then_replace(path: Path) -> list[ParsedRow]:
+        rows = actual_reader(path)
+        _write_quote(path, item_name="AFTER")
+        return rows
+
+    monkeypatch.setattr(ingestion_service, "read_quote", read_then_replace)
+
+    with pytest.raises(SourceFileChangedError, match="changed while parsing"):
+        ingest_path(session, quote, root=tmp_path)
+
+    assert session.scalar(select(func.count(SourceDocument.id))) == 0
+    assert session.scalar(select(func.count(SourceVariant.id))) == 0
+    assert session.scalar(select(func.count(RawQuoteItem.id))) == 0
+
+
+def test_ingestion_success_does_not_commit_unrelated_outer_work(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "transaction-success.sqlite3"
+    engine = configure_sqlite(
+        create_engine(f"sqlite:///{database_path.as_posix()}")
+    )
+    Base.metadata.create_all(engine)
+    quote = tmp_path / "quote.xlsx"
+    _write_quote(quote)
+    with Session(engine, expire_on_commit=False) as session:
+        unrelated = SourceDocument(logical_name="unrelated-pending")
+        session.add(unrelated)
+
+        ingest_path(session, quote, root=tmp_path)
+
+        assert session.in_transaction()
+        assert sa_inspect(unrelated).persistent
+        with Session(engine) as observer:
+            assert observer.scalar(
+                select(func.count(SourceDocument.id))
+            ) == 0
+        session.commit()
+    with Session(engine) as observer:
+        assert observer.scalar(select(func.count(SourceDocument.id))) == 2
+
+
+def test_ingestion_failure_rolls_back_only_its_savepoint(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "transaction-failure.sqlite3"
+    engine = configure_sqlite(
+        create_engine(f"sqlite:///{database_path.as_posix()}")
+    )
+    Base.metadata.create_all(engine)
+    quote = tmp_path / "unknown.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["unknown"])
+    workbook.save(quote)
+    with Session(engine, expire_on_commit=False) as session:
+        unrelated = SourceDocument(logical_name="keep-me-pending")
+        session.add(unrelated)
+
+        with pytest.raises(UnsupportedQuoteLayoutError):
+            ingest_path(session, quote, root=tmp_path)
+
+        assert session.in_transaction()
+        assert sa_inspect(unrelated).persistent
+        assert session.scalar(select(func.count(SourceDocument.id))) == 1
+        assert session.scalar(select(func.count(SourceVariant.id))) == 0
+        with Session(engine) as observer:
+            assert observer.scalar(
+                select(func.count(SourceDocument.id))
+            ) == 0
+        session.commit()
+    with Session(engine) as observer:
+        assert observer.scalar(select(func.count(SourceDocument.id))) == 1
 
 
 def test_unsupported_extension_is_rejected_without_database_writes(
