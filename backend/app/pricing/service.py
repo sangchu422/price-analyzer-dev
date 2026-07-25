@@ -98,7 +98,10 @@ class PriceExclusion:
     raw_item_id: int
     reason: ExclusionReason
     clean_decision_id: int | None
+    clean_status: CleanStatus | None
     membership_decision_id: int | None
+    membership_status: MembershipStatus | None
+    membership_standard_item_id: int | None
     source: PriceSource
 
 
@@ -273,7 +276,7 @@ def _latest_membership(
     return current_membership(session, raw_item_id)
 
 
-def calculate_standard_price(
+def _calculate_standard_price(
     session: Session, standard_item_id: int
 ) -> StandardPriceDraft:
     """Calculate a deterministic draft without adding or changing rows."""
@@ -315,8 +318,17 @@ def calculate_standard_price(
                     raw_item_id=raw.id,
                     reason=reason,
                     clean_decision_id=None if clean is None else clean.id,
+                    clean_status=None if clean is None else clean.status,
                     membership_decision_id=(
                         None if membership is None else membership.id
+                    ),
+                    membership_status=(
+                        None if membership is None else membership.status
+                    ),
+                    membership_standard_item_id=(
+                        None
+                        if membership is None
+                        else membership.standard_item_id
                     ),
                     source=_source(raw),
                 )
@@ -387,6 +399,15 @@ def calculate_standard_price(
     )
 
 
+def calculate_standard_price(
+    session: Session, standard_item_id: int
+) -> StandardPriceDraft:
+    """Read a deterministic draft without flushing caller-owned state."""
+
+    with session.no_autoflush:
+        return _calculate_standard_price(session, standard_item_id)
+
+
 def current_standard_price_version(
     session: Session, standard_item_id: int
 ) -> StandardPriceVersion | None:
@@ -455,6 +476,10 @@ def approve_standard_price(
             EXACT_DECIMAL_QUANTUM, rounding=ROUND_HALF_UP
         ),
         calculation_version=draft.calculation_version,
+        draft_fingerprint=draft.fingerprint,
+        excluded_count=draft.context.excluded_count,
+        review_required_count=draft.context.review_required_count,
+        exclusion_context_json=_serialize_exclusions(draft.exclusions),
         approved_by=actor,
     )
     version.observations = [
@@ -467,3 +492,43 @@ def approve_standard_price(
     session.add(version)
     session.flush()
     return version
+
+
+def _serialize_exclusions(
+    exclusions: tuple[PriceExclusion, ...],
+) -> str:
+    payload = [
+        {
+            "raw_item_id": row.raw_item_id,
+            "reason": row.reason,
+            "clean_decision_id": row.clean_decision_id,
+            "clean_status": (
+                None if row.clean_status is None else row.clean_status.value
+            ),
+            "membership_decision_id": row.membership_decision_id,
+            "membership_status": (
+                None
+                if row.membership_status is None
+                else row.membership_status.value
+            ),
+            "membership_standard_item_id": (
+                row.membership_standard_item_id
+            ),
+            "source": {
+                "document_id": row.source.document_id,
+                "logical_name": row.source.logical_name,
+                "variant_id": row.source.variant_id,
+                "path": row.source.path,
+                "sheet": row.source.source_sheet,
+                "page": row.source.source_page,
+                "row": row.source.source_row,
+            },
+        }
+        for row in exclusions
+    ]
+    return json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )

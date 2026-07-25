@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+import json
 
 import pytest
 from sqlalchemy import create_engine
@@ -201,6 +202,22 @@ def test_draft_uses_only_latest_included_and_latest_matched_target() -> None:
         assert draft.context.other_target_count == 1
 
 
+def test_one_observation_with_missing_metadata_has_empty_metadata_counts() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(session, item, row=1, price="100")
+        draft = calculate_standard_price(session, item.id)
+        assert draft.observation_count == 1
+        assert draft.supplier_count == 0
+        assert draft.latest_quote_date is None
+        assert draft.prices == PriceStatistics(
+            minimum=Decimal("100"),
+            median=Decimal("100"),
+            average=Decimal("100"),
+            maximum=Decimal("100"),
+        )
+
+
 def test_even_median_and_repeating_average_are_exact() -> None:
     with _session() as session:
         item = _item(session)
@@ -262,6 +279,10 @@ def test_approval_atomically_persists_version_and_normalized_evidence() -> None:
         assert {row.clean_decision_id for row in version.observations} == set(
             draft.decision_ids
         )
+        assert version.draft_fingerprint == draft.fingerprint
+        assert version.excluded_count == 0
+        assert version.review_required_count == 0
+        assert version.exclusion_context_json == "[]"
 
 
 def test_approval_rejects_changed_draft_and_stale_current_version() -> None:
@@ -357,3 +378,93 @@ def test_exclusion_context_change_invalidates_draft_fingerprint() -> None:
         second = calculate_standard_price(session, item.id)
         assert first.decision_ids == second.decision_ids
         assert first.fingerprint != second.fingerprint
+
+
+def test_approval_freezes_exclusion_context_without_future_recalculation() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(session, item, row=1, price="100")
+        excluded_raw, excluded_clean, excluded_membership = _observation(
+            session,
+            item,
+            row=2,
+            price="200",
+            clean_status=CleanStatus.EXCLUDED,
+        )
+        review_raw, review_clean, review_membership = _observation(
+            session,
+            item,
+            row=3,
+            price="300",
+            clean_status=CleanStatus.REVIEW_REQUIRED,
+        )
+        draft = calculate_standard_price(session, item.id)
+        version = approve_standard_price(
+            session,
+            item.id,
+            expected_fingerprint=draft.fingerprint,
+            expected_current_version_id=None,
+            approved_by="buyer",
+        )
+        frozen = version.exclusion_context_json
+        assert version.excluded_count == 1
+        assert version.review_required_count == 1
+        context = json.loads(frozen)
+        assert {
+            (
+                row["raw_item_id"],
+                row["reason"],
+                row["clean_decision_id"],
+                row["membership_decision_id"],
+                row["source"]["path"],
+            )
+            for row in context
+        } == {
+            (
+                excluded_raw.id,
+                "EXCLUDED",
+                excluded_clean.id,
+                excluded_membership.id,
+                "quote-2.xlsx",
+            ),
+            (
+                review_raw.id,
+                "REVIEW_REQUIRED",
+                review_clean.id,
+                review_membership.id,
+                "quote-3.xlsx",
+            ),
+        }
+        session.add(
+            CleanDecision(
+                raw_item=excluded_raw,
+                status=CleanStatus.INCLUDED,
+                reason_code="RESTORED",
+                item_name_norm="BEARING",
+                unit_norm="EA",
+                unit_price=Decimal("200"),
+                rule_version="clean-v2",
+            )
+        )
+        session.flush()
+        assert version.exclusion_context_json == frozen
+        assert version.excluded_count == 1
+
+
+def test_calculation_does_not_autoflush_pending_decisions() -> None:
+    with _session() as session:
+        item = _item(session)
+        raw, included, _ = _observation(
+            session, item, row=1, price="100"
+        )
+        pending = CleanDecision(
+            raw_item=raw,
+            status=CleanStatus.EXCLUDED,
+            reason_code="PENDING",
+            rule_version="clean-v2",
+        )
+        session.add(pending)
+        draft = calculate_standard_price(session, item.id)
+        assert draft.decision_ids == (included.id,)
+        assert pending.id is None
+        assert pending in session.new

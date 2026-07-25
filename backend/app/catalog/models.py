@@ -289,6 +289,20 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             "AND average_price <= maximum_price",
             name="ck_standard_price_value_order",
         ),
+        CheckConstraint(
+            "length(draft_fingerprint) = 64 "
+            "AND draft_fingerprint NOT GLOB '*[^0-9a-f]*'",
+            name="ck_standard_price_draft_fingerprint",
+        ),
+        CheckConstraint(
+            "excluded_count >= 0 AND review_required_count >= 0",
+            name="ck_standard_price_exclusion_counts",
+        ),
+        CheckConstraint(
+            "json_valid(exclusion_context_json) "
+            "AND json_type(exclusion_context_json) = 'array'",
+            name="ck_standard_price_exclusion_context_json",
+        ),
         {
             "info": {
                 "evidence_immutable": True,
@@ -311,6 +325,26 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
     average_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     maximum_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     calculation_version: Mapped[str] = mapped_column(String(100))
+    draft_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        default="0" * 64,
+        server_default=text("'" + ("0" * 64) + "'"),
+    )
+    excluded_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
+    review_required_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
+    exclusion_context_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default=text("'[]'"),
+    )
     approved_by: Mapped[str] = mapped_column(String(100))
     approved_at: Mapped[datetime] = mapped_column(
         NaiveUTCDateTime(),

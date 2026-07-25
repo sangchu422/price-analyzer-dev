@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
+import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -69,7 +70,12 @@ class PriceExclusionResponse(BaseModel):
         "UNIT_INCOMPATIBLE",
     ]
     clean_decision_id: int | None
+    clean_status: Literal[
+        "INCLUDED", "EXCLUDED", "REVIEW_REQUIRED"
+    ] | None
     membership_decision_id: int | None
+    membership_status: Literal["MATCHED", "REJECTED"] | None
+    membership_standard_item_id: int | None
     source: PriceSourceResponse
 
 
@@ -123,6 +129,10 @@ class PriceVersionResponse(BaseModel):
     latest_quote_date: date | None
     prices: PriceStatisticsResponse
     calculation_version: str
+    draft_fingerprint: str
+    excluded_count: int
+    review_required_count: int
+    exclusions: list[PriceExclusionResponse]
     approved_by: str
     approved_at: datetime
     observations: list[ApprovedObservationResponse]
@@ -191,7 +201,20 @@ def _draft_payload(draft: StandardPriceDraft) -> dict[str, object]:
                 "raw_item_id": row.raw_item_id,
                 "reason": row.reason,
                 "clean_decision_id": row.clean_decision_id,
+                "clean_status": (
+                    None
+                    if row.clean_status is None
+                    else row.clean_status.value
+                ),
                 "membership_decision_id": row.membership_decision_id,
+                "membership_status": (
+                    None
+                    if row.membership_status is None
+                    else row.membership_status.value
+                ),
+                "membership_standard_item_id": (
+                    row.membership_standard_item_id
+                ),
                 "source": _source_payload(row.source),
             }
             for row in draft.exclusions
@@ -243,6 +266,10 @@ def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
             "maximum": _decimal(version.maximum_price),
         },
         "calculation_version": version.calculation_version,
+        "draft_fingerprint": version.draft_fingerprint,
+        "excluded_count": version.excluded_count,
+        "review_required_count": version.review_required_count,
+        "exclusions": json.loads(version.exclusion_context_json),
         "approved_by": version.approved_by,
         "approved_at": version.approved_at,
         "observations": [
