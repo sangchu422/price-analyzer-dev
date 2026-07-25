@@ -80,6 +80,78 @@ def test_shared_rating_does_not_hide_model_number_conflict() -> None:
     assert result == []
 
 
+def test_rating_only_match_does_not_promote_unrelated_items() -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="MOTOR", spec="400W", unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="HEATER",
+                spec="400W",
+                unit="EA",
+            )
+        ],
+    )
+    assert result == []
+
+
+def test_rating_only_match_stays_below_model_token_minimum() -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="SERVO MOTOR", spec="400W", unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="SERVO MOTOR ASSEMBLY",
+                spec="400W",
+                unit="EA",
+            )
+        ],
+    )[0]
+    assert result.method == "LEXICAL_RULE_V1"
+    assert result.matched_tokens == ("400W",)
+    assert result.final_score < Decimal("0.900000")
+
+
+def test_partially_shared_but_conflicting_model_identifiers_are_blocked() -> None:
+    result = rank_candidates(
+        query=MatchQuery(
+            name="CONTROLLER",
+            spec="ABC-123 DEF-456",
+            unit="EA",
+        ),
+        items=[
+            make_item(
+                item_id=1,
+                name="CONTROLLER",
+                spec="ABC-123 XYZ-999",
+                unit="EA",
+            )
+        ],
+    )
+    assert result == []
+
+
+def test_model_identifier_subset_is_compatible() -> None:
+    result = rank_candidates(
+        query=MatchQuery(
+            name="CONTROLLER",
+            spec="ABC-123 DEF-456",
+            unit="EA",
+        ),
+        items=[
+            make_item(
+                item_id=1,
+                name="CONTROLLER",
+                spec="ABC-123",
+                unit="EA",
+            )
+        ],
+    )[0]
+    assert result.method == "MODEL_TOKEN_RULE_V1"
+    assert result.matched_tokens == ("ABC-123",)
+    assert result.final_score >= Decimal("0.900000")
+
+
 def test_model_number_match_ranks_before_name_only_match() -> None:
     results = rank_candidates(
         query=MatchQuery(

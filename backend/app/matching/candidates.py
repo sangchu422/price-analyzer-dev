@@ -15,6 +15,7 @@ SPEC_WEIGHT = Decimal("0.250000")
 TOKEN_WEIGHT = Decimal("0.100000")
 LEXICAL_THRESHOLD = Decimal("0.650000")
 MODEL_TOKEN_MINIMUM = Decimal("0.900000")
+RATING_ONLY_SCORE_CEILING = MODEL_TOKEN_MINIMUM - SCORE_QUANTUM
 PERFECT_SCORE = Decimal("1.000000")
 _RATING_TOKEN = re.compile(
     r"^\d+(?:\.\d+)?(?:W|KW|V|KV|A|MA|MM|CM|M|KG|G|L|ML|HZ|RPM)$"
@@ -110,15 +111,19 @@ def _model_tokens_conflict(
 ) -> bool:
     if not query_tokens or not item_tokens:
         return False
-    query_identifiers = {
-        token for token in query_tokens if not _RATING_TOKEN.fullmatch(token)
-    }
-    item_identifiers = {
-        token for token in item_tokens if not _RATING_TOKEN.fullmatch(token)
-    }
+    query_identifiers = _identifier_tokens(query_tokens)
+    item_identifiers = _identifier_tokens(item_tokens)
     if query_identifiers and item_identifiers:
-        return not bool(query_identifiers & item_identifiers)
+        query_only = query_identifiers - item_identifiers
+        item_only = item_identifiers - query_identifiers
+        return bool(query_only and item_only)
     return not bool(set(query_tokens) & set(item_tokens))
+
+
+def _identifier_tokens(tokens: tuple[str, ...]) -> set[str]:
+    return {
+        token for token in tokens if not _RATING_TOKEN.fullmatch(token)
+    }
 
 
 def rank_candidates(
@@ -149,6 +154,9 @@ def rank_candidates(
             continue
 
         matched_tokens = tuple(sorted(set(query_tokens) & set(item_tokens)))
+        matched_identifiers = (
+            _identifier_tokens(query_tokens) & _identifier_tokens(item_tokens)
+        )
         name_score, spec_score, token_score = _lexical_score(
             query_name=query_name,
             query_spec=query_spec,
@@ -163,7 +171,7 @@ def rank_candidates(
         if exact:
             final_score = PERFECT_SCORE
             method = "EXACT_RULE_V1"
-        elif matched_tokens:
+        elif matched_identifiers:
             final_score = _quantize(
                 MODEL_TOKEN_MINIMUM
                 + (PERFECT_SCORE - MODEL_TOKEN_MINIMUM) * token_score
@@ -175,6 +183,8 @@ def rank_candidates(
                 + SPEC_WEIGHT * spec_score
                 + TOKEN_WEIGHT * token_score
             )
+            if matched_tokens:
+                final_score = min(final_score, RATING_ONLY_SCORE_CEILING)
             method = "LEXICAL_RULE_V1"
             if final_score < LEXICAL_THRESHOLD:
                 continue
