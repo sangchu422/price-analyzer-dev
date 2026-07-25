@@ -19,6 +19,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from app.catalog.cli import (
+    build_catalog_embedding_index,
+    report_standard_price_drafts,
+    seed_exact_catalog,
+)
 from app.core.config import settings
 from app.db.sqlite import configure_sqlite
 from app.ingestion.corpus import (
@@ -40,6 +45,12 @@ class UnsafeOutputPathError(ValueError):
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.command in {
+        "catalog-seed",
+        "embedding-index",
+        "standard-price-drafts",
+    }:
+        return _run_catalog_command(args)
     try:
         quote_root = (
             Path(args.quote_root).expanduser().resolve(strict=False)
@@ -161,7 +172,167 @@ def _parser() -> argparse.ArgumentParser:
                 "--report",
                 help="절대경로를 포함하지 않는 JSON 실행 보고서 저장 경로",
             )
+    for command_name in (
+        "catalog-seed",
+        "embedding-index",
+        "standard-price-drafts",
+    ):
+        command_parser = subparsers.add_parser(command_name)
+        command_parser.add_argument(
+            "--database-file",
+            default=str(settings.database_path),
+            help="마이그레이션된 로컬 SQLite 파일",
+        )
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            help="기계 판독용 JSON만 출력",
+        )
+        command_parser.add_argument(
+            "--report",
+            help="UTF-8 JSON 실행 보고서 저장 경로",
+        )
+        if command_name == "embedding-index":
+            command_parser.add_argument(
+                "--index-file",
+                default=str(settings.embedding_index_path),
+                help="교체 가능한 임베딩 인덱스 파일",
+            )
+            command_parser.add_argument(
+                "--mock",
+                action="store_true",
+                help="개발 전용 local-mock-v1 인덱스 생성",
+            )
     return parser
+
+
+def _run_catalog_command(args: argparse.Namespace) -> int:
+    try:
+        database_path = Path(args.database_file).expanduser().resolve(
+            strict=False
+        )
+        report_path = (
+            None
+            if args.report is None
+            else Path(args.report).expanduser().resolve(strict=False)
+        )
+        if report_path == database_path:
+            return _emit_error(
+                "UNSAFE_OUTPUT_PATH",
+                "database and report targets must be distinct",
+                json_output=args.json,
+            )
+        if database_path.exists() and database_path.is_dir():
+            raise OSError("database target is a directory")
+        _upgrade_database(database_path)
+    except CommandError:
+        return _emit_error(
+            "DATABASE_MIGRATION_ERROR",
+            "database schema revision is incompatible",
+            json_output=args.json,
+        )
+    except (DBAPIError, sqlite3.DatabaseError) as exc:
+        return _emit_database_error(exc, json_output=args.json)
+    except OSError:
+        return _emit_error(
+            "DATABASE_UNAVAILABLE",
+            "database could not be created or accessed",
+            json_output=args.json,
+        )
+
+    engine = configure_sqlite(
+        create_engine(
+            f"sqlite:///{database_path.as_posix()}",
+            connect_args={"check_same_thread": False},
+        )
+    )
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            if args.command == "catalog-seed":
+                report = seed_exact_catalog(session)
+                session.commit()
+                _publish_catalog_report(
+                    report.to_dict(),
+                    report_path=report_path,
+                    json_output=args.json,
+                )
+                return EXIT_OK
+            if args.command == "standard-price-drafts":
+                report = report_standard_price_drafts(session)
+                session.rollback()
+                _publish_catalog_report(
+                    report.to_dict(),
+                    report_path=report_path,
+                    json_output=args.json,
+                )
+                return EXIT_OK
+
+            index_path = Path(args.index_file).expanduser().resolve(
+                strict=False
+            )
+            if report_path == index_path:
+                return _emit_error(
+                    "UNSAFE_OUTPUT_PATH",
+                    "embedding index and report targets must be distinct",
+                    json_output=args.json,
+                )
+            if (
+                index_path == database_path
+                or (
+                    index_path.exists()
+                    and database_path.exists()
+                    and _same_file(index_path, database_path)
+                )
+            ):
+                return _emit_error(
+                    "UNSAFE_OUTPUT_PATH",
+                    "embedding index and database targets must be distinct",
+                    json_output=args.json,
+                )
+            report = build_catalog_embedding_index(
+                session,
+                index_path=index_path,
+                mock=args.mock,
+                settings=settings,
+            )
+            session.rollback()
+            _publish_catalog_report(
+                report.to_dict(),
+                report_path=report_path,
+                json_output=args.json,
+            )
+            return (
+                EXIT_OK
+                if report.status
+                in {"MOCK_ONLY", "AVAILABLE", "EMPTY_CATALOG"}
+                else EXIT_CONFIGURATION_ERROR
+            )
+    except (DBAPIError, sqlite3.DatabaseError) as exc:
+        return _emit_database_error(exc, json_output=args.json)
+    finally:
+        engine.dispose()
+
+
+def _emit_catalog(
+    payload: dict[str, object],
+    *,
+    json_output: bool,
+) -> None:
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _publish_catalog_report(
+    payload: dict[str, object],
+    *,
+    report_path: Path | None,
+    json_output: bool,
+) -> None:
+    if report_path is not None:
+        _write_report(report_path, payload)
+    _emit_catalog(payload, json_output=json_output)
 
 
 def _upgrade_database(database_path: Path) -> None:
