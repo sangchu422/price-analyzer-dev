@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import URL, create_engine, pool
@@ -15,7 +16,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-database_url = URL.create("sqlite", database=str(settings.database_path))
+database_path = Path(
+    config.attributes.get("database_path", settings.database_path)
+)
+database_url = URL.create("sqlite", database=str(database_path))
 
 
 def run_migrations_offline() -> None:
@@ -33,7 +37,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
     connectable = configure_sqlite(
         create_engine(database_url, poolclass=pool.NullPool)
     )

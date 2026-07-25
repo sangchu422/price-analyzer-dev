@@ -197,7 +197,7 @@ def test_scan_reports_escaped_resolved_candidate_and_keeps_valid_document(
     _write_quote(valid, item_name="VALID")
     _write_quote(escaped, item_name="OUTSIDE")
     monkeypatch.setattr(
-        "app.api.documents._scan_supported_files",
+        "app.ingestion.corpus.scan_supported_files",
         lambda root: [escaped, valid],
     )
 
@@ -250,7 +250,7 @@ def test_scan_does_not_disguise_unexpected_programmer_errors(
         raise ValueError("programming bug with sensitive internals")
 
     monkeypatch.setattr(
-        "app.api.documents.ingest_group",
+        "app.ingestion.corpus.ingest_group",
         fail_unexpectedly,
     )
 

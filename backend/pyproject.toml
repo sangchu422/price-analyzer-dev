@@ -28,3 +28,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "real_corpus: opt-in read-only checks against a local quote corpus",
+]

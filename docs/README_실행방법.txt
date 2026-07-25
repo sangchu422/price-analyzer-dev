@@ -2,6 +2,39 @@
   협력사 견적 단가 AI 비교분석 시스템 — 현대위아 구매본부
 ===========================================================
 
+※ 이 문서의 첫 부분은 신규 로컬 A 구조 실행법입니다.
+※ 아래 "기존 Streamlit 앱"은 마이그레이션 기간 참고용입니다.
+
+■ 신규 로컬 A 구조 — 견적서 사전 점검/적재
+─────────────────────────────
+1. 백엔드 개발 환경 설치
+   > cd backend
+   > python -m venv .venv
+   > .venv\Scripts\python -m pip install -e ".[dev]"
+
+2. 파일 내용 읽기 전 사전 점검
+   > .venv\Scripts\python -m app.cli preflight --quote-root ..\견적서
+
+3. 로컬 SQLite 적재
+   > .venv\Scripts\python -m app.cli ingest --quote-root ..\견적서 --database-file .local\price-analyzer.sqlite3 --report .local\corpus-run.json
+
+4. 로컬 API/화면 실행
+   > .venv\Scripts\python -m uvicorn app.main:app --reload
+
+   별도 터미널:
+   > cd frontend
+   > npm install
+   > npm run dev
+
+사전 점검은 견적서 내용을 열지 않습니다. 적재 시 원본/보안해제본은
+둘 다 증빙 등록하되 보안해제본만 파싱합니다. .local 아래 DB와 실행
+보고서는 Git에 포함하지 않습니다. 현재는 로컬 전용이며 서버 설치,
+hChat 사내망 연결, DeviceMart/Mouser 시장가 연동은 후속 단계입니다.
+
+===========================================================
+  기존 Streamlit 앱 (마이그레이션 기간 참고용)
+===========================================================
+
 ■ 최초 설치 (최초 1회만)
 ─────────────────────────────
 1. Python 3.10 이상 설치 확인
