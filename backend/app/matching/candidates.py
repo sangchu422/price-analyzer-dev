@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
@@ -209,9 +210,15 @@ def _embedding_scores(
         if batch.dimension != embedding_index.metadata.dimension:
             raise IndexMismatchError("embedding dimension mismatch")
         scores = embedding_index.scores(batch.vectors[0])
+        if any(
+            not math.isfinite(float(score))
+            for score in scores.values()
+        ):
+            raise IndexMismatchError("embedding scores must be finite")
     except (
         EmbeddingUnavailableError,
         IndexMismatchError,
+        TypeError,
         ValueError,
     ):
         return {}, "UNAVAILABLE"

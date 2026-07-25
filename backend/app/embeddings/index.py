@@ -23,6 +23,34 @@ class IndexMetadata:
     normalization_version: str
     created_at: datetime
 
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.dimension, bool)
+            or not isinstance(self.dimension, int)
+            or self.dimension <= 0
+        ):
+            raise IndexMismatchError(
+                "metadata dimension must be a positive integer"
+            )
+        if (
+            isinstance(self.item_count, bool)
+            or not isinstance(self.item_count, int)
+            or self.item_count < 0
+        ):
+            raise IndexMismatchError(
+                "metadata item count must be a non-negative integer"
+            )
+        for field_name in (
+            "model",
+            "catalog_fingerprint",
+            "normalization_version",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise IndexMismatchError(
+                    f"metadata {field_name} must not be blank"
+                )
+
 
 @dataclass(frozen=True)
 class EmbeddingIndex:
@@ -30,18 +58,38 @@ class EmbeddingIndex:
     vectors: np.ndarray
     metadata: IndexMetadata
 
+    def __post_init__(self) -> None:
+        try:
+            item_ids, vectors = _validated_arrays(
+                self.item_ids,
+                self.vectors,
+                self.metadata,
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise IndexMismatchError(str(exc)) from exc
+        object.__setattr__(self, "item_ids", item_ids)
+        object.__setattr__(self, "vectors", vectors)
+
     def scores(self, query_vector: np.ndarray) -> dict[int, float]:
+        try:
+            item_ids, vectors = _validated_arrays(
+                self.item_ids,
+                self.vectors,
+                self.metadata,
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise IndexMismatchError(str(exc)) from exc
         vector = np.asarray(query_vector, dtype=np.float32)
         if vector.shape != (self.metadata.dimension,):
             raise IndexMismatchError("query dimension mismatch")
         norm = np.linalg.norm(vector)
         if not norm or not np.isfinite(norm):
             raise IndexMismatchError("query vector must be finite and non-zero")
-        similarities = self.vectors @ (vector / norm)
+        similarities = vectors @ (vector / norm)
         return {
             int(item_id): float(score)
             for item_id, score in zip(
-                self.item_ids,
+                item_ids,
                 similarities,
                 strict=True,
             )
@@ -53,10 +101,17 @@ def _validated_arrays(
     vectors: np.ndarray,
     metadata: IndexMetadata,
 ) -> tuple[np.ndarray, np.ndarray]:
-    ids = np.asarray(item_ids, dtype=np.int64)
-    matrix = np.asarray(vectors, dtype=np.float32)
-    if ids.ndim != 1:
+    raw_ids = np.asarray(item_ids)
+    if raw_ids.ndim != 1:
         raise ValueError("item ids must be a 1-D array")
+    if not np.issubdtype(raw_ids.dtype, np.number):
+        raise ValueError("item ids must be numeric integers")
+    if not np.isfinite(raw_ids).all():
+        raise ValueError("item ids must contain only finite values")
+    if not np.equal(raw_ids, np.floor(raw_ids)).all():
+        raise ValueError("item ids must be integers")
+    ids = raw_ids.astype(np.int64)
+    matrix = np.asarray(vectors, dtype=np.float32)
     if matrix.ndim != 2:
         raise ValueError("vectors must be a 2-D array")
     if len(ids) != metadata.item_count or len(ids) != len(matrix):

@@ -111,6 +111,67 @@ def test_save_is_atomic_and_load_normalizes_vectors(tmp_path) -> None:
     assert not list(tmp_path.glob("*.tmp"))
 
 
+@pytest.mark.parametrize(
+    ("item_ids", "vectors", "meta", "message"),
+    [
+        (
+            np.array([1, 1]),
+            np.eye(2, dtype=np.float32),
+            metadata(),
+            "duplicate",
+        ),
+        (
+            np.array([1, 2]),
+            np.array([[np.inf, 0.0], [0.0, 1.0]], dtype=np.float32),
+            metadata(),
+            "finite",
+        ),
+        (
+            np.array([[1, 2]]),
+            np.eye(2, dtype=np.float32),
+            metadata(),
+            "1-D",
+        ),
+        (
+            np.array([1, 2]),
+            np.ones((2, 3), dtype=np.float32),
+            metadata(),
+            "dimension",
+        ),
+        (
+            np.array([1, 2]),
+            np.eye(2, dtype=np.float32),
+            metadata(count=3),
+            "item count",
+        ),
+    ],
+)
+def test_direct_index_construction_rejects_invalid_arrays(
+    item_ids: np.ndarray,
+    vectors: np.ndarray,
+    meta: IndexMetadata,
+    message: str,
+) -> None:
+    with pytest.raises(IndexMismatchError, match=message):
+        EmbeddingIndex(
+            item_ids=item_ids,
+            vectors=vectors,
+            metadata=meta,
+        )
+
+
+def test_search_revalidates_mutable_arrays_before_scoring() -> None:
+    index = EmbeddingIndex(
+        item_ids=np.array([1, 2]),
+        vectors=np.eye(2, dtype=np.float32),
+        metadata=metadata(),
+    )
+    index.vectors[0, 0] = np.nan
+
+    with pytest.raises(IndexMismatchError, match="finite"):
+        index.scores(np.array([1.0, 0.0], dtype=np.float32))
+
+
 def test_mock_embeddings_are_deterministic_normalized_and_labeled() -> None:
     client = DeterministicMockEmbeddingClient(dimension=32)
 
@@ -233,3 +294,79 @@ def test_mock_index_is_never_labeled_available_for_automatic_use() -> None:
     )[0]
 
     assert result.embedding_status == "MOCK_ONLY"
+
+
+def test_ranking_falls_back_when_index_is_mutated_to_nonfinite() -> None:
+    index = EmbeddingIndex(
+        item_ids=np.array([1]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="catalog-a",
+            normalization_version="match-v1",
+            created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    )
+    index.vectors[0, 0] = np.nan
+
+    result = rank_candidates(
+        query=MatchQuery(name="BALL BEARING", spec=None, unit="EA"),
+        items=[
+            CandidateItem(
+                standard_item_id=1,
+                name="BALL BEARING",
+                unit="EA",
+            )
+        ],
+        embedding_client=StaticClient(
+            np.array([1.0, 0.0], dtype=np.float32)
+        ),
+        embedding_index=index,
+    )[0]
+
+    assert result.embedding_status == "UNAVAILABLE"
+    assert result.embedding_score is None
+    assert result.method == "EXACT_RULE_V1"
+
+
+def test_ranking_rejects_nonfinite_score_defensively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index = EmbeddingIndex(
+        item_ids=np.array([1]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint="catalog-a",
+            normalization_version="match-v1",
+            created_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    )
+    monkeypatch.setattr(
+        EmbeddingIndex,
+        "scores",
+        lambda self, _: {1: float("nan")},
+    )
+
+    result = rank_candidates(
+        query=MatchQuery(name="BALL BEARING", spec=None, unit="EA"),
+        items=[
+            CandidateItem(
+                standard_item_id=1,
+                name="BALL BEARING",
+                unit="EA",
+            )
+        ],
+        embedding_client=StaticClient(
+            np.array([1.0, 0.0], dtype=np.float32)
+        ),
+        embedding_index=index,
+    )[0]
+
+    assert result.embedding_status == "UNAVAILABLE"
+    assert result.embedding_score is None
+    assert result.final_score == pytest.approx(1)
