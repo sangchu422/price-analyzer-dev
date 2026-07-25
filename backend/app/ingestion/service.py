@@ -1,0 +1,237 @@
+"""Transactional registration and parsing of quote source evidence."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import ntpath
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.documents.models import SourceDocument, SourceVariant
+from app.ingestion.readers import ParsedRow, read_quote
+from app.ingestion.source_selector import SourceGroup, build_source_groups
+from app.quotes.models import RawQuoteItem
+
+
+_SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".pdf"}
+_UNLOCKED_SUFFIX = "_보안해제"
+_PARSER_NAME = "quote-reader"
+_PARSER_VERSION = "reader-v1"
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def ingest_path(
+    session: Session,
+    path: Path,
+    *,
+    root: Path | None = None,
+) -> SourceVariant:
+    """Ingest one source path.
+
+    An absolute path requires a stable root so the stored identity remains
+    portable. Original/protected paths are retained as evidence but are not
+    marked preferred; an unlocked path is the preferred parsing candidate.
+    """
+    canonical = build_source_groups([Path(path)], root=root)[0]
+    source_path = canonical.variants[0]
+    preferred = _is_unlocked(source_path)
+    try:
+        variant = _register_variant(
+            session,
+            source_path,
+            logical_name=canonical.logical_name,
+            root=root,
+            parse=True,
+            preferred=preferred,
+        )
+        session.commit()
+        return variant
+    except Exception:
+        session.rollback()
+        raise
+
+
+def ingest_group(
+    session: Session,
+    group: SourceGroup,
+    *,
+    root: Path | None = None,
+) -> SourceVariant:
+    """Register all evidence variants and parse only the selected variant."""
+    canonical_groups = build_source_groups(group.variants, root=root)
+    if len(canonical_groups) != 1:
+        raise ValueError("source group variants do not share one identity")
+    canonical = canonical_groups[0]
+    if canonical.logical_name != group.logical_name:
+        raise ValueError("source group logical identity is not canonical")
+
+    ordered_paths = (
+        canonical.preferred,
+        *(
+            path
+            for path in canonical.variants
+            if path != canonical.preferred
+        ),
+    )
+    preferred_variant: SourceVariant | None = None
+    try:
+        for source_path in ordered_paths:
+            is_preferred = source_path == canonical.preferred
+            variant = _register_variant(
+                session,
+                source_path,
+                logical_name=canonical.logical_name,
+                root=root,
+                parse=is_preferred,
+                preferred=is_preferred,
+            )
+            if is_preferred:
+                preferred_variant = variant
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    if preferred_variant is None:  # pragma: no cover - SourceGroup invariant
+        raise RuntimeError("source group has no preferred variant")
+    return preferred_variant
+
+
+def _register_variant(
+    session: Session,
+    source_path: Path,
+    *,
+    logical_name: str,
+    root: Path | None,
+    parse: bool,
+    preferred: bool,
+) -> SourceVariant:
+    extension = source_path.suffix.lower()
+    if extension not in _SUPPORTED_EXTENSIONS:
+        raise ValueError(
+            f"unsupported quote extension: {source_path.suffix}"
+        )
+
+    stored_path = _stored_path(source_path, root)
+    digest = sha256(source_path)
+    existing_path = _find_variant_by_path(session, stored_path)
+    if existing_path is not None:
+        if existing_path.sha256 != digest:
+            raise ValueError(
+                f"content changed at immutable source path: {stored_path}"
+            )
+        return existing_path
+
+    existing_hash = session.scalar(
+        select(SourceVariant).where(SourceVariant.sha256 == digest)
+    )
+    if existing_hash is not None:
+        if ntpath.normcase(existing_hash.document.logical_name) != (
+            ntpath.normcase(logical_name)
+        ):
+            raise ValueError(
+                "duplicate content belongs to another logical source: "
+                f"{existing_hash.document.logical_name}"
+            )
+        return existing_hash
+
+    rows = read_quote(source_path) if parse else []
+    document = _find_document(session, logical_name)
+    if document is None:
+        document = SourceDocument(logical_name=logical_name)
+        session.add(document)
+
+    variant = SourceVariant(
+        document=document,
+        path=stored_path,
+        sha256=digest,
+        extension=extension,
+        security_state=(
+            "UNLOCKED" if _is_unlocked(source_path) else "UNKNOWN"
+        ),
+        preferred_for_parsing=preferred,
+    )
+    session.add(variant)
+    for parsed in rows:
+        variant.raw_items.append(_raw_item(parsed))
+    session.flush()
+    return variant
+
+
+def _find_document(
+    session: Session,
+    logical_name: str,
+) -> SourceDocument | None:
+    normalized_name = ntpath.normcase(logical_name)
+    return next(
+        (
+            document
+            for document in session.scalars(select(SourceDocument))
+            if ntpath.normcase(document.logical_name) == normalized_name
+        ),
+        None,
+    )
+
+
+def _find_variant_by_path(
+    session: Session,
+    stored_path: str,
+) -> SourceVariant | None:
+    normalized_path = ntpath.normcase(stored_path)
+    return next(
+        (
+            variant
+            for variant in session.scalars(select(SourceVariant))
+            if ntpath.normcase(variant.path) == normalized_path
+        ),
+        None,
+    )
+
+
+def _stored_path(path: Path, root: Path | None) -> str:
+    if path.is_absolute():
+        if root is None:
+            raise ValueError("absolute paths require an explicit stable root")
+        return path.resolve(strict=False).relative_to(
+            Path(root).resolve(strict=False)
+        ).as_posix()
+    return path.as_posix()
+
+
+def _is_unlocked(path: Path) -> bool:
+    stem = path.stem.strip()
+    return ntpath.normcase(stem).endswith(
+        ntpath.normcase(_UNLOCKED_SUFFIX)
+    )
+
+
+def _raw_item(parsed: ParsedRow) -> RawQuoteItem:
+    return RawQuoteItem(
+        source_sheet=parsed.sheet,
+        source_page=parsed.page,
+        source_row=parsed.row,
+        source_cells=parsed.cells,
+        item_name_raw=parsed.item_name,
+        spec_raw=parsed.spec,
+        unit_raw=parsed.unit,
+        quantity_raw=parsed.quantity,
+        unit_price_raw=parsed.unit_price,
+        amount_raw=parsed.amount,
+        maker_raw=parsed.maker,
+        parser_name=_PARSER_NAME,
+        parser_version=_PARSER_VERSION,
+        parse_warnings_json=json.dumps(
+            parsed.warnings,
+            ensure_ascii=False,
+        ),
+    )
