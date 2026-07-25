@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -19,8 +18,10 @@ from app.catalog.models import (
     MembershipStatus,
     StandardItem,
     StandardItemVersion,
+    StandardPriceObservation,
     StandardPriceVersion,
 )
+from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
 from app.db.immutability import ImmutableEvidenceError
 from app.db.sqlite import configure_sqlite
@@ -94,6 +95,16 @@ def _catalog_graph() -> tuple[
         evidence_json='{"matched_tokens":["6204"]}',
         decided_by="buyer-1",
     )
+    clean = CleanDecision(
+        raw_item=raw_item,
+        status=CleanStatus.INCLUDED,
+        reason_code="VALID",
+        item_name_norm="BEARING",
+        spec_norm="6204 ZZ",
+        unit_norm="EA",
+        unit_price=Decimal("120"),
+        rule_version="clean-v1",
+    )
     price = StandardPriceVersion(
         standard_item=item,
         version_number=1,
@@ -104,9 +115,13 @@ def _catalog_graph() -> tuple[
         median_price=Decimal("120"),
         average_price=Decimal("120"),
         maximum_price=Decimal("120"),
-        observation_decision_ids_json="[1]",
         calculation_version="STANDARD_PRICE_V1",
         approved_by="buyer-1",
+    )
+    StandardPriceObservation(
+        standard_price_version=price,
+        clean_decision=clean,
+        membership_decision=membership,
     )
     return (
         document,
@@ -258,6 +273,133 @@ def test_membership_supersedes_is_single_use_compare_and_swap() -> None:
             session.commit()
 
 
+def test_membership_cannot_supersede_decision_for_another_raw_item() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    document, first_raw = _source_graph()
+    second_raw = RawQuoteItem(
+        source_variant=first_raw.source_variant,
+        source_sheet="Sheet1",
+        source_row=3,
+        item_name_raw="MOTOR",
+        parser_name="xlsx",
+        parser_version="1",
+    )
+    item = StandardItem()
+    first = ItemMembershipDecision(
+        raw_item=first_raw,
+        standard_item=item,
+        status=MembershipStatus.MATCHED,
+        method="MANUAL",
+        evidence_json="{}",
+        decided_by="buyer-1",
+    )
+    cross_raw = ItemMembershipDecision(
+        raw_item=second_raw,
+        standard_item=None,
+        status=MembershipStatus.REJECTED,
+        method="MANUAL",
+        evidence_json="{}",
+        supersedes=first,
+        decided_by="buyer-2",
+    )
+    with Session(engine) as session:
+        session.add_all([document, item, first])
+        session.commit()
+        session.add(cross_raw)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_membership_can_correct_target_for_the_same_raw_item() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    document, raw_item = _source_graph()
+    first_item = StandardItem()
+    corrected_item = StandardItem()
+    first = ItemMembershipDecision(
+        raw_item=raw_item,
+        standard_item=first_item,
+        status=MembershipStatus.MATCHED,
+        method="MANUAL",
+        evidence_json="{}",
+        decided_by="buyer-1",
+    )
+    correction = ItemMembershipDecision(
+        raw_item=raw_item,
+        standard_item=corrected_item,
+        status=MembershipStatus.MATCHED,
+        method="MANUAL",
+        evidence_json="{}",
+        supersedes=first,
+        decided_by="buyer-2",
+    )
+    with Session(engine) as session:
+        session.add_all([document, first_item, corrected_item, first])
+        session.commit()
+        session.add(correction)
+        session.commit()
+        assert correction.supersedes_decision_id == first.id
+        assert correction.standard_item_id == corrected_item.id
+
+
+@pytest.mark.parametrize("use_session", [True, False])
+def test_database_rejects_cross_raw_supersedes_from_core_and_raw_sql(
+    use_session: bool,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    document, first_raw = _source_graph()
+    second_raw = RawQuoteItem(
+        source_variant=first_raw.source_variant,
+        source_row=3,
+        item_name_raw="MOTOR",
+        parser_name="xlsx",
+        parser_version="1",
+    )
+    item = StandardItem()
+    first = ItemMembershipDecision(
+        raw_item=first_raw,
+        standard_item=item,
+        status=MembershipStatus.MATCHED,
+        method="MANUAL",
+        evidence_json="{}",
+        decided_by="buyer",
+    )
+    with Session(engine) as session:
+        session.add_all([document, item, first, second_raw])
+        session.commit()
+        first_id = first.id
+        second_raw_id = second_raw.id
+    statement = text(
+        """
+        INSERT INTO item_membership_decision (
+            raw_item_id, status, method, evidence_json,
+            supersedes_decision_id, decided_by
+        ) VALUES (
+            :raw_item_id, 'REJECTED', 'MANUAL', '{}',
+            :supersedes_decision_id, 'attacker'
+        )
+        """
+    )
+    parameters = {
+        "raw_item_id": second_raw_id,
+        "supersedes_decision_id": first_id,
+    }
+    if use_session:
+        with Session(engine) as session:
+            with pytest.raises(IntegrityError):
+                session.execute(statement, parameters)
+                session.commit()
+    else:
+        with engine.begin() as connection:
+            with pytest.raises(IntegrityError):
+                connection.exec_driver_sql(
+                    str(statement),
+                    parameters,
+                )
+
+
 @pytest.mark.parametrize(
     "factory",
     [
@@ -272,19 +414,6 @@ def test_membership_supersedes_is_single_use_compare_and_swap() -> None:
             source_document=document,
             version_number=0,
             decided_by="buyer",
-        ),
-        lambda document, raw_item, item: StandardPriceVersion(
-            standard_item=item,
-            version_number=0,
-            observation_count=1,
-            supplier_count=0,
-            minimum_price=Decimal("1"),
-            median_price=Decimal("1"),
-            average_price=Decimal("1"),
-            maximum_price=Decimal("1"),
-            observation_decision_ids_json="[1]",
-            calculation_version="v1",
-            approved_by="buyer",
         ),
     ],
 )
@@ -343,19 +472,6 @@ def test_history_version_numbers_are_unique_per_parent() -> None:
             method="MANUAL",
             evidence_json="{broken",
             decided_by="buyer",
-        ),
-        lambda item: StandardPriceVersion(
-            standard_item=item,
-            version_number=1,
-            observation_count=1,
-            supplier_count=0,
-            minimum_price=Decimal("1"),
-            median_price=Decimal("1"),
-            average_price=Decimal("1"),
-            maximum_price=Decimal("1"),
-            observation_decision_ids_json="{}",
-            calculation_version="v1",
-            approved_by="buyer",
         ),
     ],
 )
@@ -426,45 +542,29 @@ def test_membership_status_target_and_score_constraints(row) -> None:
 def test_price_counts_are_consistent(values: dict[str, int]) -> None:
     engine = _engine()
     Base.metadata.create_all(engine)
-    item = StandardItem()
-    price = StandardPriceVersion(
-        standard_item=item,
-        version_number=1,
-        **values,
-        minimum_price=Decimal("1"),
-        median_price=Decimal("1"),
-        average_price=Decimal("1"),
-        maximum_price=Decimal("1"),
-        observation_decision_ids_json="[1]",
-        calculation_version="v1",
-        approved_by="buyer",
-    )
     with Session(engine) as session:
-        session.add(price)
+        item = StandardItem()
+        session.add(item)
+        session.commit()
+        item_id = item.id
+    with engine.begin() as connection:
         with pytest.raises(IntegrityError):
-            session.commit()
-
-
-def test_price_observation_count_matches_evidence_ids() -> None:
-    engine = _engine()
-    Base.metadata.create_all(engine)
-    price = StandardPriceVersion(
-        standard_item=StandardItem(),
-        version_number=1,
-        observation_count=2,
-        supplier_count=1,
-        minimum_price=Decimal("1"),
-        median_price=Decimal("1"),
-        average_price=Decimal("1"),
-        maximum_price=Decimal("1"),
-        observation_decision_ids_json="[1]",
-        calculation_version="v1",
-        approved_by="buyer",
-    )
-    with Session(engine) as session:
-        session.add(price)
-        with pytest.raises(IntegrityError):
-            session.commit()
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO standard_price_version (
+                        standard_item_id, version_number, observation_count,
+                        supplier_count, minimum_price, median_price,
+                        average_price, maximum_price, calculation_version,
+                        approved_by
+                    ) VALUES (
+                        :item_id, 1, :observation_count, :supplier_count,
+                        1000000, 1000000, 1000000, 1000000, 'v1', 'buyer'
+                    )
+                    """
+                ),
+                {"item_id": item_id, **values},
+            )
 
 
 def test_exact_decimal_rejects_out_of_bounds_and_excess_precision() -> None:
@@ -490,21 +590,14 @@ def test_exact_decimal_rejects_out_of_bounds_and_excess_precision() -> None:
         )
         with pytest.raises(StatementError):
             session.commit()
+    graph = _catalog_graph()
+    too_large = EXACT_DECIMAL_MAX + Decimal("0.000001")
+    graph[6].minimum_price = too_large
+    graph[6].median_price = too_large
+    graph[6].average_price = too_large
+    graph[6].maximum_price = too_large
     with Session(engine) as session:
-        too_large = StandardPriceVersion(
-            standard_item=StandardItem(),
-            version_number=1,
-            observation_count=1,
-            supplier_count=0,
-            minimum_price=EXACT_DECIMAL_MAX + Decimal("0.000001"),
-            median_price=Decimal("1"),
-            average_price=Decimal("1"),
-            maximum_price=Decimal("1"),
-            observation_decision_ids_json="[1]",
-            calculation_version="v1",
-            approved_by="buyer",
-        )
-        session.add(too_large)
+        session.add_all([graph[0], graph[2], graph[4]])
         with pytest.raises(StatementError):
             session.commit()
 
@@ -603,6 +696,7 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         "standard_item_version",
         "document_metadata_version",
         "item_membership_decision",
+        "standard_price_observation",
         "standard_price_version",
     } <= set(inspector.get_table_names())
     expected_restrict_fks = {
@@ -614,6 +708,11 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
             "item_membership_decision",
         },
         "standard_price_version": {"standard_item"},
+        "standard_price_observation": {
+            "clean_decision",
+            "item_membership_decision",
+            "standard_price_version",
+        },
     }
     for table_name, referred_tables in expected_restrict_fks.items():
         foreign_keys = inspector.get_foreign_keys(table_name)
@@ -633,6 +732,66 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         and "REJECTED" in check["sqltext"]
         for check in membership_checks
     )
+    observation_checks = inspector.get_check_constraints(
+        "standard_price_observation"
+    )
+    assert any(
+        check["name"] == "ck_standard_price_observation_matched"
+        and "MATCHED" in check["sqltext"]
+        for check in observation_checks
+    )
+    unique_columns = {
+        table_name: {
+            tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints(table_name)
+        }
+        for table_name in (
+            "clean_decision",
+            "item_membership_decision",
+            "standard_price_version",
+            "standard_price_observation",
+        )
+    }
+    assert ("id", "raw_item_id") in unique_columns["clean_decision"]
+    assert {
+        ("id", "raw_item_id"),
+        ("id", "raw_item_id", "standard_item_id", "status"),
+        ("supersedes_decision_id",),
+    } <= unique_columns["item_membership_decision"]
+    assert ("id", "standard_item_id") in unique_columns[
+        "standard_price_version"
+    ]
+    assert {
+        ("standard_price_version_id", "raw_item_id"),
+        ("standard_price_version_id", "clean_decision_id"),
+        ("standard_price_version_id", "membership_decision_id"),
+    } <= unique_columns["standard_price_observation"]
+    observation_foreign_keys = {
+        tuple(foreign_key["constrained_columns"]): (
+            foreign_key["referred_table"],
+            tuple(foreign_key["referred_columns"]),
+        )
+        for foreign_key in inspector.get_foreign_keys(
+            "standard_price_observation"
+        )
+    }
+    assert observation_foreign_keys[
+        ("clean_decision_id", "raw_item_id")
+    ] == ("clean_decision", ("id", "raw_item_id"))
+    assert observation_foreign_keys[
+        (
+            "membership_decision_id",
+            "raw_item_id",
+            "standard_item_id",
+            "membership_status",
+        )
+    ] == (
+        "item_membership_decision",
+        ("id", "raw_item_id", "standard_item_id", "status"),
+    )
+    assert observation_foreign_keys[
+        ("standard_price_version_id", "standard_item_id")
+    ] == ("standard_price_version", ("id", "standard_item_id"))
 
     check = _run_alembic(backend_path, database_path, "check")
     assert check.returncode == 0, check.stdout + check.stderr
@@ -656,6 +815,13 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         )
         connection.exec_driver_sql(
             """
+            INSERT INTO clean_decision (
+                raw_item_id, status, reason_code, unit_price, rule_version
+            ) VALUES (1, 'INCLUDED', 'VALID', 1000000, 'clean-v1')
+            """
+        )
+        connection.exec_driver_sql(
+            """
             INSERT INTO item_membership_decision (
                 raw_item_id, standard_item_id, status, candidate_score,
                 method, evidence_json, decided_by
@@ -667,11 +833,20 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
             INSERT INTO standard_price_version (
                 standard_item_id, version_number, observation_count,
                 supplier_count, minimum_price, median_price, average_price,
-                maximum_price, observation_decision_ids_json,
-                calculation_version, approved_by
+                maximum_price, calculation_version, approved_by
             ) VALUES (
                 1, 1, 1, 1, 1000000, 1000000, 1000000, 1000000,
-                '[1]', 'v1', 'buyer'
+                'v1', 'buyer'
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO standard_price_observation (
+                standard_price_version_id, standard_item_id, raw_item_id,
+                clean_decision_id, membership_decision_id, membership_status
+            ) VALUES (
+                1, 1, 1, 1, 1, 'MATCHED'
             )
             """
         )
@@ -689,6 +864,7 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         "standard_item_version",
         "document_metadata_version",
         "item_membership_decision",
+        "standard_price_observation",
         "standard_price_version",
     } & set(inspector.get_table_names())
     with engine.connect() as connection:
@@ -698,6 +874,12 @@ def test_0004_migration_upgrade_check_and_populated_downgrade(
         assert connection.exec_driver_sql(
             "SELECT COUNT(*) FROM raw_quote_item"
         ).scalar_one() == 1
+    assert ("id", "raw_item_id") not in {
+        tuple(constraint["column_names"])
+        for constraint in inspect(engine).get_unique_constraints(
+            "clean_decision"
+        )
+    }
 
 
 def test_0004_downgrade_refuses_unknown_dependent_table_before_ddl(
@@ -739,5 +921,6 @@ def test_0004_downgrade_refuses_unknown_dependent_table_before_ddl(
         "standard_item_version",
         "document_metadata_version",
         "item_membership_decision",
+        "standard_price_observation",
         "standard_price_version",
     } <= set(inspect(engine).get_table_names())

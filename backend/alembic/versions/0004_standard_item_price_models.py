@@ -18,6 +18,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    with op.batch_alter_table("clean_decision") as batch_op:
+        batch_op.create_unique_constraint(
+            "uq_clean_decision_id_raw_item",
+            ["id", "raw_item_id"],
+        )
+
     op.create_table(
         "standard_item",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -170,11 +176,27 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["supersedes_decision_id"],
-            ["item_membership_decision.id"],
+            ["supersedes_decision_id", "raw_item_id"],
+            [
+                "item_membership_decision.id",
+                "item_membership_decision.raw_item_id",
+            ],
+            name="fk_item_membership_supersedes_same_raw",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "id",
+            "raw_item_id",
+            name="uq_item_membership_id_raw_item",
+        ),
+        sa.UniqueConstraint(
+            "id",
+            "raw_item_id",
+            "standard_item_id",
+            "status",
+            name="uq_item_membership_evidence_key",
+        ),
         sa.UniqueConstraint("supersedes_decision_id"),
     )
     op.create_index(
@@ -199,11 +221,6 @@ def upgrade() -> None:
         sa.Column("median_price", sa.BigInteger(), nullable=False),
         sa.Column("average_price", sa.BigInteger(), nullable=False),
         sa.Column("maximum_price", sa.BigInteger(), nullable=False),
-        sa.Column(
-            "observation_decision_ids_json",
-            sa.Text(),
-            nullable=False,
-        ),
         sa.Column("calculation_version", sa.String(length=100), nullable=False),
         sa.Column("approved_by", sa.String(length=100), nullable=False),
         sa.Column(
@@ -220,14 +237,6 @@ def upgrade() -> None:
             "minimum_price > 0 AND median_price > 0 "
             "AND average_price > 0 AND maximum_price > 0",
             name="ck_standard_price_positive_values",
-        ),
-        sa.CheckConstraint(
-            "json_valid(observation_decision_ids_json) "
-            "AND json_type(observation_decision_ids_json) = 'array' "
-            "AND json_array_length(observation_decision_ids_json) > 0 "
-            "AND json_array_length(observation_decision_ids_json) "
-            "= observation_count",
-            name="ck_standard_price_observation_ids_json",
         ),
         sa.CheckConstraint(
             "supplier_count >= 0 AND supplier_count <= observation_count",
@@ -255,11 +264,118 @@ def upgrade() -> None:
             "version_number",
             name="uq_standard_price_version_parent_number",
         ),
+        sa.UniqueConstraint(
+            "id",
+            "standard_item_id",
+            name="uq_standard_price_id_standard_item",
+        ),
     )
     op.create_index(
         "ix_standard_price_version_standard_item_id",
         "standard_price_version",
         ["standard_item_id"],
+    )
+    op.create_table(
+        "standard_price_observation",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column(
+            "standard_price_version_id",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column("standard_item_id", sa.Integer(), nullable=False),
+        sa.Column("raw_item_id", sa.Integer(), nullable=False),
+        sa.Column("clean_decision_id", sa.Integer(), nullable=False),
+        sa.Column("membership_decision_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "membership_status",
+            sa.Enum(
+                "MATCHED",
+                "REJECTED",
+                name="price_observation_membership_status",
+                native_enum=False,
+                create_constraint=True,
+                validate_strings=True,
+            ),
+            server_default=sa.text("'MATCHED'"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "membership_status = 'MATCHED'",
+            name="ck_standard_price_observation_matched",
+        ),
+        sa.ForeignKeyConstraint(
+            ["clean_decision_id", "raw_item_id"],
+            ["clean_decision.id", "clean_decision.raw_item_id"],
+            name="fk_price_observation_clean_raw",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "membership_decision_id",
+                "raw_item_id",
+                "standard_item_id",
+                "membership_status",
+            ],
+            [
+                "item_membership_decision.id",
+                "item_membership_decision.raw_item_id",
+                "item_membership_decision.standard_item_id",
+                "item_membership_decision.status",
+            ],
+            name="fk_price_observation_membership_evidence",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["standard_price_version_id", "standard_item_id"],
+            [
+                "standard_price_version.id",
+                "standard_price_version.standard_item_id",
+            ],
+            name="fk_price_observation_price_item",
+            ondelete="RESTRICT",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "standard_price_version_id",
+            "clean_decision_id",
+            name="uq_standard_price_observation_clean_decision",
+        ),
+        sa.UniqueConstraint(
+            "standard_price_version_id",
+            "membership_decision_id",
+            name="uq_standard_price_observation_membership",
+        ),
+        sa.UniqueConstraint(
+            "standard_price_version_id",
+            "raw_item_id",
+            name="uq_standard_price_observation_raw_item",
+        ),
+    )
+    op.create_index(
+        "ix_standard_price_observation_clean_decision_id",
+        "standard_price_observation",
+        ["clean_decision_id"],
+    )
+    op.create_index(
+        "ix_standard_price_observation_membership_decision_id",
+        "standard_price_observation",
+        ["membership_decision_id"],
+    )
+    op.create_index(
+        "ix_standard_price_observation_raw_item_id",
+        "standard_price_observation",
+        ["raw_item_id"],
+    )
+    op.create_index(
+        "ix_standard_price_observation_standard_item_id",
+        "standard_price_observation",
+        ["standard_item_id"],
+    )
+    op.create_index(
+        "ix_standard_price_observation_standard_price_version_id",
+        "standard_price_observation",
+        ["standard_price_version_id"],
     )
 
 
@@ -271,6 +387,7 @@ def _unknown_dependent_tables() -> list[str]:
         "standard_item_version",
         "document_metadata_version",
         "item_membership_decision",
+        "standard_price_observation",
         "standard_price_version",
     }
     dependencies: list[str] = []
@@ -293,6 +410,27 @@ def downgrade() -> None:
             f"tables: {', '.join(dependent_tables)}"
         )
 
+    op.drop_index(
+        "ix_standard_price_observation_standard_price_version_id",
+        table_name="standard_price_observation",
+    )
+    op.drop_index(
+        "ix_standard_price_observation_standard_item_id",
+        table_name="standard_price_observation",
+    )
+    op.drop_index(
+        "ix_standard_price_observation_raw_item_id",
+        table_name="standard_price_observation",
+    )
+    op.drop_index(
+        "ix_standard_price_observation_membership_decision_id",
+        table_name="standard_price_observation",
+    )
+    op.drop_index(
+        "ix_standard_price_observation_clean_decision_id",
+        table_name="standard_price_observation",
+    )
+    op.drop_table("standard_price_observation")
     op.drop_index(
         "ix_standard_price_version_standard_item_id",
         table_name="standard_price_version",
@@ -318,3 +456,8 @@ def downgrade() -> None:
     )
     op.drop_table("standard_item_version")
     op.drop_table("standard_item")
+    with op.batch_alter_table("clean_decision") as batch_op:
+        batch_op.drop_constraint(
+            "uq_clean_decision_id_raw_item",
+            type_="unique",
+        )

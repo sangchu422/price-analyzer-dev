@@ -4,6 +4,7 @@ from app.catalog.models import (
     MembershipStatus,
     StandardItem,
     StandardItemVersion,
+    StandardPriceObservation,
     StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
@@ -21,5 +22,6 @@ __all__ = [
     "SourceVariant",
     "StandardItem",
     "StandardItemVersion",
+    "StandardPriceObservation",
     "StandardPriceVersion",
 ]

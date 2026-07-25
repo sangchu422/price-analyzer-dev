@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import Enum, ForeignKey, String, Text, text
+from sqlalchemy import Enum, ForeignKey, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -30,7 +30,14 @@ class CleanStatus(StrEnum):
 
 class CleanDecision(Base):
     __tablename__ = "clean_decision"
-    __table_args__ = {"info": {"evidence_immutable": True}}
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "raw_item_id",
+            name="uq_clean_decision_id_raw_item",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
     __evidence_immutable__: ClassVar[bool] = True
 
     id: Mapped[int] = mapped_column(primary_key=True)

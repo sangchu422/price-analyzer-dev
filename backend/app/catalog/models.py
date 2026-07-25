@@ -9,14 +9,17 @@ from sqlalchemy import (
     CheckConstraint,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
+from app.cleansing.models import CleanDecision
 from app.db.base import Base
 from app.db.time import utc_now
 from app.db.types import ExactDecimal, NaiveUTCDateTime
@@ -29,6 +32,10 @@ if TYPE_CHECKING:
 class MembershipStatus(StrEnum):
     MATCHED = "MATCHED"
     REJECTED = "REJECTED"
+
+
+class CatalogIntegrityError(RuntimeError):
+    """Raised when an ORM write would create mutable catalog evidence."""
 
 
 class _ImmutableCatalogRow:
@@ -146,6 +153,18 @@ class DocumentMetadataVersion(_ImmutableCatalogRow, Base):
 class ItemMembershipDecision(_ImmutableCatalogRow, Base):
     __tablename__ = "item_membership_decision"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "raw_item_id",
+            name="uq_item_membership_id_raw_item",
+        ),
+        UniqueConstraint(
+            "id",
+            "raw_item_id",
+            "standard_item_id",
+            "status",
+            name="uq_item_membership_evidence_key",
+        ),
         CheckConstraint(
             "(status = 'MATCHED' AND standard_item_id IS NOT NULL) OR "
             "(status = 'REJECTED' AND standard_item_id IS NULL)",
@@ -164,6 +183,15 @@ class ItemMembershipDecision(_ImmutableCatalogRow, Base):
             "supersedes_decision_id IS NULL OR "
             "supersedes_decision_id <> id",
             name="ck_item_membership_not_self_superseding",
+        ),
+        ForeignKeyConstraint(
+            ["supersedes_decision_id", "raw_item_id"],
+            [
+                "item_membership_decision.id",
+                "item_membership_decision.raw_item_id",
+            ],
+            name="fk_item_membership_supersedes_same_raw",
+            ondelete="RESTRICT",
         ),
         {"info": {"evidence_immutable": True}},
     )
@@ -190,7 +218,6 @@ class ItemMembershipDecision(_ImmutableCatalogRow, Base):
     method: Mapped[str] = mapped_column(String(100))
     evidence_json: Mapped[str] = mapped_column(Text)
     supersedes_decision_id: Mapped[int | None] = mapped_column(
-        ForeignKey("item_membership_decision.id", ondelete="RESTRICT"),
         unique=True,
     )
     decided_by: Mapped[str] = mapped_column(String(100))
@@ -209,6 +236,8 @@ class ItemMembershipDecision(_ImmutableCatalogRow, Base):
         "ItemMembershipDecision",
         remote_side="ItemMembershipDecision.id",
         foreign_keys=[supersedes_decision_id],
+        primaryjoin="ItemMembershipDecision.supersedes_decision_id "
+        "== ItemMembershipDecision.id",
     )
 
 
@@ -219,6 +248,11 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             "standard_item_id",
             "version_number",
             name="uq_standard_price_version_parent_number",
+        ),
+        UniqueConstraint(
+            "id",
+            "standard_item_id",
+            name="uq_standard_price_id_standard_item",
         ),
         CheckConstraint(
             "version_number > 0",
@@ -244,14 +278,6 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
             "AND average_price <= maximum_price",
             name="ck_standard_price_value_order",
         ),
-        CheckConstraint(
-            "json_valid(observation_decision_ids_json) "
-            "AND json_type(observation_decision_ids_json) = 'array' "
-            "AND json_array_length(observation_decision_ids_json) > 0 "
-            "AND json_array_length(observation_decision_ids_json) "
-            "= observation_count",
-            name="ck_standard_price_observation_ids_json",
-        ),
         {"info": {"evidence_immutable": True}},
     )
 
@@ -268,7 +294,6 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
     median_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     average_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     maximum_price: Mapped[Decimal] = mapped_column(ExactDecimal())
-    observation_decision_ids_json: Mapped[str] = mapped_column(Text)
     calculation_version: Mapped[str] = mapped_column(String(100))
     approved_by: Mapped[str] = mapped_column(String(100))
     approved_at: Mapped[datetime] = mapped_column(
@@ -281,3 +306,135 @@ class StandardPriceVersion(_ImmutableCatalogRow, Base):
         "StandardItem",
         back_populates="price_versions",
     )
+    observations: Mapped[list[StandardPriceObservation]] = relationship(
+        "StandardPriceObservation",
+        back_populates="standard_price_version",
+        overlaps="membership_decision",
+    )
+
+
+class StandardPriceObservation(_ImmutableCatalogRow, Base):
+    """Normalized evidence link belonging to one immutable price version."""
+
+    __tablename__ = "standard_price_observation"
+    __table_args__ = (
+        UniqueConstraint(
+            "standard_price_version_id",
+            "raw_item_id",
+            name="uq_standard_price_observation_raw_item",
+        ),
+        UniqueConstraint(
+            "standard_price_version_id",
+            "clean_decision_id",
+            name="uq_standard_price_observation_clean_decision",
+        ),
+        UniqueConstraint(
+            "standard_price_version_id",
+            "membership_decision_id",
+            name="uq_standard_price_observation_membership",
+        ),
+        CheckConstraint(
+            "membership_status = 'MATCHED'",
+            name="ck_standard_price_observation_matched",
+        ),
+        ForeignKeyConstraint(
+            ["standard_price_version_id", "standard_item_id"],
+            [
+                "standard_price_version.id",
+                "standard_price_version.standard_item_id",
+            ],
+            name="fk_price_observation_price_item",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["clean_decision_id", "raw_item_id"],
+            ["clean_decision.id", "clean_decision.raw_item_id"],
+            name="fk_price_observation_clean_raw",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "membership_decision_id",
+                "raw_item_id",
+                "standard_item_id",
+                "membership_status",
+            ],
+            [
+                "item_membership_decision.id",
+                "item_membership_decision.raw_item_id",
+                "item_membership_decision.standard_item_id",
+                "item_membership_decision.status",
+            ],
+            name="fk_price_observation_membership_evidence",
+            ondelete="RESTRICT",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    standard_price_version_id: Mapped[int] = mapped_column(index=True)
+    standard_item_id: Mapped[int] = mapped_column(index=True)
+    raw_item_id: Mapped[int] = mapped_column(index=True)
+    clean_decision_id: Mapped[int] = mapped_column(index=True)
+    membership_decision_id: Mapped[int] = mapped_column(index=True)
+    membership_status: Mapped[MembershipStatus] = mapped_column(
+        Enum(
+            MembershipStatus,
+            name="price_observation_membership_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=MembershipStatus.MATCHED,
+        server_default=text("'MATCHED'"),
+    )
+
+    standard_price_version: Mapped[StandardPriceVersion] = relationship(
+        "StandardPriceVersion",
+        back_populates="observations",
+        foreign_keys=[standard_price_version_id, standard_item_id],
+        overlaps="membership_decision",
+    )
+    clean_decision: Mapped[CleanDecision] = relationship(
+        "CleanDecision",
+        foreign_keys=[clean_decision_id, raw_item_id],
+        overlaps="membership_decision,standard_price_version",
+    )
+    membership_decision: Mapped[ItemMembershipDecision] = relationship(
+        "ItemMembershipDecision",
+        foreign_keys=[
+            membership_decision_id,
+            raw_item_id,
+            standard_item_id,
+            membership_status,
+        ],
+        overlaps="clean_decision,standard_price_version",
+    )
+
+
+@event.listens_for(Session, "before_flush")
+def validate_new_standard_price_evidence(
+    session: Session,
+    flush_context: object,
+    instances: object,
+) -> None:
+    """Keep price evidence atomic in application-managed transactions.
+
+    Native database maintenance outside a SQLAlchemy Session remains a
+    trusted boundary; relational foreign keys still protect link integrity.
+    """
+
+    new_rows = set(session.new)
+    for row in new_rows:
+        if isinstance(row, StandardPriceVersion):
+            if len(row.observations) != row.observation_count:
+                raise CatalogIntegrityError(
+                    "a new standard price version must include exactly "
+                    "observation_count normalized observations"
+                )
+        elif isinstance(row, StandardPriceObservation):
+            if row.standard_price_version not in new_rows:
+                raise CatalogIntegrityError(
+                    "price observations may only be created atomically "
+                    "with a new standard price version"
+                )

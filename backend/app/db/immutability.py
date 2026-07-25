@@ -1,3 +1,11 @@
+"""Application-managed append-only guards.
+
+The listeners cover ORM instance writes and ORM/Core DML executed through a
+SQLAlchemy Session. Direct native SQL is a trusted maintenance boundary; the
+database still enforces relational integrity, but this module does not claim
+trigger-level immutability for such connections.
+"""
+
 from typing import Any
 
 from sqlalchemy import event

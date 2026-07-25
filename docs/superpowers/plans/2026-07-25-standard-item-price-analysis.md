@@ -137,6 +137,14 @@ class DocumentMetadataVersion(Base):
 
 class ItemMembershipDecision(Base):
     __tablename__ = "item_membership_decision"
+    __table_args__ = (
+        UniqueConstraint("id", "raw_item_id"),
+        ForeignKeyConstraint(
+            ["supersedes_decision_id", "raw_item_id"],
+            ["item_membership_decision.id", "item_membership_decision.raw_item_id"],
+            ondelete="RESTRICT",
+        ),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     raw_item_id: Mapped[int] = mapped_column(
         ForeignKey("raw_quote_item.id", ondelete="RESTRICT"),
@@ -151,7 +159,6 @@ class ItemMembershipDecision(Base):
     method: Mapped[str]
     evidence_json: Mapped[str]
     supersedes_decision_id: Mapped[int | None] = mapped_column(
-        ForeignKey("item_membership_decision.id", ondelete="RESTRICT"),
         unique=True,
     )
     decided_by: Mapped[str]
@@ -177,17 +184,29 @@ class StandardPriceVersion(Base):
     median_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     average_price: Mapped[Decimal] = mapped_column(ExactDecimal())
     maximum_price: Mapped[Decimal] = mapped_column(ExactDecimal())
-    observation_decision_ids_json: Mapped[str]
     calculation_version: Mapped[str]
     approved_by: Mapped[str]
     approved_at: Mapped[datetime] = mapped_column(UtcDateTime(), default=utc_now)
+
+
+class StandardPriceObservation(Base):
+    """Authoritative normalized evidence; no JSON ID list is authoritative."""
+
+    __tablename__ = "standard_price_observation"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    standard_price_version_id: Mapped[int]
+    standard_item_id: Mapped[int]
+    raw_item_id: Mapped[int]
+    clean_decision_id: Mapped[int]
+    membership_decision_id: Mapped[int]
+    membership_status: Mapped[MembershipStatus]
 ```
 
-Register all models in `app/db/models.py` and all history tables with the existing ORM and bulk-DML immutability guards. `StandardItem` is a stable identity row; its descriptive state exists only in append-only `StandardItemVersion`.
+`StandardPriceObservation` uses composite `RESTRICT` foreign keys to prove that its clean decision and `MATCHED` membership belong to the same raw row and standard item as the price version. It has per-version unique constraints for raw rows, clean decisions, and membership decisions. Register all models in `app/db/models.py` and all history tables with the existing ORM and bulk-DML immutability guards. `StandardItem` is a stable identity row; its descriptive state exists only in append-only `StandardItemVersion`.
 
 - [ ] **Step 4: Add Alembic `0004`**
 
-Create all five tables, foreign keys, uniqueness checks, status checks, and lookup indexes. Downgrade must refuse before DDL if a later table outside revision `0004` depends on these tables; otherwise remove them in reverse dependency order without touching source, raw, or cleansing tables.
+Create all six catalog tables, the composite parent keys needed on cleansing/membership tables, foreign keys, uniqueness checks, status checks, and lookup indexes. Downgrade must refuse before DDL if a later table outside revision `0004` depends on these tables; otherwise remove them in reverse dependency order without deleting source, raw, or cleansing rows.
 
 - [ ] **Step 5: Run focused and migration tests**
 
@@ -633,7 +652,8 @@ Use sorted `Decimal` observations. For an even count, median is the exact mean o
 - latest membership must be `MATCHED` to the target;
 - unit must remain compatible with the current standard-item version;
 - unit price must be positive and storage-safe;
-- each contributing cleansing-decision ID is stored in sorted order;
+- each contributing cleansing and membership decision is persisted as one
+  `StandardPriceObservation`; sort its IDs when producing fingerprints;
 - supplier count ignores missing metadata instead of inventing a supplier;
 - latest quote date ignores missing dates.
 
