@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-import re
 from typing import Iterable
 
 from rapidfuzz import fuzz
 
-from app.matching.normalization import model_tokens, normalize_search_text
+from app.matching.normalization import (
+    is_rating_token,
+    model_tokens,
+    normalize_search_text,
+)
 
 SCORE_QUANTUM = Decimal("0.000001")
 NAME_WEIGHT = Decimal("0.650000")
@@ -16,10 +19,8 @@ TOKEN_WEIGHT = Decimal("0.100000")
 LEXICAL_THRESHOLD = Decimal("0.650000")
 MODEL_TOKEN_MINIMUM = Decimal("0.900000")
 RATING_ONLY_SCORE_CEILING = MODEL_TOKEN_MINIMUM - SCORE_QUANTUM
+MODEL_NAME_COMPATIBILITY_MINIMUM = Decimal("0.500000")
 PERFECT_SCORE = Decimal("1.000000")
-_RATING_TOKEN = re.compile(
-    r"^\d+(?:\.\d+)?(?:W|KW|V|KV|A|MA|MM|CM|M|KG|G|L|ML|HZ|RPM)$"
-)
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,10 @@ class MatchQuery:
     name: str
     spec: str | None
     unit: str | None
+
+    def __post_init__(self) -> None:
+        if not normalize_search_text(self.name):
+            raise ValueError("query name must not be blank")
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,10 @@ class CandidateItem:
     spec: str | None = None
     unit: str | None = None
     aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not normalize_search_text(self.name):
+            raise ValueError("candidate name must not be blank")
 
 
 @dataclass(frozen=True)
@@ -68,11 +77,13 @@ def _token_weight(token: str) -> Decimal:
 
 def _token_score(
     query_tokens: tuple[str, ...],
+    item_tokens: tuple[str, ...],
     matched_tokens: tuple[str, ...],
 ) -> Decimal:
-    if not query_tokens:
+    all_tokens = set(query_tokens) | set(item_tokens)
+    if not all_tokens:
         return Decimal("0.000000")
-    possible = sum((_token_weight(token) for token in query_tokens), Decimal())
+    possible = sum((_token_weight(token) for token in all_tokens), Decimal())
     matched = sum((_token_weight(token) for token in matched_tokens), Decimal())
     return _quantize(matched / possible)
 
@@ -93,7 +104,7 @@ def _lexical_score(
     spec_score = _ratio(query_spec, item_spec)
     item_tokens = model_tokens(f"{item.name} {item.spec or ''}")
     matched_tokens = tuple(sorted(set(query_tokens) & set(item_tokens)))
-    token_score = _token_score(query_tokens, matched_tokens)
+    token_score = _token_score(query_tokens, item_tokens, matched_tokens)
     return name_score, spec_score, token_score
 
 
@@ -121,9 +132,18 @@ def _model_tokens_conflict(
 
 
 def _identifier_tokens(tokens: tuple[str, ...]) -> set[str]:
-    return {
-        token for token in tokens if not _RATING_TOKEN.fullmatch(token)
+    return {token for token in tokens if not is_rating_token(token)}
+
+
+def _evidence_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    compound_prefixes = {
+        token.split("-", 1)[0] for token in tokens if "-" in token
     }
+    return tuple(
+        token
+        for token in tokens
+        if token not in compound_prefixes or "-" in token
+    )
 
 
 def rank_candidates(
@@ -134,6 +154,8 @@ def rank_candidates(
 ) -> list[CandidateScore]:
     """Rank compatible candidates without making a membership decision."""
 
+    if isinstance(top_n, bool) or not isinstance(top_n, int):
+        raise TypeError("top_n must be an integer")
     if top_n <= 0:
         raise ValueError("top_n must be positive")
 
@@ -153,7 +175,8 @@ def rank_candidates(
         if _model_tokens_conflict(query_tokens, item_tokens):
             continue
 
-        matched_tokens = tuple(sorted(set(query_tokens) & set(item_tokens)))
+        score_tokens = tuple(sorted(set(query_tokens) & set(item_tokens)))
+        matched_tokens = _evidence_tokens(score_tokens)
         matched_identifiers = (
             _identifier_tokens(query_tokens) & _identifier_tokens(item_tokens)
         )
@@ -171,7 +194,10 @@ def rank_candidates(
         if exact:
             final_score = PERFECT_SCORE
             method = "EXACT_RULE_V1"
-        elif matched_identifiers:
+        elif (
+            matched_identifiers
+            and name_score >= MODEL_NAME_COMPATIBILITY_MINIMUM
+        ):
             final_score = _quantize(
                 MODEL_TOKEN_MINIMUM
                 + (PERFECT_SCORE - MODEL_TOKEN_MINIMUM) * token_score
@@ -183,7 +209,7 @@ def rank_candidates(
                 + SPEC_WEIGHT * spec_score
                 + TOKEN_WEIGHT * token_score
             )
-            if matched_tokens:
+            if score_tokens:
                 final_score = min(final_score, RATING_ONLY_SCORE_CEILING)
             method = "LEXICAL_RULE_V1"
             if final_score < LEXICAL_THRESHOLD:

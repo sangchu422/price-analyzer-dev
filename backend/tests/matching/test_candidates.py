@@ -95,6 +95,47 @@ def test_rating_only_match_does_not_promote_unrelated_items() -> None:
     assert result == []
 
 
+@pytest.mark.parametrize(
+    ("query_name", "candidate_name", "rating"),
+    [
+        ("SERVO MOTOR", "HEATER", "400VAC"),
+        ("POWER SUPPLY", "HEATER", "24VDC"),
+    ],
+)
+def test_industrial_rating_does_not_create_model_boost(
+    query_name: str,
+    candidate_name: str,
+    rating: str,
+) -> None:
+    result = rank_candidates(
+        query=MatchQuery(name=query_name, spec=rating, unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name=candidate_name,
+                spec=rating,
+                unit="EA",
+            )
+        ],
+    )
+    assert result == []
+
+
+def test_low_name_compatibility_prevents_unknown_token_model_boost() -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="SERVO MOTOR", spec="400XYZ", unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="HEATER",
+                spec="400XYZ",
+                unit="EA",
+            )
+        ],
+    )
+    assert result == []
+
+
 def test_rating_only_match_stays_below_model_token_minimum() -> None:
     result = rank_candidates(
         query=MatchQuery(name="SERVO MOTOR", spec="400W", unit="EA"),
@@ -152,6 +193,54 @@ def test_model_identifier_subset_is_compatible() -> None:
     assert result.final_score >= Decimal("0.900000")
 
 
+def test_bearing_suffix_conflict_is_blocked() -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="BEARING", spec="6204-ZZ", unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="BEARING",
+                spec="6204-2RS",
+                unit="EA",
+            )
+        ],
+    )
+    assert result == []
+
+
+def test_same_bearing_suffix_is_an_exact_match() -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="BEARING", spec="6204-ZZ", unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="BEARING",
+                spec="6204 ZZ",
+                unit="EA",
+            )
+        ],
+    )[0]
+    assert result.matched_tokens == ("6204-ZZ",)
+    assert result.method == "EXACT_RULE_V1"
+    assert result.final_score == Decimal("1.000000")
+
+
+def test_partial_model_match_never_receives_perfect_score() -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="BEARING", spec="6204", unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="BALL BEARING",
+                spec="6204 ZZ",
+                unit="EA",
+            )
+        ],
+    )[0]
+    assert result.method == "MODEL_TOKEN_RULE_V1"
+    assert Decimal("0.900000") <= result.final_score < Decimal("1.000000")
+
+
 def test_model_number_match_ranks_before_name_only_match() -> None:
     results = rank_candidates(
         query=MatchQuery(
@@ -201,7 +290,11 @@ def test_exact_normalized_name_spec_and_unit_has_perfect_score() -> None:
 
 def test_exact_model_token_sets_minimum_score() -> None:
     result = rank_candidates(
-        query=MatchQuery(name="구동 장치", spec="SGMAH-04AAA61", unit="EA"),
+        query=MatchQuery(
+            name="SERVO MOTOR",
+            spec="SGMAH-04AAA61",
+            unit="EA",
+        ),
         items=[
             make_item(
                 item_id=1,
@@ -270,6 +363,23 @@ def test_top_n_must_be_positive() -> None:
             items=[],
             top_n=0,
         )
+
+
+@pytest.mark.parametrize("top_n", [True, 1.5, "2"])
+def test_top_n_must_be_an_integer(top_n: object) -> None:
+    with pytest.raises(TypeError, match="top_n"):
+        rank_candidates(
+            query=MatchQuery(name="BEARING", spec=None, unit=None),
+            items=[],
+            top_n=top_n,  # type: ignore[arg-type]
+        )
+
+
+def test_query_and_candidate_names_must_not_be_blank() -> None:
+    with pytest.raises(ValueError, match="name"):
+        MatchQuery(name="  ", spec=None, unit=None)
+    with pytest.raises(ValueError, match="name"):
+        make_item(item_id=1, name=" ")
 
 
 def test_alias_can_supply_best_name_score() -> None:
