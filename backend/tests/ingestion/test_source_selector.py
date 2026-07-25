@@ -185,6 +185,30 @@ def test_relative_traversal_is_rejected() -> None:
         build_source_groups([Path("../outside/quote.xlsx")])
 
 
+def test_current_drive_rooted_path_is_not_portable_relative() -> None:
+    path = PureWindowsPath(r"\quotes\q.xls")
+
+    with pytest.raises(ValueError, match="portable relative"):
+        build_source_groups([path])
+
+
+def test_drive_relative_path_is_not_portable_relative() -> None:
+    path = PureWindowsPath("C:quotes/q.xls")
+
+    with pytest.raises(ValueError, match="portable relative"):
+        build_source_groups([path])
+
+
+def test_mixed_drive_relative_paths_are_rejected() -> None:
+    paths = [
+        PureWindowsPath("C:quotes/q.xls"),
+        PureWindowsPath("D:quotes/q_보안해제.xlsx"),
+    ]
+
+    with pytest.raises(ValueError, match="portable relative"):
+        build_source_groups(paths)
+
+
 def test_mixed_absolute_and_relative_paths_are_rejected(
     tmp_path: Path,
 ) -> None:

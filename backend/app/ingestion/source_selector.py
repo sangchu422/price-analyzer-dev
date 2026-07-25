@@ -5,7 +5,7 @@ from __future__ import annotations
 import ntpath
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 _UNLOCKED_SUFFIX = "_보안해제"
@@ -91,6 +91,11 @@ def _normalize_sources(
         raise ValueError("paths must be all relative or all absolute")
 
     if absolute_states == {False}:
+        if any(not _is_portable_relative(path) for path in paths):
+            raise ValueError(
+                "relative inputs must be portable relative paths "
+                "without an anchor, drive, or root"
+            )
         if root is not None:
             raise ValueError("root must be omitted for relative paths")
         if any(".." in path.parts for path in paths):
@@ -117,6 +122,20 @@ def _normalize_sources(
         normalized_paths.append(normalized_path)
         relative_paths.append(relative_path)
     return normalized_paths, relative_paths
+
+
+def _is_portable_relative(path: Path) -> bool:
+    windows_path = PureWindowsPath(str(path))
+    return not any(
+        (
+            path.anchor,
+            path.drive,
+            path.root,
+            windows_path.anchor,
+            windows_path.drive,
+            windows_path.root,
+        )
+    )
 
 
 def _is_unlocked(path: Path) -> bool:
