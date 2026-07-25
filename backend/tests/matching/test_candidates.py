@@ -173,6 +173,32 @@ def test_strong_model_identifier_ignores_name_language_or_synonym(
     assert result.final_score >= Decimal("0.900000")
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "6ES7-315-2AH14-0AB0",
+        "3G3MX2-A4004",
+        "3RV2011-1FA10",
+        "2TLA020007R0900",
+    ],
+)
+def test_digit_leading_complex_industrial_model_is_strong(model: str) -> None:
+    result = rank_candidates(
+        query=MatchQuery(name="CONTROL DEVICE", spec=model, unit="EA"),
+        items=[
+            make_item(
+                item_id=1,
+                name="AUTOMATION COMPONENT",
+                spec=model,
+                unit="EA",
+            )
+        ],
+    )[0]
+    assert result.method == "MODEL_TOKEN_RULE_V1"
+    assert result.matched_tokens == (model,)
+    assert result.final_score >= Decimal("0.900000")
+
+
 def test_rating_only_match_stays_below_model_token_minimum() -> None:
     result = rank_candidates(
         query=MatchQuery(name="SERVO MOTOR", spec="400W", unit="EA"),

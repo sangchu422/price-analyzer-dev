@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
@@ -21,6 +22,7 @@ MODEL_TOKEN_MINIMUM = Decimal("0.900000")
 RATING_ONLY_SCORE_CEILING = MODEL_TOKEN_MINIMUM - SCORE_QUANTUM
 MODEL_NAME_COMPATIBILITY_MINIMUM = Decimal("0.500000")
 PERFECT_SCORE = Decimal("1.000000")
+_ALPHANUMERIC_RUN = re.compile(r"[A-Z]+|\d+")
 
 
 @dataclass(frozen=True)
@@ -140,16 +142,29 @@ def _strong_identifier_tokens(tokens: tuple[str, ...]) -> set[str]:
     strong: set[str] = set()
     for token in identifiers:
         prefix = token.split("-", 1)[0]
+        mixed_prefix = any(character.isalpha() for character in prefix) and any(
+            character.isdigit() for character in prefix
+        )
         hyphenated_model = "-" in token and (
             prefix[0].isalpha()
             or (prefix.isdigit() and len(prefix) >= 4)
+            or mixed_prefix
         )
         alpha_numeric_model = (
             len(token) >= 5
             and token[0].isalpha()
             and any(character.isdigit() for character in token)
         )
-        if hyphenated_model or alpha_numeric_model:
+        complex_digit_leading_model = (
+            "-" not in token
+            and token[0].isdigit()
+            and len(_ALPHANUMERIC_RUN.findall(token)) >= 4
+        )
+        if (
+            hyphenated_model
+            or alpha_numeric_model
+            or complex_digit_leading_model
+        ):
             strong.add(token)
     return strong
 
