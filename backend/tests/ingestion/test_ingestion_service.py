@@ -442,6 +442,53 @@ def test_ingestion_failure_rolls_back_only_its_savepoint(
         assert observer.scalar(select(func.count(SourceDocument.id))) == 1
 
 
+def test_clean_caller_rollback_removes_ingestion_after_savepoint(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "clean-rollback.sqlite3"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    configure_sqlite(engine)
+    configure_sqlite(engine)
+    Base.metadata.create_all(engine)
+    quote = tmp_path / "rollback-quote.xlsx"
+    _write_quote(quote)
+    with engine.connect() as connection:
+        assert connection.connection.driver_connection.isolation_level is None
+        assert connection.exec_driver_sql(
+            "PRAGMA foreign_keys"
+        ).scalar_one() == 1
+
+    with Session(engine) as session:
+        ingest_path(session, quote, root=tmp_path)
+        session.rollback()
+
+    with Session(engine) as observer:
+        assert observer.scalar(select(func.count(SourceDocument.id))) == 0
+        assert observer.scalar(select(func.count(SourceVariant.id))) == 0
+        assert observer.scalar(select(func.count(RawQuoteItem.id))) == 0
+
+
+def test_clean_caller_commit_persists_ingestion_after_savepoint(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "clean-commit.sqlite3"
+    engine = configure_sqlite(
+        create_engine(f"sqlite:///{database_path.as_posix()}")
+    )
+    Base.metadata.create_all(engine)
+    quote = tmp_path / "commit-quote.xlsx"
+    _write_quote(quote)
+
+    with Session(engine) as session:
+        ingest_path(session, quote, root=tmp_path)
+        session.commit()
+
+    with Session(engine) as observer:
+        assert observer.scalar(select(func.count(SourceDocument.id))) == 1
+        assert observer.scalar(select(func.count(SourceVariant.id))) == 1
+        assert observer.scalar(select(func.count(RawQuoteItem.id))) == 1
+
+
 def test_unsupported_extension_is_rejected_without_database_writes(
     session: Session,
     tmp_path: Path,
