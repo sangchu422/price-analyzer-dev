@@ -188,6 +188,7 @@ export interface PriceStatistics {
 export interface PriceDraft {
   standard_item_id: number;
   standard_item_version_id: number;
+  current_standard_price_version_id: number | null;
   canonical_unit: string | null;
   observation_count: number;
   supplier_count: number;
@@ -526,9 +527,19 @@ export function getPriceDraft(standardItemId: number, signal?: AbortSignal) {
   );
 }
 
-export function getPriceHistory(standardItemId: number, signal?: AbortSignal) {
+export function getStandardPriceVersions({
+  standardItemId,
+  afterId,
+  signal,
+}: {
+  standardItemId: number;
+  afterId?: number;
+  signal?: AbortSignal;
+}) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<PriceHistory>(
-    `/api/pricing/standard-items/${standardItemId}/versions?limit=50`,
+    `/api/pricing/standard-items/${standardItemId}/versions?${params.toString()}`,
     { signal },
   );
 }

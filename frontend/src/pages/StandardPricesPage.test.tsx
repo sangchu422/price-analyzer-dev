@@ -44,6 +44,7 @@ it("shows a draft, immutable history, and records the approval actor", async () 
         return jsonResponse({
           standard_item_id: 2,
           standard_item_version_id: 5,
+          current_standard_price_version_id: 170,
           canonical_unit: "EA",
           observation_count: 2,
           supplier_count: 2,
@@ -187,7 +188,7 @@ it("shows a draft, immutable history, and records the approval actor", async () 
   );
   expect(approval?.body).toEqual({
     expected_fingerprint: "a".repeat(64),
-    expected_current_version_id: 70,
+    expected_current_version_id: 170,
     approved_by: "buyer-2",
   });
   await waitFor(() =>
@@ -199,6 +200,7 @@ it("shows a draft, immutable history, and records the approval actor", async () 
 
 it("follows catalog cursors without duplicates and opens a linked version", async () => {
   const catalogUrls: string[] = [];
+  const historyUrls: string[] = [];
   const item = (id: number, name: string) => ({
     id,
     member_count: id,
@@ -229,6 +231,7 @@ it("follows catalog cursors without duplicates and opens a linked version", asyn
         return jsonResponse({
           standard_item_id: 2,
           standard_item_version_id: 12,
+          current_standard_price_version_id: 99,
           canonical_unit: "EA",
           observation_count: 1,
           supplier_count: 1,
@@ -247,37 +250,47 @@ it("follows catalog cursors without duplicates and opens a linked version", asyn
         });
       }
       if (url.includes("/standard-items/2/versions?")) {
+        historyUrls.push(url);
+        const version = (id: number) => ({
+          id,
+          standard_item_id: 2,
+          version_number: id,
+          observation_count: 1,
+          supplier_count: 1,
+          latest_quote_date: "2026-07-01",
+          prices: {
+            minimum: "10.000000",
+            median: "10.000000",
+            average: "10.000000",
+            maximum: "10.000000",
+          },
+          calculation_version: "standard-price-v1",
+          audit_status: "CAPTURED",
+          draft_fingerprint: "c".repeat(64),
+          standard_item_version: null,
+          excluded_count: 0,
+          review_required_count: 0,
+          exclusions: [],
+          exclusion_context_valid: true,
+          exclusion_context_error: null,
+          approved_by: id === 51 ? "buyer-linked" : `buyer-${id}`,
+          approved_at: "2026-07-26T10:00:00",
+          observations: [],
+        });
+        if (!url.includes("after_id=50")) {
+          return jsonResponse({
+            standard_item_id: 2,
+            versions: Array.from({ length: 50 }, (_, index) =>
+              version(index + 1),
+            ),
+            next_cursor: 50,
+            limit: 50,
+          });
+        }
         return jsonResponse({
           standard_item_id: 2,
-          versions: [
-            {
-              id: 71,
-              standard_item_id: 2,
-              version_number: 3,
-              observation_count: 1,
-              supplier_count: 1,
-              latest_quote_date: "2026-07-01",
-              prices: {
-                minimum: "10.000000",
-                median: "10.000000",
-                average: "10.000000",
-                maximum: "10.000000",
-              },
-              calculation_version: "standard-price-v1",
-              audit_status: "CAPTURED",
-              draft_fingerprint: "c".repeat(64),
-              standard_item_version: null,
-              excluded_count: 0,
-              review_required_count: 0,
-              exclusions: [],
-              exclusion_context_valid: true,
-              exclusion_context_error: null,
-              approved_by: "buyer-linked",
-              approved_at: "2026-07-26T10:00:00",
-              observations: [],
-            },
-          ],
-          next_cursor: null,
+          versions: [version(50), version(51)],
+          next_cursor: 50,
           limit: 50,
         });
       }
@@ -285,16 +298,27 @@ it("follows catalog cursors without duplicates and opens a linked version", asyn
     }),
   );
 
-  renderApp("/standard-prices?item_id=2&version_id=71");
+  renderApp("/standard-prices?item_id=2&version_id=51");
 
   expect(
     await screen.findByRole("heading", { name: "ITEM TWO" }),
   ).toBeVisible();
-  expect(await screen.findByText("v3 · buyer-linked")).toBeVisible();
+  const linkedVersion = await screen.findByRole("link", {
+    name: "표준단가 v51 감사 링크",
+  });
+  expect(linkedVersion).toBeVisible();
+  expect(linkedVersion).toHaveFocus();
   expect(
-    screen.getByRole("group", { name: "버전 근거" }),
+    screen.getByRole("group", { name: "표준단가 v51 버전 근거" }),
   ).toHaveAttribute("open");
   expect(catalogUrls.filter((url) => url.includes("after_id=1"))).toHaveLength(1);
+  expect(historyUrls.filter((url) => url.includes("after_id=50"))).toHaveLength(1);
+  expect(
+    screen.getAllByRole("link", { name: "표준단가 v50 감사 링크" }),
+  ).toHaveLength(1);
+  expect(
+    screen.queryByRole("button", { name: "다음 승인 이력 불러오기" }),
+  ).not.toBeInTheDocument();
   expect(screen.getAllByRole("button", { name: /ITEM/ })).toHaveLength(2);
   expect(
     screen.queryByRole("button", { name: "다음 표준품목 불러오기" }),

@@ -380,6 +380,15 @@ def test_price_history_cursor_pagination_and_bounded_queries(
     assert first.json()["limit"] == 2
     assert statements <= 5
 
+    refreshed_draft = client.get(
+        f"/api/pricing/standard-items/{item.id}/draft"
+    )
+    assert refreshed_draft.status_code == 200
+    assert (
+        refreshed_draft.json()["current_standard_price_version_id"]
+        == created_ids[-1]
+    )
+
     second = client.get(
         f"/api/pricing/standard-items/{item.id}/versions"
         f"?after_id={first.json()['next_cursor']}&limit=2"

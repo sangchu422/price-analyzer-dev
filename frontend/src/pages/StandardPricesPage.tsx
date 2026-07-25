@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -10,7 +10,7 @@ import {
   ApiError,
   approvePrice,
   getPriceDraft,
-  getPriceHistory,
+  getStandardPriceVersions,
   getStandardItems,
   type PriceVersion,
 } from "../api/client";
@@ -24,6 +24,8 @@ export function StandardPricesPage() {
   );
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [actor, setActor] = useState("");
+  const versionLinkRefs = useRef(new Map<number, HTMLAnchorElement>());
+  const focusedLinkedVersionId = useRef<number | null>(null);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const catalog = useInfiniteQuery({
     queryKey: ["standard-items"],
@@ -56,6 +58,8 @@ export function StandardPricesPage() {
       : catalogItems[0]?.id ?? null);
   const selected =
     catalogItems.find((item) => item.id === effectiveId) ?? null;
+  const activeLinkedVersionId =
+    requestedItemId !== null && linkedItem ? linkedVersionId : null;
 
   useEffect(() => {
     if (
@@ -80,23 +84,68 @@ export function StandardPricesPage() {
     enabled: effectiveId !== null,
     retry: false,
   });
-  const history = useQuery({
+  const history = useInfiniteQuery({
     queryKey: ["price-history", effectiveId],
-    queryFn: ({ signal }) => getPriceHistory(effectiveId!, signal),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      getStandardPriceVersions({
+        standardItemId: effectiveId!,
+        afterId: pageParam,
+        signal,
+      }),
+    getNextPageParam: safeNextCursor,
     enabled: effectiveId !== null,
   });
-  const currentVersion = useMemo(
-    () =>
-      [...(history.data?.versions ?? [])].sort((a, b) => b.id - a.id)[0] ??
-      null,
-    [history.data],
+  const historyVersions = uniqueById(
+    history.data?.pages.flatMap((page) => page.versions) ?? [],
   );
+  const {
+    fetchNextPage: fetchNextHistoryPage,
+    hasNextPage: hasNextHistoryPage,
+    isFetchingNextPage: isFetchingNextHistoryPage,
+  } = history;
+  const linkedVersion = historyVersions.find(
+    (version) => version.id === activeLinkedVersionId,
+  );
+
+  useEffect(() => {
+    if (
+      activeLinkedVersionId === null ||
+      linkedVersion ||
+      !hasNextHistoryPage ||
+      isFetchingNextHistoryPage
+    ) {
+      return;
+    }
+    void fetchNextHistoryPage();
+  }, [
+    activeLinkedVersionId,
+    linkedVersion,
+    hasNextHistoryPage,
+    isFetchingNextHistoryPage,
+    fetchNextHistoryPage,
+  ]);
+
+  useEffect(() => {
+    if (
+      activeLinkedVersionId === null ||
+      !linkedVersion ||
+      focusedLinkedVersionId.current === activeLinkedVersionId
+    ) {
+      return;
+    }
+    const link = versionLinkRefs.current.get(activeLinkedVersionId);
+    if (!link) return;
+    link.focus();
+    focusedLinkedVersionId.current = activeLinkedVersionId;
+  }, [activeLinkedVersionId, linkedVersion]);
 
   const approval = useMutation({
     mutationFn: () =>
       approvePrice(effectiveId!, {
         expected_fingerprint: draft.data!.fingerprint,
-        expected_current_version_id: currentVersion?.id ?? null,
+        expected_current_version_id:
+          draft.data!.current_standard_price_version_id,
         approved_by: actor.trim(),
       }),
     onSuccess: (version) => {
@@ -214,7 +263,14 @@ export function StandardPricesPage() {
                     </div>
                     <div className="approval-line">
                       <label><span>승인자</span><input value={actor} onChange={(event) => setActor(event.target.value)} /></label>
-                      <button type="button" disabled={!actor.trim() || approval.isPending} onClick={() => approval.mutate()}>
+                      <button
+                        type="button"
+                        disabled={
+                          !actor.trim() ||
+                          approval.isPending
+                        }
+                        onClick={() => approval.mutate()}
+                      >
                         {approval.isPending ? "승인 중…" : "표준단가 버전 승인"}
                       </button>
                     </div>
@@ -255,20 +311,36 @@ export function StandardPricesPage() {
               <section className="history-section">
                 <div className="section-heading">
                   <div><p className="section-kicker">Immutable ledger</p><h2>승인 이력</h2></div>
-                  <span>{history.data?.versions.length ?? 0}개 버전</span>
+                  <span>{historyVersions.length}개 버전</span>
                 </div>
                 {history.isPending && <p className="inline-state">이력을 불러오는 중…</p>}
                 {history.isError && <p className="inline-state is-error">승인 이력을 불러오지 못했습니다.</p>}
                 <ol className="version-ledger">
-                  {history.data?.versions.map((version) => (
+                  {historyVersions.map((version) => (
                     <VersionRow
                       key={version.id}
                       version={version}
                       standardItemId={selected.id}
-                      linkedVersionId={linkedVersionId}
+                      linkedVersionId={activeLinkedVersionId}
+                      auditLinkRef={(element) => {
+                        if (element) versionLinkRefs.current.set(version.id, element);
+                        else versionLinkRefs.current.delete(version.id);
+                      }}
                     />
                   ))}
                 </ol>
+                {hasNextHistoryPage && (
+                  <button
+                    className="load-more-button"
+                    type="button"
+                    disabled={isFetchingNextHistoryPage}
+                    onClick={() => void fetchNextHistoryPage()}
+                  >
+                    {isFetchingNextHistoryPage
+                      ? "다음 승인 이력 불러오는 중…"
+                      : "다음 승인 이력 불러오기"}
+                  </button>
+                )}
               </section>
             </div>
           )}
@@ -286,16 +358,19 @@ function VersionRow({
   version,
   standardItemId,
   linkedVersionId,
+  auditLinkRef,
 }: {
   version: PriceVersion;
   standardItemId: number;
   linkedVersionId: number | null;
+  auditLinkRef: (element: HTMLAnchorElement | null) => void;
 }) {
   return (
     <li>
       <div>
         <strong>
           <a
+            ref={auditLinkRef}
             href={`/standard-prices?item_id=${standardItemId}&version_id=${version.id}`}
             aria-label={`표준단가 v${version.version_number} 감사 링크`}
           >
@@ -306,7 +381,7 @@ function VersionRow({
       </div>
       <div className="version-price"><span>중앙값</span><strong>{version.prices.median}</strong></div>
       <details
-        aria-label="버전 근거"
+        aria-label={`표준단가 v${version.version_number} 버전 근거`}
         {...(linkedVersionId === version.id ? { open: true } : {})}
       >
         <summary>버전 근거</summary>

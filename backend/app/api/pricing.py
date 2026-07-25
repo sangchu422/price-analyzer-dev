@@ -30,6 +30,7 @@ from app.pricing.service import (
     StandardPriceDraft,
     approve_standard_price,
     calculate_standard_price,
+    current_standard_price_version,
     standard_price_versions,
 )
 
@@ -97,6 +98,7 @@ class PriceContextResponse(BaseModel):
 class PriceDraftResponse(BaseModel):
     standard_item_id: int
     standard_item_version_id: int
+    current_standard_price_version_id: int | None
     canonical_unit: str | None
     observation_count: int
     supplier_count: int
@@ -209,10 +211,17 @@ def _draft_observation_payload(
     }
 
 
-def _draft_payload(draft: StandardPriceDraft) -> dict[str, object]:
+def _draft_payload(
+    draft: StandardPriceDraft,
+    *,
+    current_standard_price_version_id: int | None,
+) -> dict[str, object]:
     return {
         "standard_item_id": draft.standard_item_id,
         "standard_item_version_id": draft.standard_item_version_id,
+        "current_standard_price_version_id": (
+            current_standard_price_version_id
+        ),
         "canonical_unit": draft.canonical_unit,
         "observation_count": draft.observation_count,
         "supplier_count": draft.supplier_count,
@@ -408,8 +417,13 @@ def get_price_draft(
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
     try:
+        draft = calculate_standard_price(session, standard_item_id)
+        current = current_standard_price_version(session, standard_item_id)
         return _draft_payload(
-            calculate_standard_price(session, standard_item_id)
+            draft,
+            current_standard_price_version_id=(
+                None if current is None else current.id
+            ),
         )
     except Exception as exc:
         _raise_pricing_error(session, exc)
