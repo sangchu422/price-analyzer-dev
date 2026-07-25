@@ -495,13 +495,15 @@ def _classify_line(
         percent = None
         if quote_price is not None and quote_price.is_finite():
             amount = quote_price - price.median_price
-            percent = (
-                amount / price.median_price * Decimal("100")
-            ).quantize(PERCENT_QUANTUM, rounding=ROUND_HALF_UP)
+            exact_percent = amount / price.median_price * Decimal("100")
             assessment = _assessment(
-                percent,
+                exact_percent,
                 review_percent=review_percent,
                 high_percent=high_percent,
+            )
+            percent = exact_percent.quantize(
+                PERCENT_QUANTUM,
+                rounding=ROUND_HALF_UP,
             )
         return AnalysisLine(
             **base,

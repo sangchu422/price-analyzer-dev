@@ -260,6 +260,44 @@ def test_variance_threshold_boundaries_are_configurable() -> None:
         ]
 
 
+def test_assessment_uses_exact_variance_before_display_rounding() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        _approve_reference_price(session, item, price="1000000")
+        quote = _document(session, "exact-thresholds.xlsx")
+        for row, price in enumerate(
+            (
+                "899999.996",
+                "900000",
+                "1100000",
+                "1100000.004",
+                "1200000",
+                "1200000.004",
+            ),
+            start=1,
+        ):
+            _row(session, quote, row=row, price=price, item=item)
+
+        result = analyze_document(session, quote.id)
+
+        assert [line.variance_percent for line in result.lines] == [
+            Decimal("-10.000000"),
+            Decimal("-10.000000"),
+            Decimal("10.000000"),
+            Decimal("10.000000"),
+            Decimal("20.000000"),
+            Decimal("20.000000"),
+        ]
+        assert [line.assessment for line in result.lines] == [
+            "LOW",
+            "WITHIN_RANGE",
+            "WITHIN_RANGE",
+            "REVIEW",
+            "REVIEW",
+            "HIGH",
+        ]
+
+
 def test_analysis_uses_only_the_current_preferred_parsing_variant() -> None:
     with _session() as session:
         document = SourceDocument(logical_name="quotes/sample")
