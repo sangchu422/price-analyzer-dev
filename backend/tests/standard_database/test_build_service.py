@@ -239,6 +239,33 @@ def test_build_captures_single_historical_observation(
     assert price.maximum_price == Decimal("350000.000000")
 
 
+def test_price_eligibility_uses_the_same_unit_normalization_as_grouping(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/punctuated-unit.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    _row(
+        session,
+        variant,
+        row_number=2,
+        name="SENSOR",
+        spec="PX-1",
+        unit="E.A.",
+        price="100",
+    )
+
+    result = build_standard_database(session)
+
+    price = session.scalar(select(StandardPriceVersion))
+    assert result.standard_item_count == 1
+    assert result.observation_count == 1
+    assert price is not None
+    assert price.observation_count == 1
+
+
 def test_same_name_and_spec_with_different_units_stay_separate(
     session: Session,
 ) -> None:

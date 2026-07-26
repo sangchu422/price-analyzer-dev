@@ -34,7 +34,11 @@ def normalize_search_text(value: str | None) -> str:
     if value is None:
         return ""
     normalized = unicodedata.normalize("NFKC", str(value)).upper()
-    normalized = _HYPHENATED.sub(_preserve_model_hyphen, normalized)
+    while True:
+        rewritten = _HYPHENATED.sub(_preserve_model_hyphen, normalized)
+        if rewritten == normalized:
+            break
+        normalized = rewritten
 
     output: list[str] = []
     for character in normalized:

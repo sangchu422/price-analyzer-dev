@@ -12,7 +12,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +35,17 @@ from app.ingestion.corpus import (
     preflight_corpus,
     scan_supported_files,
 )
+from app.standard_database.models import StandardDatabaseBuildRun
+from app.standard_database.service import (
+    BUILD_ACTOR,
+    RULE_VERSION,
+    ConcurrentStandardBuild,
+    DuplicateStandardKeyConflict,
+    ManualMembershipConflict,
+    StandardDatabaseBuildResult,
+    assign_initial_historical_roles,
+    build_standard_database,
+)
 
 
 EXIT_OK = 0
@@ -55,6 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "standard-price-drafts",
     }:
         return _run_catalog_command(args)
+    if args.command == "standard-db-build":
+        return _run_standard_db_command(args)
     try:
         quote_root = (
             Path(args.quote_root).expanduser().resolve(strict=False)
@@ -212,7 +225,150 @@ def _parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="개발 전용 local-mock-v1 인덱스 생성",
             )
+    standard_build_parser = subparsers.add_parser("standard-db-build")
+    standard_build_parser.add_argument(
+        "--database-file",
+        default=str(settings.database_path),
+        help="local SQLite database migrated before the standard build",
+    )
+    standard_build_parser.add_argument(
+        "--report",
+        help="UTF-8 JSON build report path under backend/.local",
+    )
+    standard_build_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON",
+    )
+    standard_build_parser.add_argument(
+        "--actor",
+        default=BUILD_ACTOR,
+        help="audit actor recorded on created standard evidence",
+    )
     return parser
+
+
+def _run_standard_db_command(args: argparse.Namespace) -> int:
+    actor = args.actor.strip()
+    if not actor or len(actor) > 100:
+        return _emit_error(
+            "INVALID_ACTOR",
+            "actor must contain 1 to 100 characters",
+            json_output=args.json,
+        )
+    try:
+        requested_database = Path(args.database_file).expanduser()
+        requested_report = (
+            Path(args.report).expanduser()
+            if args.report is not None
+            else _default_catalog_report_path("standard-db-build")
+        )
+        database_path, report_path, _ = _validate_catalog_targets(
+            database_path=requested_database,
+            report_path=requested_report,
+            index_path=None,
+        )
+        _upgrade_database(database_path)
+    except UnsafeOutputPathError as exc:
+        return _emit_error(
+            "UNSAFE_OUTPUT_PATH",
+            str(exc),
+            json_output=args.json,
+        )
+    except CommandError:
+        return _emit_error(
+            "DATABASE_MIGRATION_ERROR",
+            "database schema revision is incompatible",
+            json_output=args.json,
+        )
+    except (DBAPIError, sqlite3.DatabaseError) as exc:
+        return _emit_database_error(exc, json_output=args.json)
+    except OSError:
+        return _emit_error(
+            "DATABASE_UNAVAILABLE",
+            "database could not be created or accessed",
+            json_output=args.json,
+        )
+
+    engine = configure_sqlite(
+        create_engine(
+            f"sqlite:///{database_path.as_posix()}",
+            connect_args={"check_same_thread": False},
+        )
+    )
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            try:
+                assign_initial_historical_roles(session, actor=actor)
+                result = build_standard_database(session, actor=actor)
+                run = session.get(StandardDatabaseBuildRun, result.run_id)
+                assert run is not None
+                payload = _standard_build_payload(
+                    result,
+                    run,
+                    report_path,
+                )
+                publication = _stage_catalog_report(report_path, payload)
+                publication.publish()
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    publication.restore()
+                    raise
+                publication.finalize()
+            except (
+                ConcurrentStandardBuild,
+                DuplicateStandardKeyConflict,
+                ManualMembershipConflict,
+            ) as exc:
+                session.rollback()
+                return _emit_error(
+                    "STANDARD_DB_BUILD_CONFLICT",
+                    str(exc),
+                    json_output=args.json,
+                )
+            except OSError:
+                session.rollback()
+                return _emit_error(
+                    "REPORT_WRITE_ERROR",
+                    "standard database report could not be written",
+                    json_output=args.json,
+                )
+        _emit_catalog(payload, json_output=args.json)
+        return EXIT_OK
+    except (DBAPIError, sqlite3.DatabaseError) as exc:
+        return _emit_database_error(exc, json_output=args.json)
+    finally:
+        engine.dispose()
+
+
+def _standard_build_payload(
+    result: StandardDatabaseBuildResult,
+    run: StandardDatabaseBuildRun,
+    report_path: Path,
+) -> dict[str, object]:
+    return {
+        "status": run.status.value,
+        "run_id": result.run_id,
+        "reused_run_id": result.reused_run_id,
+        "fingerprint": run.input_fingerprint,
+        "rule_version": RULE_VERSION,
+        "created_standard_items": result.created_standard_items,
+        "created_memberships": result.created_memberships,
+        "created_price_versions": result.created_price_versions,
+        "groups": result.standard_item_count,
+        "observations": result.observation_count,
+        "single_observation_count": result.single_observation_count,
+        "reused_standard_items": result.reused_count,
+        "changed_standard_items": result.changed_count,
+        "unit_conflict_count": result.unit_conflict_count,
+        "exclusions": [asdict(issue) for issue in result.exclusions],
+        "conflicts": [asdict(issue) for issue in result.conflicts],
+        "report_file": _catalog_report_payload({}, report_path)[
+            "report_file"
+        ],
+    }
 
 
 def _run_catalog_command(args: argparse.Namespace) -> int:

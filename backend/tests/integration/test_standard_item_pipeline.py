@@ -37,6 +37,11 @@ from app.pricing.service import (
     calculate_standard_price,
 )
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+    StandardDatabaseBuildRun,
+)
 
 
 def _write_quote(path: Path, rows: list[list[object]]) -> None:
@@ -424,6 +429,94 @@ def test_catalog_cli_seed_and_drafts_are_idempotent(
     assert draft_payload["drafts_available"] == 1
     assert draft_payload["approved_versions_created"] == 0
     assert json.loads(report_path.read_text(encoding="utf-8")) == draft_payload
+
+
+def test_standard_db_build_cli_commits_once_and_reports_repeatable_result(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, local = _local_project(tmp_path, monkeypatch)
+    database = local / "standards.sqlite3"
+    first_report = local / "standard-build-first.json"
+    second_report = local / "standard-build-second.json"
+    _write_quote(
+        root / "a.xlsx",
+        [["BEARING", "6204", "EA", 1, 100, 100]],
+    )
+    _write_quote(
+        root / "b.xlsx",
+        [["BEARING", "6204", "EA", 1, 120, 120]],
+    )
+    assert main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    first_exit = main(
+        [
+            "standard-db-build",
+            "--database-file",
+            str(database),
+            "--report",
+            str(first_report),
+            "--actor",
+            "buyer-automation",
+            "--json",
+        ]
+    )
+    first = json.loads(capsys.readouterr().out)
+    second_exit = main(
+        [
+            "standard-db-build",
+            "--database-file",
+            str(database),
+            "--report",
+            str(second_report),
+            "--actor",
+            "buyer-automation",
+            "--json",
+        ]
+    )
+    second = json.loads(capsys.readouterr().out)
+
+    assert first_exit == second_exit == 0
+    assert first["status"] == second["status"] == "SUCCEEDED"
+    assert first["rule_version"] == second["rule_version"]
+    assert len(first["fingerprint"]) == 64
+    assert first["created_standard_items"] == 1
+    assert first["created_memberships"] == 2
+    assert first["created_price_versions"] == 1
+    assert first["groups"] == 1
+    assert first["observations"] == 2
+    assert first["single_observation_count"] == 0
+    assert second["run_id"] == first["run_id"]
+    assert second["reused_run_id"] == first["run_id"]
+    assert second["created_standard_items"] == 0
+    assert second["created_memberships"] == 0
+    assert second["created_price_versions"] == 0
+    assert json.loads(first_report.read_text(encoding="utf-8")) == first
+    assert json.loads(second_report.read_text(encoding="utf-8")) == second
+    with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
+        assert session.scalar(
+            select(func.count(StandardDatabaseBuildRun.id))
+        ) == 1
+        assert set(
+            session.scalars(select(ItemMembershipDecision.decided_by))
+        ) == {"buyer-automation"}
+        assert set(
+            session.scalars(select(StandardPriceVersion.approved_by))
+        ) == {"buyer-automation"}
+        assert session.scalar(select(func.count(QuoteDocumentRole.id))) == 2
+        assert set(session.scalars(select(QuoteDocumentRole.purpose))) == {
+            QuoteDocumentPurpose.HISTORICAL_REFERENCE
+        }
 
 
 def test_catalog_cli_rejects_original_and_output_alias_without_modification(

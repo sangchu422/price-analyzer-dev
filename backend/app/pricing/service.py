@@ -32,6 +32,7 @@ from app.catalog.service import current_standard_item_version
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.types import EXACT_DECIMAL_MAX, EXACT_DECIMAL_QUANTUM
 from app.documents.models import SourceDocument, SourceVariant
+from app.matching.normalization import normalize_search_text
 from app.quotes.models import RawQuoteItem
 
 
@@ -178,7 +179,9 @@ def _same_unit(observation: str | None, canonical: str | None) -> bool:
         return True
     if observation is None:
         return False
-    return observation.strip().casefold() == canonical.strip().casefold()
+    return normalize_search_text(observation) == normalize_search_text(
+        canonical
+    )
 
 
 def _safe_positive_price(value: Decimal | None) -> bool:

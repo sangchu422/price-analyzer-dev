@@ -54,3 +54,10 @@ def test_model_separator_is_preserved_only_inside_explicit_model_token() -> None
     assert normalize_search_text("SGMAH-04AAA61 / AC-MOTOR") == (
         "SGMAH-04AAA61 AC MOTOR"
     )
+
+
+def test_normalization_is_idempotent_for_chained_non_model_hyphens() -> None:
+    normalized = normalize_search_text("X-Y-Z JOINT BRACKET")
+
+    assert normalized == "X Y Z JOINT BRACKET"
+    assert normalize_search_text(normalized) == normalized

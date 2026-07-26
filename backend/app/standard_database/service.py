@@ -46,6 +46,7 @@ from app.standard_database.models import (
 RULE_VERSION = "STANDARD_DB_EXACT_V1"
 NORMALIZATION_VERSION = "match-v1"
 BUILD_ACTOR = "LOCAL_STANDARD_DB_BUILD"
+INITIAL_HISTORICAL_ROLE_REASON = "INITIAL_LOCAL_CORPUS"
 
 
 class ManualMembershipConflict(RuntimeError):
@@ -98,6 +99,34 @@ class DuplicateStandardKeyConflict(RuntimeError):
 
 class ConcurrentStandardBuild(RuntimeError):
     """A competing transaction completed the same deterministic build."""
+
+
+def assign_initial_historical_roles(
+    session: Session,
+    *,
+    actor: str = BUILD_ACTOR,
+) -> int:
+    """Classify the pre-existing corpus once, before the first build."""
+
+    session.flush()
+    if session.scalar(select(func.count(QuoteDocumentRole.id))) != 0:
+        return 0
+    if session.scalar(select(func.count(StandardDatabaseBuildRun.id))) != 0:
+        return 0
+    document_ids = tuple(
+        session.scalars(select(SourceDocument.id).order_by(SourceDocument.id))
+    )
+    for document_id in document_ids:
+        session.add(
+            QuoteDocumentRole(
+                document_id=document_id,
+                purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                decided_by=actor,
+                reason_detail=INITIAL_HISTORICAL_ROLE_REASON,
+            )
+        )
+    session.flush()
+    return len(document_ids)
 
 
 @dataclass(frozen=True)
@@ -500,6 +529,8 @@ def _is_success_unique_violation(error: IntegrityError) -> bool:
 
 def build_standard_database(
     session: Session,
+    *,
+    actor: str = BUILD_ACTOR,
 ) -> StandardDatabaseBuildResult:
     """Append standards, memberships, and captured prices in caller scope."""
 
@@ -555,6 +586,7 @@ def build_standard_database(
                 current_versions=current_versions,
                 exclusions=exclusions,
                 conflicts=conflicts,
+                actor=actor,
             )
     except IntegrityError as error:
         if not _is_success_unique_violation(error):
@@ -579,6 +611,7 @@ def _execute_standard_build(
     ],
     exclusions: list[StandardDatabaseBuildIssue],
     conflicts: list[StandardDatabaseBuildIssue],
+    actor: str,
 ) -> StandardDatabaseBuildResult:
     run = StandardDatabaseBuildRun(
         input_fingerprint=fingerprint,
@@ -624,7 +657,7 @@ def _execute_standard_build(
                     canonical_spec=desired[1],
                     canonical_unit=desired[2],
                     aliases=_aliases(version),
-                    created_by=BUILD_ACTOR,
+                    created_by=actor,
                     reason_detail=RULE_VERSION,
                 )
                 changed_count += 1
@@ -635,7 +668,7 @@ def _execute_standard_build(
                 canonical_spec=desired[1],
                 canonical_unit=desired[2],
                 aliases=[],
-                created_by=BUILD_ACTOR,
+                created_by=actor,
                 reason_detail=RULE_VERSION,
             )
             created_count += 1
@@ -670,7 +703,7 @@ def _execute_standard_build(
                     "rule_version": RULE_VERSION,
                     "normalization_version": NORMALIZATION_VERSION,
                 },
-                decided_by=BUILD_ACTOR,
+                decided_by=actor,
                 reason_detail=RULE_VERSION,
             )
             created_memberships += 1
@@ -693,7 +726,7 @@ def _execute_standard_build(
                 expected_current_version_id=(
                     None if current_price is None else current_price.id
                 ),
-                approved_by=BUILD_ACTOR,
+                approved_by=actor,
                 raw_item_ids=selected_raw_item_ids,
             )
             created_price_versions += 1
