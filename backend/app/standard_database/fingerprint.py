@@ -15,7 +15,9 @@ if TYPE_CHECKING:
 
 def _json_value(value: object) -> object:
     if isinstance(value, Decimal):
-        return format(value, "f")
+        if value == 0:
+            return "0"
+        return format(value.normalize(), "f")
     if hasattr(value, "isoformat"):
         return value.isoformat()  # type: ignore[union-attr]
     return value

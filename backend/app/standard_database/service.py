@@ -450,19 +450,6 @@ def build_standard_database(
     with session.no_autoflush:
         evidence_rows, initial_exclusions = _load_historical_rows(session)
     fingerprint = standard_build_fingerprint(evidence_rows)
-    succeeded_run = session.scalar(
-        select(StandardDatabaseBuildRun)
-        .where(
-            StandardDatabaseBuildRun.input_fingerprint == fingerprint,
-            StandardDatabaseBuildRun.rule_version == RULE_VERSION,
-            StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED,
-        )
-        .order_by(StandardDatabaseBuildRun.id)
-        .limit(1)
-    )
-    if succeeded_run is not None:
-        return _reused_result(succeeded_run)
-
     exclusions = list(initial_exclusions)
     groups: dict[
         tuple[str, str, str], list[EligibleHistoricalRow]
@@ -492,6 +479,19 @@ def build_standard_database(
             groups=groups,
             current_versions=current_versions,
         )
+
+    succeeded_run = session.scalar(
+        select(StandardDatabaseBuildRun)
+        .where(
+            StandardDatabaseBuildRun.input_fingerprint == fingerprint,
+            StandardDatabaseBuildRun.rule_version == RULE_VERSION,
+            StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED,
+        )
+        .order_by(StandardDatabaseBuildRun.id)
+        .limit(1)
+    )
+    if succeeded_run is not None:
+        return _reused_result(succeeded_run)
 
     run = StandardDatabaseBuildRun(
         input_fingerprint=fingerprint,

@@ -418,6 +418,12 @@ def test_fingerprint_is_order_stable_and_tracks_decision_role_and_price() -> Non
     assert fingerprint != standard_build_fingerprint(
         [replace(base, unit_price=Decimal("100.01")), second]
     )
+    assert fingerprint == standard_build_fingerprint(
+        [
+            replace(base, unit_price=Decimal("100")),
+            replace(second, unit_price=Decimal("100.000")),
+        ]
+    )
 
 
 def test_build_marks_run_succeeded_without_committing(session: Session) -> None:
@@ -476,6 +482,7 @@ def test_identical_build_reuses_successful_run_without_new_rows(
             StandardPriceVersion,
         )
     }
+    session.expunge_all()
 
     second = build_standard_database(session)
     session.commit()
@@ -529,6 +536,7 @@ def test_identical_incoming_bid_does_not_change_build_fingerprint(
         price="999",
     )
     session.commit()
+    session.expunge_all()
 
     second = build_standard_database(session)
     second_run = session.get(StandardDatabaseBuildRun, second.run_id)
@@ -629,6 +637,66 @@ def test_manual_membership_conflict_is_preflighted_before_any_build_write(
         model: session.scalar(select(func.count(model.id)))
         for model in counts_before
     } == counts_before
+
+
+def test_successful_run_is_not_reused_after_manual_reassignment(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/reassigned-after-build.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    raw, _ = _row(
+        session,
+        variant,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    first = build_standard_database(session)
+    session.commit()
+    original_membership = session.scalar(
+        select(ItemMembershipDecision).where(
+            ItemMembershipDecision.raw_item_id == raw.id
+        )
+    )
+    assert original_membership is not None
+    manual_target = StandardItem()
+    session.add_all(
+        [
+            StandardItemVersion(
+                standard_item=manual_target,
+                version_number=1,
+                canonical_name="BUYER RELAY GROUP",
+                canonical_spec=None,
+                canonical_unit="EA",
+                aliases_json="[]",
+                created_by="buyer",
+                change_reason="manual reassignment",
+            ),
+            ItemMembershipDecision(
+                raw_item_id=raw.id,
+                standard_item=manual_target,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json='{"reason_detail":"buyer reassignment"}',
+                supersedes_decision_id=original_membership.id,
+                decided_by="buyer",
+            ),
+        ]
+    )
+    session.commit()
+    session.expunge_all()
+
+    with pytest.raises(ManualMembershipConflict) as raised:
+        build_standard_database(session)
+
+    assert raised.value.raw_item_id == raw.id
+    assert session.scalar(select(func.count(StandardDatabaseBuildRun.id))) == 1
+    assert session.get(StandardDatabaseBuildRun, first.run_id) is not None
 
 
 def test_build_fingerprint_includes_invalid_current_price_evidence(
