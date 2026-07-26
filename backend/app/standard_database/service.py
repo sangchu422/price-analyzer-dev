@@ -43,8 +43,8 @@ from app.standard_database.models import (
 )
 
 
-RULE_VERSION = "STANDARD_DB_EXACT_V1"
-NORMALIZATION_VERSION = "match-v1"
+RULE_VERSION = "STANDARD_DB_EXACT_V2"
+NORMALIZATION_VERSION = "match-v2"
 BUILD_ACTOR = "LOCAL_STANDARD_DB_BUILD"
 INITIAL_HISTORICAL_ROLE_REASON = "INITIAL_LOCAL_CORPUS"
 
@@ -545,6 +545,7 @@ def build_standard_database(
     session: Session,
     *,
     actor: str = BUILD_ACTOR,
+    report_path: str | None = None,
 ) -> StandardDatabaseBuildResult:
     """Append standards, memberships, and captured prices in caller scope."""
 
@@ -601,6 +602,7 @@ def build_standard_database(
                 exclusions=exclusions,
                 conflicts=conflicts,
                 actor=actor,
+                report_path=report_path,
             )
     except IntegrityError as error:
         if not _is_success_unique_violation(error):
@@ -626,10 +628,12 @@ def _execute_standard_build(
     exclusions: list[StandardDatabaseBuildIssue],
     conflicts: list[StandardDatabaseBuildIssue],
     actor: str,
+    report_path: str | None,
 ) -> StandardDatabaseBuildResult:
     run = StandardDatabaseBuildRun(
         input_fingerprint=fingerprint,
         rule_version=RULE_VERSION,
+        report_path=report_path,
     )
     session.add(run)
     session.flush()

@@ -136,6 +136,8 @@ def _row(
 def test_build_groups_equal_historical_rows_and_captures_sources(
     session: Session,
 ) -> None:
+    assert NORMALIZATION_VERSION == "match-v2"
+    assert RULE_VERSION == "STANDARD_DB_EXACT_V2"
     variant = _source(
         session,
         name="quotes/bearings.xlsx",

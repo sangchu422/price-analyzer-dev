@@ -256,6 +256,7 @@ def _run_standard_db_command(args: argparse.Namespace) -> int:
             "actor must contain 1 to 100 characters",
             json_output=args.json,
         )
+    report_path: Path | None = None
     try:
         requested_database = Path(args.database_file).expanduser()
         requested_report = (
@@ -276,17 +277,25 @@ def _run_standard_db_command(args: argparse.Namespace) -> int:
             json_output=args.json,
         )
     except CommandError:
-        return _emit_error(
+        return _emit_standard_build_failure(
             "DATABASE_MIGRATION_ERROR",
             "database schema revision is incompatible",
+            report_path=report_path,
             json_output=args.json,
         )
     except (DBAPIError, sqlite3.DatabaseError) as exc:
-        return _emit_database_error(exc, json_output=args.json)
+        error_code, detail = _database_error_details(exc)
+        return _emit_standard_build_failure(
+            error_code,
+            detail,
+            report_path=report_path,
+            json_output=args.json,
+        )
     except OSError:
-        return _emit_error(
+        return _emit_standard_build_failure(
             "DATABASE_UNAVAILABLE",
             "database could not be created or accessed",
+            report_path=report_path,
             json_output=args.json,
         )
 
@@ -300,7 +309,11 @@ def _run_standard_db_command(args: argparse.Namespace) -> int:
         with Session(engine, expire_on_commit=False) as session:
             try:
                 assign_initial_historical_roles(session, actor=actor)
-                result = build_standard_database(session, actor=actor)
+                result = build_standard_database(
+                    session,
+                    actor=actor,
+                    report_path=str(report_path),
+                )
                 run = session.get(StandardDatabaseBuildRun, result.run_id)
                 assert run is not None
                 payload = _standard_build_payload(
@@ -323,16 +336,18 @@ def _run_standard_db_command(args: argparse.Namespace) -> int:
                 ManualMembershipConflict,
             ) as exc:
                 session.rollback()
-                return _emit_error(
+                return _emit_standard_build_failure(
                     "STANDARD_DB_BUILD_CONFLICT",
                     str(exc),
+                    report_path=report_path,
                     json_output=args.json,
                 )
             except OSError:
                 session.rollback()
-                return _emit_error(
+                return _emit_standard_build_failure(
                     "REPORT_WRITE_ERROR",
                     "standard database report could not be written",
+                    report_path=report_path,
                     json_output=args.json,
                 )
             except (DBAPIError, sqlite3.DatabaseError):
@@ -340,15 +355,22 @@ def _run_standard_db_command(args: argparse.Namespace) -> int:
                 raise
             except Exception:
                 session.rollback()
-                return _emit_error(
+                return _emit_standard_build_failure(
                     "STANDARD_DB_BUILD_ERROR",
                     "standard database build failed",
+                    report_path=report_path,
                     json_output=args.json,
                 )
         _emit_catalog(payload, json_output=args.json)
         return EXIT_OK
     except (DBAPIError, sqlite3.DatabaseError) as exc:
-        return _emit_database_error(exc, json_output=args.json)
+        error_code, detail = _database_error_details(exc)
+        return _emit_standard_build_failure(
+            error_code,
+            detail,
+            report_path=report_path,
+            json_output=args.json,
+        )
     finally:
         engine.dispose()
 
@@ -379,6 +401,28 @@ def _standard_build_payload(
             "report_file"
         ],
     }
+
+
+def _emit_standard_build_failure(
+    error_code: str,
+    detail: str,
+    *,
+    report_path: Path | None,
+    json_output: bool,
+) -> int:
+    payload = {"error_code": error_code, "detail": detail}
+    if report_path is not None:
+        try:
+            publication = _stage_catalog_report(report_path, payload)
+            publication.publish()
+            publication.finalize()
+        except OSError:
+            payload = {
+                "error_code": "REPORT_WRITE_ERROR",
+                "detail": "standard database report could not be written",
+            }
+    _emit_catalog(payload, json_output=json_output)
+    return EXIT_CONFIGURATION_ERROR
 
 
 def _run_catalog_command(args: argparse.Namespace) -> int:
@@ -853,23 +897,25 @@ def _emit_error(
 
 
 def _emit_database_error(exc: Exception, *, json_output: bool) -> int:
+    error_code, detail = _database_error_details(exc)
+    return _emit_error(error_code, detail, json_output=json_output)
+
+
+def _database_error_details(exc: Exception) -> tuple[str, str]:
     normalized = str(exc).casefold()
     if "not a database" in normalized or "malformed" in normalized:
-        return _emit_error(
+        return (
             "DATABASE_INVALID",
             "database file is not a valid compatible SQLite database",
-            json_output=json_output,
         )
     if "locked" in normalized:
-        return _emit_error(
+        return (
             "DATABASE_LOCKED",
             "database is locked by another process",
-            json_output=json_output,
         )
-    return _emit_error(
+    return (
         "DATABASE_UNAVAILABLE",
         "database could not be initialized or accessed",
-        json_output=json_output,
     )
 
 

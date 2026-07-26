@@ -504,9 +504,9 @@ def test_standard_db_build_cli_commits_once_and_reports_repeatable_result(
     assert json.loads(first_report.read_text(encoding="utf-8")) == first
     assert json.loads(second_report.read_text(encoding="utf-8")) == second
     with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
-        assert session.scalar(
-            select(func.count(StandardDatabaseBuildRun.id))
-        ) == 1
+        run = session.scalar(select(StandardDatabaseBuildRun))
+        assert run is not None
+        assert run.report_path == str(first_report.resolve())
         assert set(
             session.scalars(select(ItemMembershipDecision.decided_by))
         ) == {"buyer-automation"}
@@ -642,12 +642,52 @@ def test_standard_db_build_cli_rolls_back_and_sanitizes_unexpected_error(
         "detail": "standard database build failed",
     }
     assert str(tmp_path) not in output
-    assert not report.exists()
+    assert json.loads(report.read_text(encoding="utf-8")) == payload
     with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
         assert session.scalar(select(func.count(QuoteDocumentRole.id))) == 0
         assert session.scalar(
             select(func.count(StandardDatabaseBuildRun.id))
         ) == 0
+
+
+def test_standard_db_build_cli_writes_database_failure_report(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, local = _local_project(tmp_path, monkeypatch)
+    database = local / "database-error.sqlite3"
+    report = local / "database-error.json"
+
+    def fail_with_database_error(*args, **kwargs):
+        raise OperationalError(
+            "SELECT",
+            {},
+            Exception("database locked"),
+        )
+
+    monkeypatch.setattr(
+        "app.cli.build_standard_database",
+        fail_with_database_error,
+    )
+    exit_code = main(
+        [
+            "standard-db-build",
+            "--database-file",
+            str(database),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload == {
+        "error_code": "DATABASE_LOCKED",
+        "detail": "database is locked by another process",
+    }
+    assert json.loads(report.read_text(encoding="utf-8")) == payload
 
 
 def test_catalog_cli_rejects_original_and_output_alias_without_modification(
