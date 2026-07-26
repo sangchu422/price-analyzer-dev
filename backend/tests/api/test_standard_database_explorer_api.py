@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from app.catalog.models import (
     MembershipStatus,
     StandardItemVersion,
     StandardItem,
+    StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
@@ -240,7 +242,10 @@ def test_standard_catalog_list_query_count_is_bounded(
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert response.status_code == 200, response.text
-    assert statements <= 5
+    # The projection uses a fixed set of batched reads for current evidence,
+    # price observations, summaries, and build provenance. The bound must not
+    # grow with the number of catalog items.
+    assert statements <= 8
 
 
 def test_member_count_includes_current_matched_rows_without_price_observation(
@@ -268,8 +273,16 @@ def test_member_count_includes_current_matched_rows_without_price_observation(
         parser_name="xlsx",
         parser_version="1",
     )
+    api_session.add(document)
+    api_session.flush()
     api_session.add_all(
         [
+            QuoteDocumentRole(
+                document_id=document.id,
+                purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                decided_by="fixture",
+                reason_detail="fixture",
+            ),
             CleanDecision(
                 raw_item=raw,
                 status=CleanStatus.INCLUDED,
@@ -373,10 +386,16 @@ def test_catalog_keeps_included_member_without_current_price(
             created_by="buyer",
         )
     )
+    api_session.add_all([document, item])
+    api_session.flush()
     api_session.add_all(
         [
-            document,
-            item,
+            QuoteDocumentRole(
+                document_id=document.id,
+                purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                decided_by="fixture",
+                reason_detail="fixture",
+            ),
             CleanDecision(
                 raw_item=raw,
                 status=CleanStatus.INCLUDED,
@@ -410,6 +429,172 @@ def test_catalog_keeps_included_member_without_current_price(
     assert payload["current_price_version_id"] is None
     assert payload["current_price"] is None
     assert payload["evidence_quality"] is None
+
+
+@pytest.mark.parametrize(
+    "replacement_status",
+    [CleanStatus.EXCLUDED, CleanStatus.REVIEW_REQUIRED],
+)
+def test_single_evidence_standard_is_hidden_when_latest_clean_is_not_included(
+    client: TestClient,
+    api_session: Session,
+    replacement_status: CleanStatus,
+) -> None:
+    _built_catalog(api_session)
+    sensor = api_session.query(StandardItemVersion).filter_by(
+        canonical_name="SENSOR"
+    ).one()
+    membership = (
+        api_session.query(ItemMembershipDecision)
+        .filter_by(
+            standard_item_id=sensor.standard_item_id,
+            status=MembershipStatus.MATCHED,
+        )
+        .one()
+    )
+    api_session.add(
+        CleanDecision(
+            raw_item_id=membership.raw_item_id,
+            status=replacement_status,
+            reason_code="LIFECYCLE_CHANGE",
+            item_name_norm="SENSOR",
+            spec_norm="PX-1",
+            unit_norm="EA",
+            rule_version="clean-v2",
+        )
+    )
+    api_session.commit()
+
+    response = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "SENSOR"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=sensor.standard_item_id)
+        .count()
+        == 1
+    )
+
+
+def test_standard_is_hidden_when_latest_document_role_becomes_incoming(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _built_catalog(api_session)
+    sensor = api_session.query(StandardItemVersion).filter_by(
+        canonical_name="SENSOR"
+    ).one()
+    membership = (
+        api_session.query(ItemMembershipDecision)
+        .filter_by(standard_item_id=sensor.standard_item_id)
+        .one()
+    )
+    raw = api_session.get(RawQuoteItem, membership.raw_item_id)
+    prior_role = (
+        api_session.query(QuoteDocumentRole)
+        .join(
+            SourceVariant,
+            SourceVariant.document_id == QuoteDocumentRole.document_id,
+        )
+        .filter(SourceVariant.id == raw.source_variant_id)
+        .order_by(QuoteDocumentRole.id.desc())
+        .first()
+    )
+    api_session.add(
+        QuoteDocumentRole(
+            document_id=prior_role.document_id,
+            purpose=QuoteDocumentPurpose.INCOMING_BID,
+            supersedes_role_id=prior_role.id,
+            decided_by="fixture",
+            reason_detail="lifecycle change",
+        )
+    )
+    api_session.commit()
+
+    response = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "SENSOR"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+def test_price_is_inactive_until_rebuild_matches_remaining_evidence(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _built_catalog(api_session)
+    bearing = api_session.query(StandardItemVersion).filter_by(
+        canonical_name="BEARING"
+    ).one()
+    memberships = (
+        api_session.query(ItemMembershipDecision)
+        .filter_by(
+            standard_item_id=bearing.standard_item_id,
+            status=MembershipStatus.MATCHED,
+        )
+        .order_by(ItemMembershipDecision.raw_item_id)
+        .all()
+    )
+    old_price = (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=bearing.standard_item_id)
+        .one()
+    )
+    api_session.add(
+        CleanDecision(
+            raw_item_id=memberships[0].raw_item_id,
+            status=CleanStatus.EXCLUDED,
+            reason_code="LIFECYCLE_CHANGE",
+            item_name_norm="BEARING",
+            spec_norm="6204 ZZ",
+            unit_norm="EA",
+            rule_version="clean-v2",
+        )
+    )
+    api_session.commit()
+
+    stale = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    ).json()["items"][0]
+
+    assert stale["member_count"] == 1
+    assert stale["current_price_version_id"] is None
+    assert stale["current_price"] is None
+    assert (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=bearing.standard_item_id)
+        .count()
+        == 1
+    )
+
+    result = build_standard_database(api_session)
+    api_session.commit()
+    assert result.created_price_versions == 1
+
+    rebuilt = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    ).json()["items"][0]
+    assert rebuilt["member_count"] == 1
+    assert rebuilt["observation_count"] == 1
+    assert rebuilt["current_price_version_id"] != old_price.id
+    versions = (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=bearing.standard_item_id)
+        .order_by(StandardPriceVersion.id)
+        .all()
+    )
+    assert [version.id for version in versions] == [
+        old_price.id,
+        rebuilt["current_price_version_id"],
+    ]
 
 
 def test_evidence_pins_requested_price_version_across_new_approval(

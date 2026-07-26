@@ -13,18 +13,20 @@ from sqlalchemy.orm import Session
 
 from app.catalog.models import (
     DocumentMetadataVersion,
-    ItemMembershipDecision,
-    MembershipStatus,
     StandardItemVersion,
     StandardPriceObservation,
     StandardPriceVersion,
 )
-from app.cleansing.models import CleanDecision, CleanStatus
+from app.cleansing.models import CleanDecision
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     StandardBuildStatus,
     StandardDatabaseBuildRun,
+)
+from app.standard_database.operational import (
+    current_standard_member_counts,
+    operational_standard_prices,
 )
 
 
@@ -139,74 +141,18 @@ def list_standard_explorer_items(
         StandardItemVersion.id,
         name="explorer_latest_item_version",
     )
-    latest_prices = _latest(
-        StandardPriceVersion.standard_item_id,
-        StandardPriceVersion.id,
-        name="explorer_latest_price_version",
-    )
-    latest_memberships = _latest(
-        ItemMembershipDecision.raw_item_id,
-        ItemMembershipDecision.id,
-        name="explorer_latest_membership",
-    )
-    latest_cleans = _latest(
-        CleanDecision.raw_item_id,
-        CleanDecision.id,
-        name="explorer_latest_clean",
-    )
-    eligible_member_counts = (
-        select(
-            ItemMembershipDecision.standard_item_id.label(
-                "standard_item_id"
-            ),
-            func.count(ItemMembershipDecision.id).label("member_count"),
-        )
-        .join(
-            latest_memberships,
-            latest_memberships.c.row_id == ItemMembershipDecision.id,
-        )
-        .join(
-            latest_cleans,
-            latest_cleans.c.parent_id
-            == ItemMembershipDecision.raw_item_id,
-        )
-        .join(
-            CleanDecision,
-            CleanDecision.id == latest_cleans.c.row_id,
-        )
-        .where(
-            ItemMembershipDecision.status == MembershipStatus.MATCHED,
-            CleanDecision.status == CleanStatus.INCLUDED,
-        )
-        .group_by(ItemMembershipDecision.standard_item_id)
-        .subquery("explorer_eligible_member_counts")
-    )
+    member_counts = current_standard_member_counts(session)
+    eligible_item_ids = tuple(member_counts)
+    if not eligible_item_ids:
+        return [], None, latest_build_provenance(session)
     statement = (
-        select(
-            StandardItemVersion,
-            StandardPriceVersion,
-            eligible_member_counts.c.member_count,
-        )
+        select(StandardItemVersion)
         .join(
             latest_versions,
             latest_versions.c.row_id == StandardItemVersion.id,
         )
-        .join(
-            eligible_member_counts,
-            eligible_member_counts.c.standard_item_id
-            == StandardItemVersion.standard_item_id,
-        )
-        .outerjoin(
-            latest_prices,
-            latest_prices.c.parent_id
-            == StandardItemVersion.standard_item_id,
-        )
-        .outerjoin(
-            StandardPriceVersion,
-            StandardPriceVersion.id == latest_prices.c.row_id,
-        )
+        .where(StandardItemVersion.standard_item_id.in_(eligible_item_ids))
         .order_by(StandardItemVersion.standard_item_id)
-        .limit(limit + 1)
     )
     if after_id is not None:
         statement = statement.where(
@@ -221,16 +167,31 @@ def list_standard_explorer_items(
                 StandardItemVersion.canonical_unit.ilike(pattern),
             )
         )
+    versions = list(session.scalars(statement))
+    prices = operational_standard_prices(
+        session,
+        (version.standard_item_id for version in versions),
+    )
+    page = [
+        (
+            version,
+            prices.get(version.standard_item_id),
+            member_counts[version.standard_item_id],
+        )
+        for version in versions
+    ]
     if quality is EvidenceQuality.SINGLE_OBSERVATION:
-        statement = statement.where(
-            StandardPriceVersion.observation_count == 1
-        )
+        page = [
+            row
+            for row in page
+            if row[1] is not None and row[1].observation_count == 1
+        ]
     elif quality is EvidenceQuality.MULTI_OBSERVATION:
-        statement = statement.where(
-            StandardPriceVersion.observation_count > 1
-        )
-
-    page = list(session.execute(statement).tuples())
+        page = [
+            row
+            for row in page
+            if row[1] is not None and row[1].observation_count > 1
+        ]
     has_more = len(page) > limit
     page = page[:limit]
     if not page:

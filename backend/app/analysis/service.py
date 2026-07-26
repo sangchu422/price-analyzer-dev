@@ -33,6 +33,10 @@ from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
 )
+from app.standard_database.operational import (
+    current_standard_member_counts,
+    operational_standard_prices,
+)
 
 
 MatchStatus = Literal[
@@ -454,24 +458,20 @@ def _catalog_projection(session: Session) -> _CatalogProjection:
             .order_by(StandardItemVersion.standard_item_id)
         )
     )
-    latest_prices = (
-        select(
-            StandardPriceVersion.standard_item_id.label("standard_item_id"),
-            func.max(StandardPriceVersion.id).label("price_id"),
-        )
-        .group_by(StandardPriceVersion.standard_item_id)
-        .subquery()
+    member_counts = current_standard_member_counts(
+        session,
+        (version.standard_item_id for version in versions),
     )
-    prices = list(
-        session.scalars(
-            select(StandardPriceVersion).join(
-                latest_prices,
-                latest_prices.c.price_id == StandardPriceVersion.id,
-            )
-        )
+    versions = [
+        version
+        for version in versions
+        if member_counts.get(version.standard_item_id, 0) > 0
+    ]
+    prices_by_id = operational_standard_prices(
+        session,
+        (version.standard_item_id for version in versions),
     )
     by_id = {version.standard_item_id: version for version in versions}
-    prices_by_id = {price.standard_item_id: price for price in prices}
     exact_candidates: dict[
         tuple[str, str, str], list[StandardItemVersion]
     ] = {}

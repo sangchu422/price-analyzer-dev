@@ -32,6 +32,7 @@ from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
 )
+from app.standard_database.service import build_standard_database
 
 
 def _session() -> Session:
@@ -244,6 +245,22 @@ def _approve_reference_price(
     )
 
 
+def _activate_catalog_item_without_price(
+    session: Session,
+    item: StandardItem,
+) -> None:
+    history = _document(session, f"history-no-price-{item.id}.xlsx")
+    session.add(
+        QuoteDocumentRole(
+            document_id=history.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            decided_by="buyer",
+            reason_detail="test historical evidence without a usable price",
+        )
+    )
+    _row(session, history, row=1, price=None, item=item)
+
+
 def test_matched_line_uses_latest_approved_median_and_exact_provenance() -> None:
     with _session() as session:
         item, item_version = _item(session)
@@ -277,6 +294,84 @@ def test_matched_line_uses_latest_approved_median_and_exact_provenance() -> None
         assert line.source.row == 7
 
 
+def test_stale_price_is_inactive_until_rebuild_captures_remaining_evidence() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        historical_rows: list[RawQuoteItem] = []
+        for index, price in enumerate(("100", "120"), start=1):
+            history = _document(session, f"history-{index}.xlsx")
+            session.add(
+                QuoteDocumentRole(
+                    document_id=history.id,
+                    purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                    decided_by="buyer",
+                    reason_detail="test historical price evidence",
+                )
+            )
+            raw, _, _ = _row(
+                session,
+                history,
+                row=index,
+                price=price,
+                item=item,
+            )
+            historical_rows.append(raw)
+        draft = calculate_standard_price(session, item.id)
+        old_price = approve_standard_price(
+            session,
+            item.id,
+            expected_fingerprint=draft.fingerprint,
+            expected_current_version_id=None,
+            approved_by="buyer",
+        )
+        incoming = _document(session, "incoming-lifecycle.xlsx")
+        _row(session, incoming, row=1, price="130")
+
+        assert (
+            analyze_document(
+                session,
+                incoming.id,
+                deterministic_exact_match=True,
+            ).lines[0].match_status
+            == "MATCHED"
+        )
+
+        session.add(
+            CleanDecision(
+                raw_item_id=historical_rows[0].id,
+                status=CleanStatus.EXCLUDED,
+                reason_code="LIFECYCLE_CHANGE",
+                item_name_norm="BEARING",
+                spec_norm="6204 ZZ",
+                unit_norm="EA",
+                rule_version="clean-v2",
+            )
+        )
+        session.flush()
+
+        stale = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert stale.match_status == "MATCHED_NO_PRICE"
+        assert stale.standard_price_version_id is None
+        assert session.query(StandardPriceVersion).count() == 1
+
+        result = build_standard_database(session)
+        session.flush()
+        assert result.created_price_versions == 1
+
+        rebuilt = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert rebuilt.match_status == "MATCHED"
+        assert rebuilt.standard_price_version_id != old_price.id
+        assert session.query(StandardPriceVersion).count() == 2
+
+
 def test_candidate_never_applies_a_standard_price() -> None:
     with _session() as session:
         item, item_version = _item(session)
@@ -301,6 +396,7 @@ def test_candidate_never_applies_a_standard_price() -> None:
 def test_all_non_comparison_states_are_distinct() -> None:
     with _session() as session:
         matched_item, _ = _item(session)
+        _activate_catalog_item_without_price(session, matched_item)
         quote = _document(session, "states.xlsx")
         _row(
             session,
@@ -472,6 +568,10 @@ def test_analysis_uses_only_the_current_preferred_parsing_variant() -> None:
 def test_analysis_does_not_flush_pending_membership_mutations() -> None:
     with _session() as session:
         item, _ = _item(session)
+        _activate_catalog_item_without_price(session, item)
+        stored_before = session.connection().exec_driver_sql(
+            "SELECT count(*) FROM item_membership_decision"
+        ).scalar_one()
         quote = _document(session, "read-only.xlsx")
         raw, _, _ = _row(session, quote, row=1)
         pending = ItemMembershipDecision(
@@ -491,7 +591,7 @@ def test_analysis_does_not_flush_pending_membership_mutations() -> None:
         ).scalar_one()
         assert result.lines[0].match_status == "CANDIDATE"
         assert pending.id is None
-        assert stored == 0
+        assert stored == stored_before
 
 
 class _CountingClient:
@@ -539,6 +639,7 @@ def test_analysis_batches_candidate_embeddings_per_page(
 ) -> None:
     with _session() as session:
         item, _ = _item(session)
+        _activate_catalog_item_without_price(session, item)
         quote = _document(session, f"batch-{row_count}.xlsx")
         for row in range(1, row_count + 1):
             _row(session, quote, row=row)
@@ -561,6 +662,7 @@ def test_analysis_batches_candidate_embeddings_per_page(
 def test_analysis_embeds_only_included_unmatched_rows() -> None:
     with _session() as session:
         item, _ = _item(session)
+        _activate_catalog_item_without_price(session, item)
         quote = _document(session, "eligible-batch.xlsx")
         _row(session, quote, row=1)
         _row(

@@ -24,7 +24,7 @@ from app.catalog.models import (
     StandardItem,
     StandardPriceVersion,
 )
-from app.catalog.service import append_membership_decision, candidate_matches
+from app.catalog.service import candidate_matches
 from app.cli import main
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
@@ -136,8 +136,8 @@ def test_source_to_standard_price_to_analysis_pipeline(
         _write_quote(
             new_quotes / "comparison.xlsx",
             [
-                ["BALL BEARING", "6204 ZZ", "EA", 1, 150, 150],
-                ["BEARING", "6204 ZZ", "M", 1, 999, 999],
+                ["BEARING", "6204 ZZ", "EA", 1, 150, 150],
+                ["BEARING METRIC", "6204 ZZ", "M", 1, 999, 999],
             ],
         )
         ingest_corpus(session, new_quotes)
@@ -146,8 +146,17 @@ def test_source_to_standard_price_to_analysis_pipeline(
                 SourceDocument.logical_name == "comparison"
             )
         )
-        semantic = _raw_by_name(session, "BALL BEARING")
-        unit_conflict = _raw_by_name(session, "BEARING")
+        session.add(
+            QuoteDocumentRole(
+                document_id=document.id,
+                purpose=QuoteDocumentPurpose.INCOMING_BID,
+                decided_by="submission-api",
+                reason_detail="new comparison quote",
+            )
+        )
+        session.flush()
+        semantic = _raw_by_name(session, "BEARING")
+        unit_conflict = _raw_by_name(session, "BEARING METRIC")
 
         semantic_result = candidate_matches(session, semantic.id)
         unit_result = candidate_matches(session, unit_conflict.id)
@@ -156,21 +165,11 @@ def test_source_to_standard_price_to_analysis_pipeline(
         assert unit_result.match_status == "NO_MATCH"
         assert unit_result.current_membership_decision is None
 
-        append_membership_decision(
+        analysis = analyze_document(
             session,
-            raw_item_id=semantic.id,
-            standard_item_id=item.id,
-            status=MembershipStatus.MATCHED,
-            expected_current_decision_id=None,
-            candidate_score=semantic_result.candidates[0].score.final_score,
-            method="MANUAL_CANDIDATE",
-            evidence={"candidate_only": True},
-            decided_by="buyer-1",
-            reason_detail="설비구매팀 검토 후 승인",
+            document.id,
+            deterministic_exact_match=True,
         )
-        session.commit()
-
-        analysis = analyze_document(session, document.id)
         semantic_line = next(
             line for line in analysis.lines if line.raw_item_id == semantic.id
         )
