@@ -72,12 +72,12 @@ export function QuoteAnalysisPage() {
   return (
     <main className="workspace-page analysis-page">
       <header className="page-heading">
-        <div><p className="section-kicker">Internal quote comparison</p><h1>견적 비교</h1></div>
-        <p>견적 행의 현재 그룹핑과 승인된 표준단가를 비교하며, 후보 단계에는 가격을 적용하지 않습니다.</p>
+        <div><p className="section-kicker">Incoming quote review</p><h1>신규 견적 분석</h1></div>
+        <p>접수한 견적 품목을 표준 DB와 비교해 가격 범위와 편차를 확인합니다. 매칭되지 않은 품목은 가격 판정에 적용하지 않습니다.</p>
       </header>
       <div className="analysis-controls">
         <label>
-          <span>견적서</span>
+          <span>신규 견적서</span>
           <select
             value={effectiveId ?? ""}
             onChange={(event) => setSelectedId(Number(event.target.value))}

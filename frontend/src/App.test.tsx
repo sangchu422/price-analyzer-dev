@@ -94,3 +94,18 @@ it("does not expose the legacy reconciliation page or navigation link", () => {
   ).not.toBeInTheDocument();
   expect(document.querySelectorAll('a[href="/reconciliation"]')).toHaveLength(0);
 });
+
+it("presents the three primary workflow destinations with Korean product labels", () => {
+  renderApp("/unknown");
+
+  const navigation = screen.getByRole("navigation", { name: "주요 작업" });
+  expect(
+    screen.getAllByRole("link", { name: /정제 검토|표준 DB|신규 견적 분석/ }),
+  ).toHaveLength(3);
+  expect(navigation).toHaveTextContent("정제 검토");
+  expect(navigation).toHaveTextContent("표준 DB");
+  expect(navigation).toHaveTextContent("신규 견적 분석");
+  expect(navigation).not.toHaveTextContent("품목 그룹핑");
+  expect(navigation).not.toHaveTextContent("표준단가");
+  expect(navigation).not.toHaveTextContent("견적 비교");
+});

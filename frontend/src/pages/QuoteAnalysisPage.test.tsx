@@ -6,6 +6,34 @@ import { jsonResponse, renderApp } from "../test/renderApp";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("renders the incoming quote workspace with clear Korean labels", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/analysis/documents?")) {
+        return jsonResponse({
+          items: [],
+          total: 0,
+          limit: 50,
+          offset: 0,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/analysis");
+
+  expect(
+    await screen.findByRole("heading", { name: "신규 견적 분석" }),
+  ).toBeVisible();
+  expect(screen.getByText("신규 견적서")).toBeVisible();
+  expect(screen.getByText("매칭 상태")).toBeVisible();
+  expect(screen.getByText("가격 판정")).toBeVisible();
+});
+
 it("uses server filters and never applies a price to candidate rows", async () => {
   const urls: string[] = [];
   vi.stubGlobal(
@@ -281,7 +309,7 @@ it("pages beyond 50 documents and rows without retaining a previous filter resul
   await user.click(
     await screen.findByRole("button", { name: "다음 견적서 불러오기" }),
   );
-  await user.selectOptions(screen.getByLabelText("견적서"), "51");
+  await user.selectOptions(screen.getByLabelText("신규 견적서"), "51");
   expect(await screen.findByText("ROW 50")).toBeVisible();
   await user.click(
     screen.getByRole("button", { name: "다음 분석 행 불러오기" }),

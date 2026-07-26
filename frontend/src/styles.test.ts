@@ -17,4 +17,19 @@ describe("responsive root styles", () => {
       /(?:html|body|#root)[^{]*\{[^}]*overflow-x:\s*hidden/,
     );
   });
+
+  it("uses solid operational surfaces without decorative gradients or glass", () => {
+    expect(styles).not.toMatch(/(?:linear|radial|conic)-gradient\(/);
+    expect(styles).not.toMatch(/backdrop-filter\s*:/);
+  });
+
+  it("keeps visible focus and honors reduced motion preferences", () => {
+    expect(styles).toMatch(/:focus-visible/);
+    expect(styles).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  });
+
+  it("scopes the brand tile treatment to the mark instead of the wordmark copy", () => {
+    expect(styles).not.toMatch(/\.app-wordmark\s*>\s*span\s*\{/);
+    expect(styles).toMatch(/\.app-wordmark\s*>\s*span:first-child\s*\{/);
+  });
 });

@@ -210,7 +210,7 @@ export function StandardPricesPage() {
   return (
     <main className="workspace-page standard-price-page">
       <header className="page-heading">
-        <div><p className="section-kicker">Versioned reference price</p><h1>표준단가</h1></div>
+        <div><p className="section-kicker">Standard price database</p><h1>표준 DB</h1></div>
         <p>과거 견적의 현재 유효 행만 계산하고, 승인 시점의 근거를 변경 불가능한 버전으로 남깁니다.</p>
       </header>
       {notice && (

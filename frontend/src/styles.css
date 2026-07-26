@@ -1,19 +1,24 @@
 :root {
   font-family: "Pretendard Variable", Pretendard, "Noto Sans KR", "Malgun Gothic", sans-serif;
-  color: #201f1c;
-  background: #f6f6f4;
+  color: #19171f;
+  background: #f5f5f7;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #f6f6f4;
+  -webkit-font-smoothing: antialiased;
+  --canvas: #f5f5f7;
   --paper: #ffffff;
-  --ink: #201f1c;
-  --muted: #5f5c55;
-  --line: #d9d8d4;
-  --soft-line: #ecebe8;
-  --accent: #6544d8;
-  --accent-soft: #eee9ff;
-  --danger: #a13e37;
-  --success: #39705b;
+  --surface-subtle: #f8f8fa;
+  --surface-strong: #efeff3;
+  --ink: #19171f;
+  --muted: #696672;
+  --line: #dcdbe2;
+  --soft-line: #ecebf0;
+  --accent: #6547d6;
+  --accent-strong: #4c2fb4;
+  --accent-soft: #f0edff;
+  --danger: #9f3c39;
+  --success: #28664f;
+  --focus: #4c2fb4;
 }
 
 .application-frame {
@@ -24,15 +29,14 @@
   position: sticky;
   z-index: 40;
   top: 0;
-  min-height: 56px;
+  min-height: 64px;
   display: flex;
   align-items: stretch;
   justify-content: space-between;
   gap: 28px;
-  padding: 0 28px;
+  padding: 0 clamp(20px, 3vw, 44px);
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, .96);
-  backdrop-filter: blur(14px);
+  background: var(--paper);
 }
 
 .app-wordmark {
@@ -44,19 +48,32 @@
   text-decoration: none;
 }
 
-.app-wordmark > span {
-  width: 28px;
-  height: 28px;
+.app-wordmark > span:first-child {
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   color: #fff;
   background: var(--accent);
-  font: 700 13px/1 "IBM Plex Mono", monospace;
+  border-radius: 8px;
+  font: 750 10px/1 "IBM Plex Mono", monospace;
 }
 
-.app-wordmark strong {
+.wordmark-copy {
+  display: grid;
+  gap: 1px;
+}
+
+.wordmark-copy strong {
   font-size: 13px;
   letter-spacing: -.01em;
+}
+
+.wordmark-copy small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .02em;
 }
 
 .navigation-links {
@@ -70,11 +87,13 @@
   min-width: max-content;
   display: flex;
   align-items: center;
-  padding: 0 15px;
+  min-height: 48px;
+  padding: 0 16px;
   color: var(--muted);
   text-decoration: none;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
+  transition: color 140ms ease, background 140ms ease;
 }
 
 .navigation-links a::after {
@@ -93,48 +112,58 @@
   color: var(--ink);
 }
 
+.navigation-links a:hover {
+  background: var(--surface-subtle);
+}
+
 .navigation-links a[aria-current="page"]::after {
   background: var(--accent);
 }
 
 .navigation-links a:focus-visible,
 .app-wordmark:focus-visible {
-  outline: 2px solid #3f258f;
-  outline-offset: -2px;
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
 }
 
 .application-frame > .app-shell .topbar {
-  top: 56px;
+  top: 64px;
 }
 
 .workspace-page {
-  min-height: calc(100vh - 56px);
+  min-height: calc(100vh - 64px);
   color: var(--ink);
   background: var(--paper);
 }
 
 .page-heading {
-  min-height: 116px;
+  min-height: 132px;
   display: grid;
   grid-template-columns: minmax(220px, .65fr) minmax(320px, 1fr);
   align-items: end;
   gap: 48px;
-  padding: 28px clamp(24px, 4vw, 64px) 24px;
-  border-bottom: 1px solid var(--ink);
+  padding: 32px clamp(24px, 4vw, 64px) 28px;
+  border-bottom: 1px solid var(--line);
+  animation: page-enter 220ms ease both;
 }
 
 .page-heading h1 {
   margin: 0;
-  font-size: clamp(25px, 3vw, 36px);
+  font-size: clamp(26px, 3vw, 38px);
+  font-weight: 750;
   letter-spacing: -.04em;
+}
+
+.page-heading h1:focus {
+  outline: none;
 }
 
 .page-heading > p {
   max-width: 680px;
   margin: 0 0 2px;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .workspace-notice {
@@ -171,7 +200,7 @@
 .work-list {
   min-width: 0;
   border-right: 1px solid var(--line);
-  background: #f4f4f1;
+  background: var(--surface-subtle);
 }
 
 .work-list > header {
@@ -654,6 +683,19 @@
   vertical-align: top;
 }
 
+.data-table th {
+  background: var(--paper);
+  font-weight: 700;
+}
+
+.data-table tbody tr {
+  transition: background 120ms ease;
+}
+
+.data-table tbody tr:hover {
+  background: var(--surface-subtle);
+}
+
 .data-table .numeric {
   font-family: "IBM Plex Mono", monospace;
   text-align: right;
@@ -707,7 +749,7 @@
   gap: 10px;
   padding: 14px clamp(24px, 4vw, 64px);
   border-bottom: 1px solid var(--line);
-  background: #f4f4f1;
+  background: var(--surface-subtle);
 }
 
 .filter-status {
@@ -720,6 +762,7 @@
 
 .analysis-surface {
   padding: 30px clamp(24px, 4vw, 64px) 80px;
+  animation: page-enter 260ms 40ms ease both;
 }
 
 .analysis-heading {
@@ -845,7 +888,7 @@
 }
 
 .workspace-state {
-  min-height: calc(100vh - 56px);
+  min-height: calc(100vh - 64px);
   display: grid;
   place-content: center;
   justify-items: center;
@@ -894,7 +937,7 @@
 
 @media (max-width: 680px) {
   .app-navigation {
-    min-height: 54px;
+    min-height: 56px;
     display: block;
     padding: 0;
   }
@@ -904,7 +947,7 @@
   }
 
   .navigation-links {
-    min-height: 54px;
+    min-height: 56px;
   }
 
   .navigation-links a {
@@ -914,7 +957,7 @@
   }
 
   .application-frame > .app-shell .topbar {
-    top: 54px;
+    top: 56px;
   }
 
   .page-heading,
@@ -1033,11 +1076,10 @@ textarea:focus-visible,
   justify-content: space-between;
   padding: 0 28px;
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--canvas) 94%, transparent);
+  background: var(--paper);
   position: sticky;
   top: 0;
   z-index: 20;
-  backdrop-filter: blur(14px);
 }
 
 .brand {
@@ -1144,7 +1186,7 @@ textarea:focus-visible,
 
 .queue-panel {
   border-right: 1px solid var(--line);
-  background: #f0ede5;
+  background: var(--surface-subtle);
   min-width: 0;
 }
 
@@ -1489,9 +1531,7 @@ textarea:focus-visible,
   width: calc(100% - max(280px, 30vw));
   padding: 15px clamp(24px, 5vw, 72px) 18px;
   border-top: 1px solid var(--line);
-  background: rgba(251, 250, 246, .96);
-  box-shadow: 0 -12px 34px rgba(41, 38, 31, .07);
-  backdrop-filter: blur(16px);
+  background: var(--paper);
 }
 
 .decision-fields {
@@ -1632,6 +1672,11 @@ textarea:focus-visible,
 @keyframes inspector-enter {
   from { opacity: 0; transform: translateX(8px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (max-width: 900px) {
