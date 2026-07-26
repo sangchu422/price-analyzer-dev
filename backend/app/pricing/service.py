@@ -43,6 +43,10 @@ class PricingNotFound(LookupError):
     """The requested catalog identity does not exist."""
 
 
+class PricingVersionNotFound(PricingNotFound):
+    """The immutable price version does not belong to the requested item."""
+
+
 class PriceDraftChanged(RuntimeError):
     """The approved draft or current price-version pointer is stale."""
 
@@ -756,6 +760,34 @@ def standard_price_versions(
     has_more = len(rows) > limit
     page = rows[:limit]
     return page, page[-1].id if has_more and page else None
+
+
+def standard_price_version(
+    session: Session,
+    standard_item_id: int,
+    version_id: int,
+) -> StandardPriceVersion:
+    version = session.scalar(
+        select(StandardPriceVersion)
+        .where(
+            StandardPriceVersion.id == version_id,
+            StandardPriceVersion.standard_item_id == standard_item_id,
+        )
+        .options(
+            joinedload(StandardPriceVersion.standard_item_version),
+            selectinload(StandardPriceVersion.observations)
+            .joinedload(StandardPriceObservation.clean_decision)
+            .joinedload(CleanDecision.raw_item)
+            .joinedload(RawQuoteItem.source_variant)
+            .joinedload(SourceVariant.document),
+            selectinload(StandardPriceVersion.observations).joinedload(
+                StandardPriceObservation.metadata_version
+            ),
+        )
+    )
+    if version is None:
+        raise PricingVersionNotFound("standard price version not found")
+    return version
 
 
 def approve_standard_price(

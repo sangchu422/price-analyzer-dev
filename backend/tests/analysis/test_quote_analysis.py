@@ -14,6 +14,7 @@ from app.catalog.models import (
     MembershipStatus,
     StandardItem,
     StandardItemVersion,
+    StandardPriceVersion,
 )
 from app.catalog.service import CandidateEmbeddingRuntime
 from app.cleansing.models import CleanDecision, CleanStatus
@@ -179,6 +180,38 @@ def test_incoming_exact_key_does_not_attach_standard_to_excluded_row() -> None:
         assert line.match_status == "EXCLUDED"
         assert line.standard_item_id is None
         assert line.standard_price_version_id is None
+
+
+def test_incoming_exact_key_respects_latest_rejected_membership() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        _approve_reference_price(session, item)
+        quote = _document(session, "incoming-rejected.xlsx")
+        raw, _, _ = _row(session, quote, row=11)
+        rejected = ItemMembershipDecision(
+            raw_item_id=raw.id,
+            standard_item_id=None,
+            status=MembershipStatus.REJECTED,
+            method="MANUAL",
+            evidence_json="{}",
+            decided_by="buyer",
+        )
+        session.add(rejected)
+        session.flush()
+        before_memberships = session.query(ItemMembershipDecision).count()
+        before_prices = session.query(StandardPriceVersion).count()
+
+        line = analyze_document(
+            session, quote.id, deterministic_exact_match=True
+        ).lines[0]
+
+        assert line.match_status == "CANDIDATE"
+        assert line.membership_decision_id == rejected.id
+        assert line.standard_item_id is None
+        assert line.reference_price is None
+        assert line.standard_price_version_id is None
+        assert session.query(ItemMembershipDecision).count() == before_memberships
+        assert session.query(StandardPriceVersion).count() == before_prices
 
 
 def _approve_reference_price(

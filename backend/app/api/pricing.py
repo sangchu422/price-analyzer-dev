@@ -27,10 +27,12 @@ from app.pricing.service import (
     PriceObservationDraft,
     PriceSource,
     PricingNotFound,
+    PricingVersionNotFound,
     StandardPriceDraft,
     approve_standard_price,
     calculate_standard_price,
     current_standard_price_version,
+    standard_price_version,
     standard_price_versions,
 )
 from app.standard_database.read_service import (
@@ -399,6 +401,14 @@ def _safe_exclusion_context(
 
 def _raise_pricing_error(session: Session, exc: Exception) -> None:
     session.rollback()
+    if isinstance(exc, PricingVersionNotFound):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "STANDARD_PRICE_VERSION_NOT_FOUND",
+                "message": str(exc),
+            },
+        ) from exc
     if isinstance(exc, PricingNotFound):
         raise HTTPException(
             status_code=404,
@@ -449,6 +459,24 @@ def get_price_draft(
             current_standard_price_version_id=(
                 None if current is None else current.id
             ),
+        )
+    except Exception as exc:
+        _raise_pricing_error(session, exc)
+        raise AssertionError("unreachable")
+
+
+@router.get(
+    "/standard-items/{standard_item_id}/versions/{version_id}",
+    response_model=PriceVersionResponse,
+)
+def get_price_version(
+    standard_item_id: int,
+    version_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    try:
+        return _version_payload(
+            standard_price_version(session, standard_item_id, version_id)
         )
     except Exception as exc:
         _raise_pricing_error(session, exc)

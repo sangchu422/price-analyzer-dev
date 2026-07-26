@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -171,6 +171,126 @@ it("renders the standard DB as a read-only evidence explorer", async () => {
     "aria-pressed",
     "true",
   );
+});
+
+it("keeps an analysis evidence link pinned to its immutable price version", async () => {
+  const requests: string[] = [];
+  const snapshot = {
+    ...version(30),
+    version_number: 1,
+    prices: {
+      minimum: "90000.000000",
+      median: "100000.000000",
+      average: "100000.000000",
+      maximum: "110000.000000",
+    },
+    observation_count: 2,
+    evidence_quality: "MULTI_OBSERVATION",
+    approved_at: "2026-07-20T00:22:05",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes("/api/catalog/standard-items?")) {
+        return jsonResponse({
+          items: [sensor],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      if (url === "/api/pricing/standard-items/12/versions/30") {
+        return jsonResponse(snapshot);
+      }
+      if (url.includes("/standard-items/12/evidence?")) {
+        return jsonResponse({
+          standard_item_id: 12,
+          standard_price_version_id: 30,
+          observation_count: 2,
+          evidence_quality: "MULTI_OBSERVATION",
+          provenance: build,
+          observations: [],
+          next_cursor: null,
+          limit: 50,
+        });
+      }
+      if (url.includes("/standard-items/12/versions?")) {
+        return jsonResponse({
+          standard_item_id: 12,
+          versions: [version(31), snapshot],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/standard-prices?item_id=12&version_id=30");
+
+  const pinned = await screen.findByLabelText("분석 당시 가격 버전");
+  expect(within(pinned).getByText("분석 당시 가격 버전")).toBeVisible();
+  expect(within(pinned).getByText("v1")).toBeVisible();
+  expect(screen.getAllByText("100,000원").length).toBeGreaterThan(0);
+  await waitFor(() =>
+    expect(
+      requests.some(
+        (url) =>
+          url.includes("/standard-items/12/evidence?") &&
+          url.includes("price_version_id=30"),
+      ),
+    ).toBe(true),
+  );
+});
+
+it("does not silently fall back to the current price when a pinned version is invalid", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        return jsonResponse({
+          items: [sensor],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      if (url === "/api/pricing/standard-items/12/versions/999") {
+        return jsonResponse(
+          {
+            detail: {
+              error_code: "STANDARD_PRICE_VERSION_NOT_FOUND",
+              message: "Price version not found.",
+            },
+          },
+          { status: 404 },
+        );
+      }
+      if (url.includes("/standard-items/12/versions?")) {
+        return jsonResponse({
+          standard_item_id: 12,
+          versions: [version(31)],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/standard-prices?item_id=12&version_id=999");
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "요청한 분석 당시 가격 버전을 찾을 수 없습니다.",
+  );
+  const metrics = document.querySelector(".metric-strip");
+  expect(metrics).not.toBeNull();
+  expect(within(metrics as HTMLElement).queryByText("50,000원")).not.toBeInTheDocument();
 });
 
 it("shows an empty evidence state without requesting evidence when no price exists", async () => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -36,9 +36,21 @@ export function QuoteAnalysisPage() {
   const [error, setError] = useState<unknown>(null);
   const [resultFilter, setResultFilter] = useState<ResultFilter>("ALL");
   const [validationError, setValidationError] = useState("");
+  const uploadController = useRef<AbortController | null>(null);
+  const analysisController = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
   const busy = stage !== "IDLE";
 
-  const startAnalysis = async () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      uploadController.current?.abort();
+      analysisController.current?.abort();
+    };
+  }, []);
+
+  const startAnalysis = async (retryAccepted = false) => {
     if (!file || !submittedBy.trim()) {
       setValidationError("견적서 파일과 접수자를 모두 입력해 주세요.");
       return;
@@ -46,16 +58,44 @@ export function QuoteAnalysisPage() {
     setValidationError("");
     setError(null);
     setAnalysis(null);
-    setSubmission(null);
-    setStage("PARSING");
-    try {
-      const accepted = await submitIncomingBid(file, submittedBy.trim());
-      setSubmission(accepted);
+    uploadController.current?.abort();
+    analysisController.current?.abort();
+    if (!retryAccepted || submission === null) {
+      setSubmission(null);
+      setStage("PARSING");
+    } else {
       setStage("ANALYZING");
-      const result = await getCompleteDocumentAnalysis(accepted.document_id);
+    }
+    try {
+      let accepted = retryAccepted ? submission : null;
+      if (accepted === null) {
+        const controller = new AbortController();
+        uploadController.current = controller;
+        accepted = await submitIncomingBid(
+          file,
+          submittedBy.trim(),
+          controller.signal,
+        );
+        if (!mounted.current) return;
+        uploadController.current = null;
+        setSubmission(accepted);
+      }
+      setStage("ANALYZING");
+      const controller = new AbortController();
+      analysisController.current = controller;
+      const result = await getCompleteDocumentAnalysis(
+        accepted.document_id,
+        controller.signal,
+      );
+      if (!mounted.current) return;
+      analysisController.current = null;
       setAnalysis(result);
       setStage("IDLE");
     } catch (caught) {
+      if (isAbortError(caught)) {
+        if (mounted.current) setStage("IDLE");
+        return;
+      }
       setError(caught);
       setStage("IDLE");
     }
@@ -98,7 +138,15 @@ export function QuoteAnalysisPage() {
             aria-label="신규 견적서"
             accept=".xlsx,.xls,.pdf"
             disabled={busy}
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            onChange={(event) => {
+              uploadController.current?.abort();
+              analysisController.current?.abort();
+              setFile(event.target.files?.[0] ?? null);
+              setSubmission(null);
+              setAnalysis(null);
+              setError(null);
+              setStage("IDLE");
+            }}
           />
           <strong>{file?.name ?? "파일을 선택해 주세요"}</strong>
         </label>
@@ -129,7 +177,10 @@ export function QuoteAnalysisPage() {
             <span>{error instanceof Error ? error.message : validationError}</span>
           </div>
           {error !== null && (
-            <button type="button" onClick={() => void startAnalysis()}>
+            <button
+              type="button"
+              onClick={() => void startAnalysis(submission !== null)}
+            >
               다시 시도
             </button>
           )}
@@ -466,4 +517,8 @@ function matchStatusLabel(status: AnalysisLine["match_status"]) {
     REVIEW_REQUIRED: "정제 판정대기",
   };
   return labels[status];
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }

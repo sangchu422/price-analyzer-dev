@@ -221,6 +221,43 @@ def test_pricing_api_returns_typed_not_found(client: TestClient) -> None:
     )
 
 
+def test_specific_price_version_validates_item_ownership(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    item = _seed(api_session)
+    draft = client.get(
+        f"/api/pricing/standard-items/{item.id}/draft"
+    ).json()
+    approved = client.post(
+        f"/api/pricing/standard-items/{item.id}/versions",
+        json={
+            "expected_fingerprint": draft["fingerprint"],
+            "expected_current_version_id": None,
+            "approved_by": "buyer",
+        },
+    ).json()
+    other = StandardItem()
+    api_session.add(other)
+    api_session.commit()
+
+    response = client.get(
+        f"/api/pricing/standard-items/{item.id}/versions/{approved['id']}"
+    )
+    wrong_owner = client.get(
+        f"/api/pricing/standard-items/{other.id}/versions/{approved['id']}"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == approved["id"]
+    assert response.json()["prices"]["median"] == "110.000000"
+    assert len(response.json()["observations"]) == 2
+    assert wrong_owner.status_code == 404
+    assert wrong_owner.json()["detail"]["error_code"] == (
+        "STANDARD_PRICE_VERSION_NOT_FOUND"
+    )
+
+
 def test_price_history_returns_frozen_exclusion_audit(
     client: TestClient, api_session: Session
 ) -> None:

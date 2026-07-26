@@ -639,6 +639,21 @@ export function getStandardPriceVersions({
   );
 }
 
+export function getStandardPriceVersion({
+  standardItemId,
+  versionId,
+  signal,
+}: {
+  standardItemId: number;
+  versionId: number;
+  signal?: AbortSignal;
+}) {
+  return requestJson<PriceVersion>(
+    `/api/pricing/standard-items/${standardItemId}/versions/${versionId}`,
+    { signal },
+  );
+}
+
 export function approvePrice(
   standardItemId: number,
   body: {
@@ -693,13 +708,18 @@ export function getDocumentAnalysis({
   );
 }
 
-export function submitIncomingBid(file: File, submittedBy: string) {
+export function submitIncomingBid(
+  file: File,
+  submittedBy: string,
+  signal?: AbortSignal,
+) {
   const body = new FormData();
   body.append("file", file);
   body.append("submitted_by", submittedBy);
   return requestJson<SubmissionResponse>("/api/submissions", {
     method: "POST",
     body,
+    signal,
   });
 }
 

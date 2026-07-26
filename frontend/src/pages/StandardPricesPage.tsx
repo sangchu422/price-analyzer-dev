@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
   getStandardEvidence,
   getStandardItems,
+  getStandardPriceVersion,
   getStandardPriceVersions,
   type EvidenceQuality,
   type PriceVersion,
@@ -19,6 +20,9 @@ export function StandardPricesPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [requestedItemId, setRequestedItemId] = useState<number | null>(
     positiveIntegerParam("item_id"),
+  );
+  const [requestedVersionId, setRequestedVersionId] = useState<number | null>(
+    positiveIntegerParam("version_id"),
   );
   const attemptedCatalogCursors = useRef(new Set<number>());
 
@@ -60,6 +64,22 @@ export function StandardPricesPage() {
   const latestBuild = catalog.data?.pages[0]?.latest_build ?? null;
   const catalogCursor = catalog.data?.pages.at(-1)?.next_cursor ?? null;
 
+  const requestedVersion = useQuery({
+    queryKey: ["standard-db-price-version", selected?.id, requestedVersionId],
+    queryFn: ({ signal }) =>
+      getStandardPriceVersion({
+        standardItemId: selected!.id,
+        versionId: requestedVersionId!,
+        signal,
+      }),
+    enabled: selected !== null && requestedVersionId !== null,
+    retry: false,
+  });
+  const activePriceVersionId =
+    requestedVersionId === null
+      ? selected?.current_price_version_id ?? null
+      : requestedVersion.data?.id ?? null;
+
   useEffect(() => {
     if (
       requestedItemId === null ||
@@ -88,19 +108,18 @@ export function StandardPricesPage() {
     queryKey: [
       "standard-db-evidence",
       selected?.id,
-      selected?.current_price_version_id,
+      activePriceVersionId,
     ],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
       getStandardEvidence({
         standardItemId: selected!.id,
-        priceVersionId: selected!.current_price_version_id!,
+        priceVersionId: activePriceVersionId!,
         afterId: pageParam,
         signal,
       }),
     getNextPageParam: safeNextCursor,
-    enabled:
-      selected !== null && selected.current_price_version_id !== null,
+    enabled: selected !== null && activePriceVersionId !== null,
     retry: false,
   });
   const observations = uniqueByRawItemId(
@@ -148,6 +167,7 @@ export function StandardPricesPage() {
           event.preventDefault();
           setSelectedId(null);
           setRequestedItemId(null);
+          setRequestedVersionId(null);
           setSearch(searchInput.trim());
         }}
       >
@@ -168,6 +188,7 @@ export function StandardPricesPage() {
             onChange={(event) => {
               setSelectedId(null);
               setRequestedItemId(null);
+              setRequestedVersionId(null);
               setQuality(event.target.value as EvidenceQuality | "");
             }}
           >
@@ -213,7 +234,10 @@ export function StandardPricesPage() {
                 index={index}
                 key={item.id}
                 onSelect={() => setSelectedId(item.id)}
-                onClearRequested={() => setRequestedItemId(null)}
+                onClearRequested={() => {
+                  setRequestedItemId(null);
+                  setRequestedVersionId(null);
+                }}
               />
             ))}
           </ul>
@@ -237,6 +261,15 @@ export function StandardPricesPage() {
           ) : (
             <StandardItemDetail
               item={selected}
+              snapshotVersion={
+                requestedVersionId === null ? null : requestedVersion.data ?? null
+              }
+              snapshotPending={
+                requestedVersionId !== null && requestedVersion.isPending
+              }
+              snapshotError={
+                requestedVersionId !== null && requestedVersion.isError
+              }
               observations={observations}
               evidencePending={evidence.isLoading}
               evidenceError={evidence.isError}
@@ -309,6 +342,9 @@ function StandardItemRow({
 
 function StandardItemDetail({
   item,
+  snapshotVersion,
+  snapshotPending,
+  snapshotError,
   observations,
   evidencePending,
   evidenceError,
@@ -329,6 +365,9 @@ function StandardItemDetail({
   historyLoadingMore,
 }: {
   item: StandardItemSummary;
+  snapshotVersion: PriceVersion | null;
+  snapshotPending: boolean;
+  snapshotError: boolean;
   observations: Array<{
     raw_item_id: number;
     unit_price: string;
@@ -362,9 +401,33 @@ function StandardItemDetail({
   loadMoreHistory: () => void;
   historyLoadingMore: boolean;
 }) {
-  const price = item.current_price;
+  const pinned = snapshotPending || snapshotError || snapshotVersion !== null;
+  const price = pinned ? snapshotVersion?.prices ?? null : item.current_price;
+  const evidenceQuality = pinned
+    ? snapshotVersion?.evidence_quality ?? null
+    : item.evidence_quality;
+  const observationCount = pinned
+    ? snapshotVersion?.observation_count ?? 0
+    : item.observation_count;
   return (
     <div className="standard-db-detail-content">
+      {snapshotPending && (
+        <p className="inline-state" role="status">
+          분석 당시 가격 버전을 불러오는 중입니다.
+        </p>
+      )}
+      {snapshotError && (
+        <div className="inline-state is-error" role="alert">
+          요청한 분석 당시 가격 버전을 찾을 수 없습니다.
+        </div>
+      )}
+      {snapshotVersion && (
+        <div className="build-status" aria-label="분석 당시 가격 버전">
+          <span>분석 당시 가격 버전</span>
+          <strong>v{snapshotVersion.version_number}</strong>
+          <small>{formatDateTime(snapshotVersion.approved_at)}</small>
+        </div>
+      )}
       <header className="standard-record-heading">
         <div>
           <p className="section-kicker">Standard item #{item.id}</p>
@@ -375,8 +438,8 @@ function StandardItemDetail({
           </p>
         </div>
         <EvidenceBadge
-          quality={item.evidence_quality}
-          count={item.observation_count}
+          quality={evidenceQuality}
+          count={observationCount}
         />
       </header>
 
@@ -407,7 +470,7 @@ function StandardItemDetail({
             <p className="section-kicker">Traceable observations</p>
             <h2>가격 근거</h2>
           </div>
-          <span>{item.observation_count}건</span>
+          <span>{observationCount}건</span>
         </div>
         {evidencePending && <p className="inline-state">근거를 불러오는 중…</p>}
         {evidenceError && !evidenceNextError && (

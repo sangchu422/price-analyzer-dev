@@ -539,6 +539,7 @@ def _classify_line(
     if (
         deterministic_exact_match
         and matched_item_version is None
+        and membership is None
         and clean is not None
         and clean.status == CleanStatus.INCLUDED
     ):
@@ -755,7 +756,7 @@ def _candidate_batch(
         name = clean.item_name_norm or raw.item_name_raw or ""
         if not normalize_search_text(name):
             continue
-        if skip_exact and (
+        if skip_exact and membership is None and (
             normalize_search_text(name),
             normalize_search_text(clean.spec_norm),
             normalize_search_text(clean.unit_norm),

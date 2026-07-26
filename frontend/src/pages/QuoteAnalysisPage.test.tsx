@@ -338,6 +338,69 @@ it("shows a structured upload error and retries without clearing inputs", async 
   expect(attempt).toBe(2);
 });
 
+it("retries analysis pagination without uploading the accepted quote again", async () => {
+  let uploadCount = 0;
+  let secondPageAttempts = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/submissions") {
+        uploadCount += 1;
+        return jsonResponse(successfulSubmission(), { status: 201 });
+      }
+      if (url === "/api/analysis/documents/91?limit=100") {
+        return jsonResponse({
+          ...analysis,
+          lines: analysis.lines.slice(0, 4),
+          next_cursor: 4,
+        });
+      }
+      if (url === "/api/analysis/documents/91?limit=100&after_id=4") {
+        secondPageAttempts += 1;
+        return secondPageAttempts === 1
+          ? jsonResponse(
+              {
+                detail: {
+                  error_code: "ANALYSIS_PAGE_FAILED",
+                  message: "다음 분석 결과를 불러오지 못했습니다.",
+                },
+              },
+              { status: 500 },
+            )
+          : jsonResponse({
+              ...analysis,
+              lines: analysis.lines.slice(4),
+              next_cursor: null,
+            });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  const user = userEvent.setup();
+  renderApp("/analysis");
+  const fileInput = screen.getByLabelText("신규 견적서");
+  const submitter = screen.getByLabelText("접수자");
+  await user.upload(fileInput, new File(["quote"], "retry-analysis.xlsx"));
+  await user.type(submitter, "buyer");
+  await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+
+  const error = await screen.findByRole("alert");
+  expect(error).toHaveTextContent("ANALYSIS_PAGE_FAILED");
+  expect(submitter).toHaveValue("buyer");
+  expect((fileInput as HTMLInputElement).files?.[0]?.name).toBe(
+    "retry-analysis.xlsx",
+  );
+
+  await user.click(within(error).getByRole("button", { name: "다시 시도" }));
+
+  expect(
+    await screen.findByRole("heading", { name: "신규견적.xlsx" }),
+  ).toBeVisible();
+  expect(uploadCount).toBe(1);
+  expect(secondPageAttempts).toBe(2);
+});
+
 it("exposes upload, parsing, and analysis stages and prevents duplicate submits", async () => {
   let resolveSubmission!: (response: Response) => void;
   let resolveAnalysis!: (response: Response) => void;
@@ -384,4 +447,28 @@ it("exposes upload, parsing, and analysis stages and prevents duplicate submits"
   expect(
     await screen.findByRole("heading", { name: "신규견적.xlsx" }),
   ).toBeVisible();
+});
+
+it("cancels an in-flight upload when the page unmounts", async () => {
+  let uploadSignal: AbortSignal | null = null;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      uploadSignal = init?.signal ?? null;
+      return new Promise<Response>(() => undefined);
+    }),
+  );
+  const user = userEvent.setup();
+  const view = renderApp("/analysis");
+  await user.upload(
+    screen.getByLabelText("신규 견적서"),
+    new File(["quote"], "cancel.xlsx"),
+  );
+  await user.type(screen.getByLabelText("접수자"), "buyer");
+  await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+  await waitFor(() => expect(uploadSignal).not.toBeNull());
+
+  view.unmount();
+
+  expect((uploadSignal as AbortSignal | null)?.aborted).toBe(true);
 });
