@@ -84,9 +84,13 @@ it("does not expose the legacy reconciliation page or navigation link", () => {
   renderApp("/reconciliation");
 
   expect(
+    screen.getByText("요청한 작업 화면을 찾을 수 없습니다."),
+  ).toBeVisible();
+  expect(
     screen.queryByRole("heading", { name: "기존 표준단가 대조" }),
   ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("link", { name: "기존 DB 대조" }),
   ).not.toBeInTheDocument();
+  expect(document.querySelectorAll('a[href="/reconciliation"]')).toHaveLength(0);
 });
