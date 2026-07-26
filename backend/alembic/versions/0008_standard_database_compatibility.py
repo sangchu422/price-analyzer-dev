@@ -1,7 +1,7 @@
-"""Add append-only document roles and standard-database build evidence.
+"""Recover databases stamped with the rejected legacy 0007 migration.
 
-Revision ID: 0007
-Revises: 0006
+Revision ID: 0008
+Revises: 0007
 Create Date: 2026-07-26
 """
 
@@ -11,15 +11,24 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0007"
-down_revision: str | None = "0006"
+revision: str = "0008"
+down_revision: str | None = "0007"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_LEGACY_TABLES = (
+    "standard_item_external_code",
+    "legacy_reconciliation_decision",
+    "legacy_raw_item_link",
+    "legacy_source_row_snapshot",
+    "legacy_standard_snapshot",
+    "legacy_reconciliation_run",
+)
 
-def upgrade() -> None:
+
+def _create_quote_document_role(table_name: str) -> None:
     op.create_table(
-        "quote_document_role",
+        table_name,
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column(
             "document_id",
@@ -38,11 +47,7 @@ def upgrade() -> None:
             ),
             nullable=False,
         ),
-        sa.Column(
-            "supersedes_role_id",
-            sa.Integer(),
-            nullable=True,
-        ),
+        sa.Column("supersedes_role_id", sa.Integer(), nullable=True),
         sa.Column("decided_by", sa.String(100), nullable=False),
         sa.Column("reason_detail", sa.Text(), nullable=False),
         sa.Column(
@@ -57,7 +62,7 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(
             ["supersedes_role_id", "document_id"],
-            ["quote_document_role.id", "quote_document_role.document_id"],
+            [f"{table_name}.id", f"{table_name}.document_id"],
             name="fk_quote_document_role_supersedes_same_document",
             ondelete="RESTRICT",
         ),
@@ -71,11 +76,9 @@ def upgrade() -> None:
             name="uq_quote_document_role_supersedes",
         ),
     )
-    op.create_index(
-        "ix_quote_document_role_document_id",
-        "quote_document_role",
-        ["document_id"],
-    )
+
+
+def _create_standard_database_build_run() -> None:
     op.create_table(
         "standard_database_build_run",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -123,14 +126,67 @@ def upgrade() -> None:
     )
 
 
-def downgrade() -> None:
-    op.drop_index(
-        "uq_standard_database_build_success_input_rule",
-        table_name="standard_database_build_run",
+def _quote_document_role_needs_rebuild() -> bool:
+    foreign_keys = sa.inspect(op.get_bind()).get_foreign_keys(
+        "quote_document_role"
     )
-    op.drop_table("standard_database_build_run")
+    return not any(
+        foreign_key["constrained_columns"]
+        == ["supersedes_role_id", "document_id"]
+        and foreign_key["referred_table"] == "quote_document_role"
+        and foreign_key["referred_columns"] == ["id", "document_id"]
+        for foreign_key in foreign_keys
+    )
+
+
+def _rebuild_quote_document_role() -> None:
+    replacement = "_0008_quote_document_role_replacement"
+    _create_quote_document_role(replacement)
+    connection = op.get_bind()
+    connection.execute(
+        sa.text(
+            f"""
+            INSERT INTO {replacement} (
+                id, document_id, purpose, supersedes_role_id,
+                decided_by, reason_detail, decided_at
+            )
+            SELECT id, document_id, purpose, supersedes_role_id,
+                   decided_by, reason_detail, decided_at
+            FROM quote_document_role
+            """
+        )
+    )
     op.drop_index(
         "ix_quote_document_role_document_id",
         table_name="quote_document_role",
     )
     op.drop_table("quote_document_role")
+    op.rename_table(replacement, "quote_document_role")
+    op.create_index(
+        "ix_quote_document_role_document_id",
+        "quote_document_role",
+        ["document_id"],
+    )
+
+
+def upgrade() -> None:
+    tables = set(sa.inspect(op.get_bind()).get_table_names())
+    if "quote_document_role" not in tables:
+        _create_quote_document_role("quote_document_role")
+        op.create_index(
+            "ix_quote_document_role_document_id",
+            "quote_document_role",
+            ["document_id"],
+        )
+    elif _quote_document_role_needs_rebuild():
+        _rebuild_quote_document_role()
+    if "standard_database_build_run" not in tables:
+        _create_standard_database_build_run()
+
+    for table_name in _LEGACY_TABLES:
+        if table_name in tables:
+            op.drop_table(table_name)
+
+
+def downgrade() -> None:
+    """Compatibility repair is intentionally retained until 0007 downgrades."""

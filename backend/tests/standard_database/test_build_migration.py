@@ -32,7 +32,7 @@ def _alembic(
     )
 
 
-def test_0007_creates_only_standard_database_build_tables(
+def test_0008_creates_only_standard_database_build_tables(
     tmp_path: Path,
 ) -> None:
     backend_path = Path(__file__).resolve().parents[2]
@@ -84,11 +84,15 @@ def test_0007_creates_only_standard_database_build_tables(
         ("id",),
         "RESTRICT",
     )
-    assert role_foreign_keys[("supersedes_role_id",)] == (
+    assert role_foreign_keys[("supersedes_role_id", "document_id")] == (
         "quote_document_role",
-        ("id",),
+        ("id", "document_id"),
         "RESTRICT",
     )
+    assert ("id", "document_id") in {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("quote_document_role")
+    }
     role_checks = inspector.get_check_constraints("quote_document_role")
     assert any(
         check["name"] == "quote_document_purpose"
@@ -171,3 +175,51 @@ def test_0007_creates_only_standard_database_build_tables(
     assert reupgrade.returncode == 0, reupgrade.stdout + reupgrade.stderr
     recheck = _alembic(backend_path, environment, "check")
     assert recheck.returncode == 0, recheck.stdout + recheck.stderr
+
+
+def test_0008_replaces_legacy_stamped_schema_with_standard_build_tables(
+    tmp_path: Path,
+) -> None:
+    backend_path = Path(__file__).resolve().parents[2]
+    database_path = tmp_path / "legacy-stamped.sqlite3"
+    environment = os.environ.copy()
+    environment["DATABASE_FILE"] = str(database_path)
+
+    upgrade = _alembic(backend_path, environment, "upgrade", "0006")
+    assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE legacy_reconciliation_run (
+                id INTEGER NOT NULL PRIMARY KEY,
+                workbook_sha256 VARCHAR(64) NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE legacy_standard_snapshot (
+                id INTEGER NOT NULL PRIMARY KEY,
+                run_id INTEGER NOT NULL REFERENCES legacy_reconciliation_run(id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "UPDATE alembic_version SET version_num = '0007'"
+        )
+
+    compatibility_upgrade = _alembic(
+        backend_path,
+        environment,
+        "upgrade",
+        "head",
+    )
+    assert compatibility_upgrade.returncode == 0, (
+        compatibility_upgrade.stdout + compatibility_upgrade.stderr
+    )
+    tables = set(inspect(engine).get_table_names())
+    assert {"quote_document_role", "standard_database_build_run"} <= tables
+    assert not {name for name in tables if name.startswith("legacy_")}
+    check = _alembic(backend_path, environment, "check")
+    assert check.returncode == 0, check.stdout + check.stderr

@@ -4,8 +4,19 @@ from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, String, Text, text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import (
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    inspect,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.db.time import utc_now
@@ -30,9 +41,24 @@ class _ImmutableStandardDatabaseRow:
 class QuoteDocumentRole(_ImmutableStandardDatabaseRow, Base):
     __tablename__ = "quote_document_role"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "document_id",
+            name="uq_quote_document_role_id_document",
+        ),
+        UniqueConstraint(
+            "supersedes_role_id",
+            name="uq_quote_document_role_supersedes",
+        ),
         CheckConstraint(
             "supersedes_role_id IS NULL OR supersedes_role_id <> id",
             name="ck_quote_document_role_not_self_superseding",
+        ),
+        ForeignKeyConstraint(
+            ["supersedes_role_id", "document_id"],
+            ["quote_document_role.id", "quote_document_role.document_id"],
+            name="fk_quote_document_role_supersedes_same_document",
+            ondelete="RESTRICT",
         ),
         {"info": {"evidence_immutable": True}},
     )
@@ -51,10 +77,7 @@ class QuoteDocumentRole(_ImmutableStandardDatabaseRow, Base):
             validate_strings=True,
         )
     )
-    supersedes_role_id: Mapped[int | None] = mapped_column(
-        ForeignKey("quote_document_role.id", ondelete="RESTRICT"),
-        unique=True,
-    )
+    supersedes_role_id: Mapped[int | None] = mapped_column()
     decided_by: Mapped[str] = mapped_column(String(100))
     reason_detail: Mapped[str] = mapped_column(Text)
     decided_at: Mapped[datetime] = mapped_column(
@@ -62,15 +85,6 @@ class QuoteDocumentRole(_ImmutableStandardDatabaseRow, Base):
         default=utc_now,
         server_default=text("CURRENT_TIMESTAMP"),
     )
-
-    supersedes: Mapped[QuoteDocumentRole | None] = relationship(
-        "QuoteDocumentRole",
-        remote_side="QuoteDocumentRole.id",
-        foreign_keys=[supersedes_role_id],
-        primaryjoin="QuoteDocumentRole.supersedes_role_id "
-        "== QuoteDocumentRole.id",
-    )
-
 
 class StandardDatabaseBuildRun(_ImmutableStandardDatabaseRow, Base):
     __tablename__ = "standard_database_build_run"
@@ -118,3 +132,34 @@ class StandardDatabaseBuildRun(_ImmutableStandardDatabaseRow, Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         NaiveUTCDateTime(),
     )
+
+    def __allow_evidence_update__(self) -> bool:
+        """Allow exactly one RUNNING-to-terminal lifecycle transition."""
+
+        state = inspect(self)
+        changed = {
+            attribute.key
+            for attribute in state.attrs
+            if attribute.history.has_changes()
+        }
+        allowed = {
+            "status",
+            "counts_json",
+            "report_path",
+            "error_detail",
+            "finished_at",
+        }
+        status_history = state.attrs.status.history
+        finished_history = state.attrs.finished_at.history
+        if not {"status", "finished_at"} <= changed or not changed <= allowed:
+            return False
+        if not status_history.deleted or not status_history.added:
+            return False
+        if status_history.deleted[0] is not StandardBuildStatus.RUNNING:
+            return False
+        if status_history.added[0] not in {
+            StandardBuildStatus.SUCCEEDED,
+            StandardBuildStatus.FAILED,
+        }:
+            return False
+        return bool(finished_history.added and self.finished_at is not None)
