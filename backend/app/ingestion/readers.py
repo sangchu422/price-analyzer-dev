@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+import threading
 import zipfile
+import zlib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -13,22 +16,30 @@ import xlrd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
+from pypdf.generic import ArrayObject, StreamObject
 
 
 SUPPORTED_QUOTE_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
 MAX_XLSX_ARCHIVE_ENTRIES = 5_000
-MAX_XLSX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
+MAX_XLSX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_XLSX_COMPRESSION_RATIO = 200
 MAX_XLSX_WORKSHEETS = 200
 MAX_XLSX_WORKSHEET_ROWS = 200_000
 MAX_XLSX_WORKSHEET_COLUMNS = 500
-MAX_XLSX_WORKSHEET_CELLS = 2_000_000
-MAX_XLSX_TOTAL_CELLS = 5_000_000
+MAX_XLSX_WORKSHEET_CELLS = 1_000_000
+MAX_XLSX_TOTAL_CELLS = 1_000_000
 MAX_XLS_SHEETS = 200
 MAX_XLS_SHEET_ROWS = 200_000
 MAX_XLS_SHEET_COLUMNS = 500
 MAX_XLS_SHEET_CELLS = 2_000_000
 MAX_XLS_TOTAL_CELLS = 5_000_000
+MAX_PDF_PAGES = 200
+MAX_PDF_COMPRESSED_CONTENT_BYTES = 25 * 1024 * 1024
+MAX_PDF_DECODED_CONTENT_BYTES = 16 * 1024 * 1024
+MAX_PDF_EXTRACTED_TEXT_CHARS = 5_000_000
+MAX_PDF_EXTRACTED_ROWS = 200_000
+MAX_PDF_TOTAL_FLATE_DECODED_BYTES = 32 * 1024 * 1024
+_PDF_DECODE_PATCH_LOCK = threading.Lock()
 REQUIRED_XLSX_ARCHIVE_ENTRIES = frozenset(
     {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}
 )
@@ -97,6 +108,10 @@ def read_xlsx(path: Path) -> list[ParsedRow]:
         parsed: list[ParsedRow] = []
         total_cells = 0
         for sheet in workbook.worksheets:
+            if sheet.max_row is None or sheet.max_column is None:
+                raise UnsafeQuoteFileError(
+                    "xlsx worksheet dimensions are unavailable"
+                )
             cells = sheet.max_row * sheet.max_column
             if (
                 sheet.max_row > MAX_XLSX_WORKSHEET_ROWS
@@ -212,9 +227,44 @@ def _validate_xlsx_archive(path: Path) -> None:
 
 
 def read_pdf(path: Path) -> list[ParsedRow]:
+    with _bounded_pypdf_flate_decoding():
+        return _read_pdf(path)
+
+
+def _read_pdf(path: Path) -> list[ParsedRow]:
+    reader = PdfReader(str(path))
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise UnsafeQuoteFileError("pdf has too many pages")
     parsed: list[ParsedRow] = []
-    for page_number, page in enumerate(PdfReader(str(path)).pages, start=1):
-        lines = (page.extract_text() or "").splitlines()
+    compressed_total = 0
+    decoded_total = 0
+    text_total = 0
+    row_total = 0
+    for page_number, page in enumerate(reader.pages, start=1):
+        compressed, decoded = _bounded_pdf_page_content(
+            page,
+            decoded_remaining=(
+                MAX_PDF_DECODED_CONTENT_BYTES - decoded_total
+            ),
+        )
+        compressed_total += compressed
+        decoded_total += decoded
+        if compressed_total > MAX_PDF_COMPRESSED_CONTENT_BYTES:
+            raise UnsafeQuoteFileError(
+                "pdf compressed content exceeds safe limits"
+            )
+        text = page.extract_text() or ""
+        text_total += len(text)
+        if text_total > MAX_PDF_EXTRACTED_TEXT_CHARS:
+            raise UnsafeQuoteFileError(
+                "pdf extracted text exceeds safe limits"
+            )
+        lines = text.splitlines()
+        row_total += len(lines)
+        if row_total > MAX_PDF_EXTRACTED_ROWS:
+            raise UnsafeQuoteFileError(
+                "pdf extracted row count exceeds safe limits"
+            )
         matrix = [
             [part for part in _PDF_COLUMNS.split(line.strip())]
             for line in lines
@@ -230,6 +280,108 @@ def read_pdf(path: Path) -> list[ParsedRow]:
             )
         )
     return parsed
+
+
+def _bounded_pdf_page_content(
+    page: Any,
+    *,
+    decoded_remaining: int,
+) -> tuple[int, int]:
+    if not hasattr(page, "raw_get"):
+        return 0, 0
+    try:
+        contents = page.raw_get("/Contents")
+    except KeyError:
+        return 0, 0
+    resolved = contents.get_object()
+    streams = (
+        [item.get_object() for item in resolved]
+        if isinstance(resolved, ArrayObject)
+        else [resolved]
+    )
+    compressed_total = 0
+    decoded_total = 0
+    for stream in streams:
+        if not isinstance(stream, StreamObject):
+            raise UnsafeQuoteFileError("pdf page content is not a stream")
+        raw = stream._data
+        compressed_total += len(raw)
+        remaining = decoded_remaining - decoded_total
+        if remaining < 0:
+            raise UnsafeQuoteFileError(
+                "pdf decoded content exceeds safe limits"
+            )
+        filters = _pdf_filter_names(stream)
+        if not filters:
+            decoded_size = len(raw)
+        elif filters in (("/FlateDecode",), ("/Fl",)):
+            decoded_size = _bounded_flate_size(raw, remaining)
+        else:
+            raise UnsafeQuoteFileError(
+                "pdf content uses an unbounded compressed filter"
+            )
+        decoded_total += decoded_size
+        if decoded_total > decoded_remaining:
+            raise UnsafeQuoteFileError(
+                "pdf decoded content exceeds safe limits"
+            )
+    return compressed_total, decoded_total
+
+
+def _pdf_filter_names(stream: StreamObject) -> tuple[str, ...]:
+    value = stream.get("/Filter")
+    if value is None:
+        return ()
+    value = value.get_object() if hasattr(value, "get_object") else value
+    values = value if isinstance(value, ArrayObject) else [value]
+    return tuple(str(item.get_object()) for item in values)
+
+
+def _bounded_flate_size(data: bytes, maximum: int) -> int:
+    return len(_bounded_flate_decode(data, maximum))
+
+
+def _bounded_flate_decode(data: bytes, maximum: int) -> bytes:
+    for window_bits in (zlib.MAX_WBITS, zlib.MAX_WBITS | 32):
+        decoder = zlib.decompressobj(window_bits)
+        try:
+            decoded = decoder.decompress(data, maximum + 1)
+            if len(decoded) > maximum or decoder.unconsumed_tail:
+                raise UnsafeQuoteFileError(
+                    "pdf decoded content exceeds safe limits"
+                )
+            decoded += decoder.flush(maximum + 1 - len(decoded))
+            if len(decoded) > maximum:
+                raise UnsafeQuoteFileError(
+                    "pdf decoded content exceeds safe limits"
+                )
+            return decoded
+        except zlib.error:
+            continue
+    raise UnsafeQuoteFileError("pdf flate content cannot be decoded safely")
+
+
+@contextmanager
+def _bounded_pypdf_flate_decoding():
+    """Serialize pypdf's process-global Flate hook and restore it reliably."""
+
+    import pypdf.filters as pdf_filters
+
+    with _PDF_DECODE_PATCH_LOCK:
+        original = pdf_filters.decompress
+        remaining = MAX_PDF_TOTAL_FLATE_DECODED_BYTES
+
+        def bounded_decompress(data: bytes) -> bytes:
+            nonlocal remaining
+            decoded = _bounded_flate_decode(data, remaining)
+            remaining -= len(decoded)
+            return decoded
+
+        pdf_filters.decompress = bounded_decompress
+        try:
+            yield
+        finally:
+            pdf_filters.decompress = original
 
 
 def _parse_tabular_rows(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import zlib
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,12 @@ from sqlalchemy.orm import Session
 from app.db.base import Base
 from app.db.models import RawQuoteItem, SourceDocument, SourceVariant
 from app.db.sqlite import configure_sqlite
-from app.ingestion.readers import ParsedRow, read_quote
+from app.ingestion.readers import (
+    ParsedRow,
+    UnsafeQuoteFileError,
+    read_quote,
+    read_xlsx,
+)
 from app.ingestion.service import (
     SourceFileChangedError,
     UnsupportedQuoteLayoutError,
@@ -571,3 +577,81 @@ def test_pdf_reader_records_page_provenance(
     assert rows[0].cells is None
     assert rows[0].item_name == "BEARING"
     assert rows[0].unit_price == "2400"
+
+
+def test_pdf_reader_rejects_page_and_extracted_text_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    class FakePage:
+        def extract_text(self) -> str:
+            return "abcdef"
+
+    class FakePdf:
+        pages = [FakePage(), FakePage()]
+
+    monkeypatch.setattr(readers, "PdfReader", lambda _: FakePdf())
+    quote = tmp_path / "bounded.pdf"
+    quote.write_bytes(b"fixture")
+    monkeypatch.setattr(readers, "MAX_PDF_PAGES", 1)
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(quote)
+
+    monkeypatch.setattr(readers, "MAX_PDF_PAGES", 2)
+    monkeypatch.setattr(readers, "MAX_PDF_EXTRACTED_TEXT_CHARS", 5)
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(quote)
+
+
+def test_xlsx_reader_rejects_unknown_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    class FakeSheet:
+        max_row = None
+        max_column = None
+
+    class FakeWorkbook:
+        worksheets = [FakeSheet()]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(readers, "_validate_xlsx_archive", lambda _: None)
+    monkeypatch.setattr(
+        readers,
+        "load_workbook",
+        lambda *args, **kwargs: FakeWorkbook(),
+    )
+
+    with pytest.raises(UnsafeQuoteFileError):
+        read_xlsx(tmp_path / "unknown-dimensions.xlsx")
+
+
+def test_pdf_flate_decode_is_bounded_and_other_filters_are_rejected() -> None:
+    from pypdf.generic import EncodedStreamObject, NameObject
+
+    from app.ingestion import readers
+
+    compressed = zlib.compress(b"A" * 100)
+    assert readers._bounded_flate_size(compressed, 100) == 100
+    with pytest.raises(UnsafeQuoteFileError):
+        readers._bounded_flate_size(compressed, 99)
+
+    stream = EncodedStreamObject()
+    stream._data = b"encoded"
+    stream[NameObject("/Filter")] = NameObject("/LZWDecode")
+
+    class FakePage:
+        def raw_get(self, name):
+            return stream
+
+    with pytest.raises(UnsafeQuoteFileError):
+        readers._bounded_pdf_page_content(
+            FakePage(),
+            decoded_remaining=100,
+        )

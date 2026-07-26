@@ -1,4 +1,4 @@
-"""Bound submission request bodies before multipart parsing or spooling."""
+"""Stream-bound submission bodies before multipart spooling completes."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ Send = Callable[[ASGIMessage], Awaitable[None]]
 
 
 class SubmissionBodyLimitMiddleware:
-    """Pre-read one bounded multipart body, then replay it to FastAPI."""
+    """Count receive chunks without retaining or replaying request bodies."""
 
     def __init__(self, app) -> None:
         self.app = app
@@ -35,36 +35,35 @@ class SubmissionBodyLimitMiddleware:
             await _send_too_large(send, maximum)
             return
 
-        messages: list[ASGIMessage] = []
         size = 0
-        while True:
+
+        async def limited_receive() -> ASGIMessage:
+            nonlocal size
             message = await receive()
-            messages.append(message)
             if message.get("type") == "http.request":
                 size += len(message.get("body", b""))
                 if size > maximum:
-                    await _send_too_large(send, maximum)
-                    return
-                if not message.get("more_body", False):
-                    break
-            elif message.get("type") == "http.disconnect":
-                return
+                    raise _RequestBodyTooLarge
+            return message
 
-        index = 0
+        response_started = False
 
-        async def replay() -> ASGIMessage:
-            nonlocal index
-            if index < len(messages):
-                message = messages[index]
-                index += 1
-                return message
-            return {
-                "type": "http.request",
-                "body": b"",
-                "more_body": False,
-            }
+        async def tracked_send(message: ASGIMessage) -> None:
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
 
-        await self.app(scope, replay, send)
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestBodyTooLarge:
+            if response_started:
+                raise
+            await _send_too_large(send, maximum)
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
 
 
 def _content_length(scope) -> int | None:

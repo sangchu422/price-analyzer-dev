@@ -11,6 +11,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -55,7 +56,15 @@ _WINDOWS_RESERVED_BASENAMES = frozenset(
     }
 )
 _IDENTITY_LOCKS_GUARD = threading.Lock()
-_IDENTITY_LOCKS: dict[str, threading.Lock] = {}
+
+
+@dataclass
+class _IdentityLockEntry:
+    lock: threading.Lock
+    users: int = 0
+
+
+_IDENTITY_LOCKS: dict[str, _IdentityLockEntry] = {}
 
 
 class SubmissionResponse(BaseModel):
@@ -179,9 +188,20 @@ def _submission_identity_lock(
 ) -> Iterator[None]:
     key = f"{digest}:{_canonical_filename_identity(filename)}"
     with _IDENTITY_LOCKS_GUARD:
-        lock = _IDENTITY_LOCKS.setdefault(key, threading.Lock())
-    with lock:
+        entry = _IDENTITY_LOCKS.get(key)
+        if entry is None:
+            entry = _IdentityLockEntry(threading.Lock())
+            _IDENTITY_LOCKS[key] = entry
+        entry.users += 1
+    entry.lock.acquire()
+    try:
         yield
+    finally:
+        entry.lock.release()
+        with _IDENTITY_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _IDENTITY_LOCKS.get(key) is entry:
+                del _IDENTITY_LOCKS[key]
 
 
 def _place_staged_upload(

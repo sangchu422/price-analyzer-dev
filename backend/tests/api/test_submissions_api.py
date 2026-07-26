@@ -477,6 +477,30 @@ def test_concurrent_identical_uploads_converge_to_one_document(
     assert api_session.scalar(select(func.count(QuoteDocumentRole.id))) == 1
 
 
+def test_identity_lock_registry_cleans_up_after_success_and_failure(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import submissions
+
+    monkeypatch.setattr(settings, "submission_folder", tmp_path / "submitted")
+    submissions._IDENTITY_LOCKS.clear()
+
+    success = _post(client, _xlsx_bytes(), filename="success.xlsx")
+
+    assert success.status_code == 201
+    assert submissions._IDENTITY_LOCKS == {}
+
+    def fail_role_write(*args, **kwargs):
+        raise RuntimeError("simulated role failure")
+
+    monkeypatch.setattr(submissions, "_ensure_incoming_role", fail_role_write)
+    with pytest.raises(RuntimeError, match="simulated role"):
+        _post(client, _xlsx_bytes(price=13000), filename="failure.xlsx")
+    assert submissions._IDENTITY_LOCKS == {}
+
+
 def test_upload_does_not_override_existing_historical_role(
     client: TestClient,
     api_session: Session,
