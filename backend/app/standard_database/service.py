@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
@@ -54,7 +55,7 @@ class ManualMembershipConflict(RuntimeError):
         self,
         *,
         raw_item_id: int,
-        current_standard_item_id: int,
+        current_standard_item_id: int | None,
         deterministic_standard_item_id: int | None,
     ) -> None:
         self.raw_item_id = raw_item_id
@@ -65,11 +66,38 @@ class ManualMembershipConflict(RuntimeError):
             if deterministic_standard_item_id is None
             else f"standard item {deterministic_standard_item_id}"
         )
-        super().__init__(
-            f"raw item {raw_item_id} is currently MATCHED to standard item "
-            f"{current_standard_item_id}, not {target}; manual membership "
-            "requires review"
+        current = (
+            "REJECTED"
+            if current_standard_item_id is None
+            else f"MATCHED to standard item {current_standard_item_id}"
         )
+        super().__init__(
+            f"raw item {raw_item_id} is currently {current}, not {target}; "
+            "manual membership requires review"
+        )
+
+
+class DuplicateStandardKeyConflict(RuntimeError):
+    """Multiple current standards claim one deterministic normalized key."""
+
+    code = "DUPLICATE_STANDARD_KEY"
+
+    def __init__(
+        self,
+        *,
+        key: tuple[str, str, str],
+        standard_item_ids: tuple[int, ...],
+    ) -> None:
+        self.key = key
+        self.standard_item_ids = standard_item_ids
+        super().__init__(
+            "multiple current standard items share normalized key "
+            f"{key!r}: {standard_item_ids!r}"
+        )
+
+
+class ConcurrentStandardBuild(RuntimeError):
+    """A competing transaction completed the same deterministic build."""
 
 
 @dataclass(frozen=True)
@@ -417,19 +445,22 @@ def _raise_membership_conflicts(
     for key in sorted(groups):
         versions = current_versions.get(key, [])
         if len(versions) > 1:
-            continue
+            raise DuplicateStandardKeyConflict(
+                key=key,
+                standard_item_ids=tuple(
+                    version.standard_item_id for version in versions
+                ),
+            )
         deterministic_standard_item_id = (
             versions[0].standard_item_id if versions else None
         )
         for row in groups[key]:
             membership = current_membership(session, row.raw_item_id)
-            if (
-                membership is not None
-                and membership.status is MembershipStatus.MATCHED
-                and membership.standard_item_id
+            if membership is not None and (
+                membership.status is MembershipStatus.REJECTED
+                or membership.standard_item_id
                 != deterministic_standard_item_id
             ):
-                assert membership.standard_item_id is not None
                 raise ManualMembershipConflict(
                     raw_item_id=row.raw_item_id,
                     current_standard_item_id=membership.standard_item_id,
@@ -437,6 +468,34 @@ def _raise_membership_conflicts(
                         deterministic_standard_item_id
                     ),
                 )
+
+
+def _successful_run(
+    session: Session,
+    *,
+    fingerprint: str,
+) -> StandardDatabaseBuildRun | None:
+    return session.scalar(
+        select(StandardDatabaseBuildRun)
+        .where(
+            StandardDatabaseBuildRun.input_fingerprint == fingerprint,
+            StandardDatabaseBuildRun.rule_version == RULE_VERSION,
+            StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED,
+        )
+        .order_by(StandardDatabaseBuildRun.id)
+        .limit(1)
+    )
+
+
+def _is_success_unique_violation(error: IntegrityError) -> bool:
+    detail = str(error.orig).casefold()
+    return (
+        "uq_standard_database_build_success_input_rule" in detail
+        or (
+            "standard_database_build_run.input_fingerprint" in detail
+            and "standard_database_build_run.rule_version" in detail
+        )
+    )
 
 
 def build_standard_database(
@@ -480,19 +539,47 @@ def build_standard_database(
             current_versions=current_versions,
         )
 
-    succeeded_run = session.scalar(
-        select(StandardDatabaseBuildRun)
-        .where(
-            StandardDatabaseBuildRun.input_fingerprint == fingerprint,
-            StandardDatabaseBuildRun.rule_version == RULE_VERSION,
-            StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED,
-        )
-        .order_by(StandardDatabaseBuildRun.id)
-        .limit(1)
+    succeeded_run = _successful_run(
+        session,
+        fingerprint=fingerprint,
     )
     if succeeded_run is not None:
         return _reused_result(succeeded_run)
 
+    try:
+        with session.begin_nested():
+            result = _execute_standard_build(
+                session,
+                fingerprint=fingerprint,
+                groups=groups,
+                current_versions=current_versions,
+                exclusions=exclusions,
+                conflicts=conflicts,
+            )
+    except IntegrityError as error:
+        if not _is_success_unique_violation(error):
+            raise
+        winner = _successful_run(session, fingerprint=fingerprint)
+        if winner is not None:
+            return _reused_result(winner)
+        raise ConcurrentStandardBuild(
+            "a competing standard build completed the same fingerprint; "
+            "retry after its transaction commits"
+        ) from error
+    return result
+
+
+def _execute_standard_build(
+    session: Session,
+    *,
+    fingerprint: str,
+    groups: dict[tuple[str, str, str], list[EligibleHistoricalRow]],
+    current_versions: dict[
+        tuple[str, str, str], list[StandardItemVersion]
+    ],
+    exclusions: list[StandardDatabaseBuildIssue],
+    conflicts: list[StandardDatabaseBuildIssue],
+) -> StandardDatabaseBuildResult:
     run = StandardDatabaseBuildRun(
         input_fingerprint=fingerprint,
         rule_version=RULE_VERSION,
@@ -508,178 +595,136 @@ def build_standard_database(
     observation_count = 0
     single_observation_count = 0
 
-    try:
-        for key in sorted(groups):
-            name, spec, unit = key
-            versions = current_versions.get(key, [])
-            if len(versions) > 1:
-                conflicts.append(
-                    StandardDatabaseBuildIssue(
-                        code="DUPLICATE_STANDARD_KEY",
-                        detail=(
-                            "multiple current standard items share the exact "
-                            "normalized key"
-                        ),
-                        evidence=(
-                            (
-                                "standard_item_ids",
-                                ",".join(
-                                    str(row.standard_item_id)
-                                    for row in versions
-                                ),
-                            ),
-                        ),
-                    )
-                )
-                continue
-            desired = (name, spec or None, unit or None)
-            if versions:
-                version = versions[0]
-                item = version.standard_item
-                reused_count += 1
-                current_canonical = (
-                    version.canonical_name,
-                    version.canonical_spec,
-                    version.canonical_unit,
-                )
-                if current_canonical != desired:
-                    version = append_standard_item_version(
-                        session,
-                        standard_item_id=version.standard_item_id,
-                        expected_current_version_id=version.id,
-                        canonical_name=desired[0],
-                        canonical_spec=desired[1],
-                        canonical_unit=desired[2],
-                        aliases=_aliases(version),
-                        created_by=BUILD_ACTOR,
-                        reason_detail=RULE_VERSION,
-                    )
-                    changed_count += 1
-            else:
-                item, version = create_standard_item(
+    for key in sorted(groups):
+        name, spec, unit = key
+        versions = current_versions.get(key, [])
+        if len(versions) > 1:
+            raise DuplicateStandardKeyConflict(
+                key=key,
+                standard_item_ids=tuple(
+                    version.standard_item_id for version in versions
+                ),
+            )
+        desired = (name, spec or None, unit or None)
+        if versions:
+            version = versions[0]
+            item = version.standard_item
+            reused_count += 1
+            current_canonical = (
+                version.canonical_name,
+                version.canonical_spec,
+                version.canonical_unit,
+            )
+            if current_canonical != desired:
+                version = append_standard_item_version(
                     session,
+                    standard_item_id=version.standard_item_id,
+                    expected_current_version_id=version.id,
                     canonical_name=desired[0],
                     canonical_spec=desired[1],
                     canonical_unit=desired[2],
-                    aliases=[],
+                    aliases=_aliases(version),
                     created_by=BUILD_ACTOR,
                     reason_detail=RULE_VERSION,
                 )
-                created_count += 1
-                current_versions[key] = [version]
+                changed_count += 1
+        else:
+            item, version = create_standard_item(
+                session,
+                canonical_name=desired[0],
+                canonical_spec=desired[1],
+                canonical_unit=desired[2],
+                aliases=[],
+                created_by=BUILD_ACTOR,
+                reason_detail=RULE_VERSION,
+            )
+            created_count += 1
+            current_versions[key] = [version]
 
-            selected_raw_item_ids: list[int] = []
-            for row in groups[key]:
-                membership = current_membership(session, row.raw_item_id)
-                if (
-                    membership is not None
-                    and membership.status is MembershipStatus.MATCHED
-                    and membership.standard_item_id == item.id
-                ):
-                    selected_raw_item_ids.append(row.raw_item_id)
-                    continue
-                if (
-                    membership is not None
-                    and membership.status is MembershipStatus.MATCHED
-                    and membership.standard_item_id != item.id
-                ):
-                    conflicts.append(
-                        StandardDatabaseBuildIssue(
-                            code="MEMBERSHIP_TARGET_CONFLICT",
-                            detail=(
-                                "current MATCHED membership targets another "
-                                "standard item"
-                            ),
-                            raw_item_id=row.raw_item_id,
-                            evidence=(
-                                (
-                                    "membership_decision_id",
-                                    str(membership.id),
-                                ),
-                                (
-                                    "standard_item_id",
-                                    str(membership.standard_item_id),
-                                ),
-                            ),
-                        )
-                    )
-                    continue
-                append_membership_decision(
-                    session,
-                    raw_item_id=row.raw_item_id,
-                    standard_item_id=item.id,
-                    status=MembershipStatus.MATCHED,
-                    expected_current_decision_id=(
-                        None if membership is None else membership.id
-                    ),
-                    candidate_score=None,
-                    method=RULE_VERSION,
-                    evidence={
-                        "build_run_id": run.id,
-                        "rule_version": RULE_VERSION,
-                        "normalization_version": NORMALIZATION_VERSION,
-                    },
-                    decided_by=BUILD_ACTOR,
-                    reason_detail=RULE_VERSION,
-                )
-                created_memberships += 1
+        selected_raw_item_ids: list[int] = []
+        for row in groups[key]:
+            membership = current_membership(session, row.raw_item_id)
+            if (
+                membership is not None
+                and membership.status is MembershipStatus.MATCHED
+                and membership.standard_item_id == item.id
+            ):
                 selected_raw_item_ids.append(row.raw_item_id)
+                continue
+            if membership is not None:
+                raise ManualMembershipConflict(
+                    raw_item_id=row.raw_item_id,
+                    current_standard_item_id=membership.standard_item_id,
+                    deterministic_standard_item_id=item.id,
+                )
+            append_membership_decision(
+                session,
+                raw_item_id=row.raw_item_id,
+                standard_item_id=item.id,
+                status=MembershipStatus.MATCHED,
+                expected_current_decision_id=None,
+                candidate_score=None,
+                method=RULE_VERSION,
+                evidence={
+                    "build_run_id": run.id,
+                    "rule_version": RULE_VERSION,
+                    "normalization_version": NORMALIZATION_VERSION,
+                },
+                decided_by=BUILD_ACTOR,
+                reason_detail=RULE_VERSION,
+            )
+            created_memberships += 1
+            selected_raw_item_ids.append(row.raw_item_id)
 
-            draft = calculate_standard_price(
+        draft = calculate_standard_price(
+            session,
+            item.id,
+            raw_item_ids=selected_raw_item_ids,
+        )
+        current_price = current_standard_price_version(session, item.id)
+        if (
+            current_price is None
+            or current_price.draft_fingerprint != draft.fingerprint
+        ):
+            approve_standard_price(
                 session,
                 item.id,
+                expected_fingerprint=draft.fingerprint,
+                expected_current_version_id=(
+                    None if current_price is None else current_price.id
+                ),
+                approved_by=BUILD_ACTOR,
                 raw_item_ids=selected_raw_item_ids,
             )
-            current_price = current_standard_price_version(session, item.id)
-            if (
-                current_price is None
-                or current_price.draft_fingerprint != draft.fingerprint
-            ):
-                approve_standard_price(
-                    session,
-                    item.id,
-                    expected_fingerprint=draft.fingerprint,
-                    expected_current_version_id=(
-                        None if current_price is None else current_price.id
-                    ),
-                    approved_by=BUILD_ACTOR,
-                    raw_item_ids=selected_raw_item_ids,
-                )
-                created_price_versions += 1
-            standard_item_count += 1
-            observation_count += draft.observation_count
-            if draft.observation_count == 1:
-                single_observation_count += 1
+            created_price_versions += 1
+        standard_item_count += 1
+        observation_count += draft.observation_count
+        if draft.observation_count == 1:
+            single_observation_count += 1
 
-        result = StandardDatabaseBuildResult(
-            run_id=run.id,
-            standard_item_count=standard_item_count,
-            observation_count=observation_count,
-            single_observation_count=single_observation_count,
-            created_count=created_count,
-            reused_count=reused_count,
-            changed_count=changed_count,
-            unit_conflict_count=sum(
-                issue.code == "UNIT_CONFLICT" for issue in conflicts
-            ),
-            exclusions=tuple(exclusions),
-            conflicts=tuple(conflicts),
-            created_memberships=created_memberships,
-            created_price_versions=created_price_versions,
-        )
-        run.status = StandardBuildStatus.SUCCEEDED
-        run.counts_json = json.dumps(
-            _counts_payload(result),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        run.finished_at = utc_now()
-        session.flush()
-        return result
-    except Exception as error:
-        run.status = StandardBuildStatus.FAILED
-        run.error_detail = str(error)
-        run.finished_at = utc_now()
-        session.flush()
-        raise
+    result = StandardDatabaseBuildResult(
+        run_id=run.id,
+        standard_item_count=standard_item_count,
+        observation_count=observation_count,
+        single_observation_count=single_observation_count,
+        created_count=created_count,
+        reused_count=reused_count,
+        changed_count=changed_count,
+        unit_conflict_count=sum(
+            issue.code == "UNIT_CONFLICT" for issue in conflicts
+        ),
+        exclusions=tuple(exclusions),
+        conflicts=tuple(conflicts),
+        created_memberships=created_memberships,
+        created_price_versions=created_price_versions,
+    )
+    run.status = StandardBuildStatus.SUCCEEDED
+    run.counts_json = json.dumps(
+        _counts_payload(result),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    run.finished_at = utc_now()
+    session.flush()
+    return result

@@ -28,6 +28,8 @@ from app.pricing.service import (
 )
 from app.standard_database import (
     CALCULATION_VERSION,
+    ConcurrentStandardBuild,
+    DuplicateStandardKeyConflict,
     ManualMembershipConflict,
     NORMALIZATION_VERSION,
     RULE_VERSION,
@@ -697,6 +699,164 @@ def test_successful_run_is_not_reused_after_manual_reassignment(
     assert raised.value.raw_item_id == raw.id
     assert session.scalar(select(func.count(StandardDatabaseBuildRun.id))) == 1
     assert session.get(StandardDatabaseBuildRun, first.run_id) is not None
+
+
+def test_successful_run_is_not_reused_after_manual_rejection(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/rejected-after-build.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    raw, _ = _row(
+        session,
+        variant,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    first = build_standard_database(session)
+    session.commit()
+    original_membership = session.scalar(
+        select(ItemMembershipDecision).where(
+            ItemMembershipDecision.raw_item_id == raw.id
+        )
+    )
+    assert original_membership is not None
+    session.add(
+        ItemMembershipDecision(
+            raw_item_id=raw.id,
+            standard_item_id=None,
+            status=MembershipStatus.REJECTED,
+            method="MANUAL",
+            evidence_json='{"reason_detail":"buyer rejected grouping"}',
+            supersedes_decision_id=original_membership.id,
+            decided_by="buyer",
+        )
+    )
+    session.commit()
+    session.expunge_all()
+
+    with pytest.raises(ManualMembershipConflict) as raised:
+        build_standard_database(session)
+
+    assert raised.value.raw_item_id == raw.id
+    assert raised.value.current_standard_item_id is None
+    assert session.scalar(select(func.count(StandardDatabaseBuildRun.id))) == 1
+    assert session.get(StandardDatabaseBuildRun, first.run_id) is not None
+
+
+def test_duplicate_current_standard_key_blocks_successful_run_reuse(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/duplicate-key-after-build.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    _row(
+        session,
+        variant,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    first = build_standard_database(session)
+    session.commit()
+    duplicate = StandardItem()
+    session.add(
+        StandardItemVersion(
+            standard_item=duplicate,
+            version_number=1,
+            canonical_name="RELAY",
+            canonical_spec="24VDC",
+            canonical_unit="EA",
+            aliases_json="[]",
+            created_by="buyer",
+            change_reason="duplicate manual catalog key",
+        )
+    )
+    session.commit()
+    session.expunge_all()
+
+    with pytest.raises(DuplicateStandardKeyConflict) as raised:
+        build_standard_database(session)
+
+    assert raised.value.code == "DUPLICATE_STANDARD_KEY"
+    assert len(raised.value.standard_item_ids) == 2
+    assert session.scalar(select(func.count(StandardDatabaseBuildRun.id))) == 1
+    assert session.get(StandardDatabaseBuildRun, first.run_id) is not None
+
+
+def test_success_unique_race_rolls_back_savepoint_without_breaking_session(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/concurrent-build.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    _row(
+        session,
+        variant,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    session.commit()
+    original_flush = session.flush
+    injected = False
+
+    def flush_with_competing_success(*args, **kwargs) -> None:
+        nonlocal injected
+        completing_run = next(
+            (
+                row
+                for row in session.dirty
+                if isinstance(row, StandardDatabaseBuildRun)
+                and row.status is StandardBuildStatus.SUCCEEDED
+            ),
+            None,
+        )
+        if completing_run is not None and not injected:
+            injected = True
+            session.connection().exec_driver_sql(
+                """
+                INSERT INTO standard_database_build_run (
+                    input_fingerprint,
+                    rule_version,
+                    status,
+                    counts_json,
+                    started_at,
+                    finished_at
+                ) VALUES (?, ?, 'SUCCEEDED', '{}', CURRENT_TIMESTAMP,
+                          CURRENT_TIMESTAMP)
+                """,
+                (
+                    completing_run.input_fingerprint,
+                    completing_run.rule_version,
+                ),
+            )
+        original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(session, "flush", flush_with_competing_success)
+
+    with pytest.raises(ConcurrentStandardBuild):
+        build_standard_database(session)
+
+    assert injected
+    assert session.is_active
+    assert session.scalar(select(func.count(StandardDatabaseBuildRun.id))) == 0
+    assert session.scalar(select(func.count(StandardItem.id))) == 0
+    session.rollback()
 
 
 def test_build_fingerprint_includes_invalid_current_price_evidence(

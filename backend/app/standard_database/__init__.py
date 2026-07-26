@@ -9,6 +9,8 @@ from app.standard_database.models import (
     StandardDatabaseBuildRun,
 )
 from app.standard_database.service import (
+    ConcurrentStandardBuild,
+    DuplicateStandardKeyConflict,
     ManualMembershipConflict,
     NORMALIZATION_VERSION,
     RULE_VERSION,
@@ -21,6 +23,8 @@ from app.standard_database.service import (
 
 __all__ = [
     "CALCULATION_VERSION",
+    "ConcurrentStandardBuild",
+    "DuplicateStandardKeyConflict",
     "NORMALIZATION_VERSION",
     "RULE_VERSION",
     "EligibleHistoricalRow",
