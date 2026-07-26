@@ -238,7 +238,7 @@ export function StandardPricesPage() {
             <StandardItemDetail
               item={selected}
               observations={observations}
-              evidencePending={evidence.isPending}
+              evidencePending={evidence.isLoading}
               evidenceError={evidence.isError}
               evidenceNextError={evidence.isFetchNextPageError}
               retryEvidence={() => void evidence.refetch()}
@@ -388,6 +388,9 @@ function StandardItemDetail({
           { label: "최고", value: formatWon(price?.maximum ?? null) },
         ]}
       />
+      {price === null && (
+        <p className="inline-state">현재 생성된 표준단가가 없습니다.</p>
+      )}
 
       <dl className="standard-context-strip">
         <div><dt>공급사</dt><dd>{item.supplier_summary.join(", ") || "미등록"}</dd></div>

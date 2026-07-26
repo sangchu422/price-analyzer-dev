@@ -173,6 +173,61 @@ it("renders the standard DB as a read-only evidence explorer", async () => {
   );
 });
 
+it("shows an empty evidence state without requesting evidence when no price exists", async () => {
+  const requests: string[] = [];
+  const noPriceItem = {
+    ...sensor,
+    id: 14,
+    current_price_version_id: null,
+    observation_count: 0,
+    evidence_quality: null,
+    current_price: null,
+    current_version: {
+      ...sensor.current_version,
+      id: 24,
+      standard_item_id: 14,
+      canonical_name: "UNPRICED SENSOR",
+    },
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes("/api/catalog/standard-items?")) {
+        return jsonResponse({
+          items: [noPriceItem],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      if (url.includes("/standard-items/14/versions?")) {
+        return jsonResponse({
+          standard_item_id: 14,
+          versions: [],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/standard-prices");
+
+  expect(
+    await screen.findByRole("heading", { name: "UNPRICED SENSOR" }),
+  ).toBeVisible();
+  expect(screen.getByText("현재 생성된 표준단가가 없습니다.")).toBeVisible();
+  expect(screen.getByText("표시할 원본 근거가 없습니다.")).toBeVisible();
+  expect(screen.queryByText("근거를 불러오는 중…")).not.toBeInTheDocument();
+  expect(
+    requests.some((url) => url.includes("/standard-items/14/evidence?")),
+  ).toBe(false);
+});
+
 it("searches and filters standard groups through the paginated API", async () => {
   const urls: string[] = [];
   vi.stubGlobal(
