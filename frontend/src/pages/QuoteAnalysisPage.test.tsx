@@ -22,7 +22,12 @@ const source = {
 
 function line(
   id: number,
-  assessment: "HIGH" | "WITHIN_RANGE" | "REVIEW_REQUIRED",
+  assessment:
+    | "HIGH"
+    | "WITHIN_RANGE"
+    | "REVIEW"
+    | "REVIEW_REQUIRED"
+    | "NOT_APPLICABLE",
   overrides: Record<string, unknown> = {},
 ) {
   const matched = assessment !== "REVIEW_REQUIRED";
@@ -73,6 +78,11 @@ const analysis = {
     ...Array.from({ length: 5 }, (_, index) =>
       line(index + 3, "WITHIN_RANGE"),
     ),
+    line(9, "REVIEW", {
+      reference_price: "100.000000",
+      variance_amount: "15.000000",
+      variance_percent: "15.000000",
+    }),
     line(8, "REVIEW_REQUIRED", {
       item_name: "SERVO MOTOR",
       spec: "SGMAH-04AAA61",
@@ -91,8 +101,8 @@ function successfulSubmission() {
     parser_name: "xlsx",
     parser_version: "reader-v1",
     status: "INGESTED",
-    raw_item_count: 8,
-    included_count: 8,
+    raw_item_count: 9,
+    included_count: 9,
     excluded_count: 0,
     review_required_count: 0,
   };
@@ -143,15 +153,126 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(upload.init?.headers).not.toMatchObject({
     "Content-Type": "application/json",
   });
-  expect(screen.getByText("총 8개 품목")).toBeVisible();
+  expect(screen.getByText("총 9개 품목")).toBeVisible();
   expect(screen.getByText("고가 2건")).toBeVisible();
   expect(screen.getByText("적정 5건")).toBeVisible();
+  expect(screen.getByText("가격 검토 1건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 1건")).toBeVisible();
   expect(screen.getByText("DeviceMart·Mouser DB/실시간 조회 연동 예정")).toBeVisible();
   const servo = screen.getByRole("row", { name: /SERVO MOTOR/ });
   expect(within(servo).getByText("시장가 확인 필요")).toBeVisible();
   expect(within(servo).getByText("판정대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
+});
+
+it("renders comparison basis, signed variance, and every operational status distinctly", async () => {
+  const statusLines = [
+    line(21, "HIGH", {
+      item_name: "MATCHED ITEM",
+      reference_price: "101.000000",
+      variance_amount: "30.000000",
+      variance_percent: "30.000000",
+    }),
+    line(22, "REVIEW_REQUIRED", {
+      item_name: "NO PRICE ITEM",
+      match_status: "MATCHED_NO_PRICE",
+      standard_item_id: 22,
+      standard_price_version_id: null,
+      market_price_lookup_required: false,
+      market_price_lookup_status: "NOT_REQUIRED",
+    }),
+    line(23, "REVIEW_REQUIRED", {
+      item_name: "NO MATCH ITEM",
+      match_status: "NO_MATCH",
+      standard_item_id: null,
+      market_price_lookup_required: true,
+      market_price_lookup_status: "FUTURE_MARKET_LOOKUP",
+    }),
+    line(24, "REVIEW_REQUIRED", {
+      item_name: "CANDIDATE ITEM",
+      match_status: "CANDIDATE",
+      standard_item_id: null,
+      market_price_lookup_required: false,
+      market_price_lookup_status: "NOT_REQUIRED",
+      candidates: [
+        {
+          standard_item_id: 44,
+          standard_item_version_id: 45,
+          canonical_name: "CANDIDATE STANDARD",
+          canonical_spec: "SPEC-24",
+          canonical_unit: "EA",
+          final_score: "0.91",
+          method: "LEXICAL",
+          matched_tokens: ["SPEC-24"],
+          embedding_status: "DISABLED",
+          embedding_model: null,
+        },
+      ],
+    }),
+    line(25, "NOT_APPLICABLE", {
+      item_name: "EXCLUDED ITEM",
+      match_status: "EXCLUDED",
+      standard_item_id: null,
+      market_price_lookup_required: false,
+      market_price_lookup_status: "NOT_REQUIRED",
+    }),
+    line(26, "REVIEW_REQUIRED", {
+      item_name: "CLEAN REVIEW ITEM",
+      match_status: "REVIEW_REQUIRED",
+      standard_item_id: null,
+      market_price_lookup_required: false,
+      market_price_lookup_status: "NOT_REQUIRED",
+    }),
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) =>
+      String(input) === "/api/submissions"
+        ? jsonResponse(
+            { ...successfulSubmission(), raw_item_count: 6 },
+            { status: 201 },
+          )
+        : jsonResponse({ ...analysis, lines: statusLines }),
+    ),
+  );
+  const user = userEvent.setup();
+  renderApp("/analysis");
+  await user.upload(
+    screen.getByLabelText("신규 견적서"),
+    new File(["quote"], "statuses.xlsx"),
+  );
+  await user.type(screen.getByLabelText("접수자"), "buyer");
+  await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+
+  expect(await screen.findByText("가격 검토 0건")).toBeVisible();
+  const matched = await screen.findByRole("row", { name: /MATCHED ITEM/ });
+  expect(within(matched).getByText("표준 DB 근거 매칭")).toBeVisible();
+  expect(within(matched).getByText("101원")).toBeVisible();
+  expect(within(matched).getByText("+30원")).toBeVisible();
+  expect(within(matched).getByText("+30%")).toBeVisible();
+  expect(
+    within(matched).getByRole("link", { name: "표준 가격 근거 보기" }),
+  ).toHaveAttribute("href", "/standard-prices?item_id=21&version_id=21");
+
+  const noPrice = screen.getByRole("row", { name: /NO PRICE ITEM/ });
+  expect(within(noPrice).getByText("표준단가 없음")).toBeVisible();
+  expect(within(noPrice).queryByRole("link")).not.toBeInTheDocument();
+  const noMatch = screen.getByRole("row", { name: /NO MATCH ITEM/ });
+  expect(within(noMatch).getByText("매칭 없음")).toBeVisible();
+  expect(within(noMatch).getByText("시장가 연동 예정")).toBeVisible();
+  expect(within(noMatch).queryByText(/조회 완료/)).not.toBeInTheDocument();
+  expect(
+    within(screen.getByRole("row", { name: /CANDIDATE ITEM/ }))
+      .getByText("유사 후보 검토"),
+  ).toBeVisible();
+  expect(
+    within(screen.getByRole("row", { name: /EXCLUDED ITEM/ }))
+      .getByText("정제 제외"),
+  ).toBeVisible();
+  expect(
+    within(screen.getByRole("row", { name: /CLEAN REVIEW ITEM/ }))
+      .getByText("정제 판정대기"),
+  ).toBeVisible();
 });
 
 it("validates required inputs before making a request", async () => {

@@ -1319,7 +1319,7 @@
 
 .decision-summary {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   border-bottom: 1px solid #dfe3e8;
 }
 
@@ -1354,6 +1354,10 @@
 
 .decision-summary .is-within strong {
   color: #197451;
+}
+
+.decision-summary .is-review strong {
+  color: #8a5a10;
 }
 
 .market-roadmap {
@@ -1413,7 +1417,7 @@
 
 .analysis-result-table {
   width: 100%;
-  min-width: 1180px;
+  min-width: 1460px;
   border-collapse: collapse;
   font-size: 10px;
 }
@@ -1485,6 +1489,45 @@
   white-space: nowrap;
 }
 
+.match-badge {
+  width: max-content;
+  padding: 4px 6px;
+  border: 1px solid #d0d5dd;
+  color: #475467;
+  background: #f9fafb;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.match-badge.is-matched {
+  border-color: #a8d6c1;
+  color: #176448;
+  background: #effaf4;
+}
+
+.match-badge.is-matched_no_price,
+.match-badge.is-candidate,
+.match-badge.is-review_required {
+  border-color: #ddc58d;
+  color: #7a4d0b;
+  background: #fffaeb;
+}
+
+.match-badge.is-no_match,
+.match-badge.is-excluded {
+  border-color: #d0d5dd;
+  color: #667085;
+}
+
+.market-required {
+  color: #8a5a10 !important;
+  font-weight: 750 !important;
+}
+
+.market-queued {
+  color: var(--analysis-accent) !important;
+}
+
 .line-evidence small {
   color: var(--analysis-muted);
   font: 9px/1.4 "IBM Plex Mono", monospace;
@@ -1510,10 +1553,10 @@
   }
 
   .decision-summary {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
   }
 
-  .decision-summary > div:nth-child(3) {
+  .decision-summary > div:nth-child(4) {
     border-right: 0;
   }
 

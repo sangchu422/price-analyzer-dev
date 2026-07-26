@@ -246,6 +246,10 @@ function AnalysisResults({
           <span>가격 판정</span>
           <strong>{`적정 ${metrics.within}건`}</strong>
         </div>
+        <div className="is-review">
+          <span>가격 판정</span>
+          <strong>{`가격 검토 ${metrics.review}건`}</strong>
+        </div>
         <div>
           <span>가격 판정</span>
           <strong>저가 {metrics.low}건</strong>
@@ -286,10 +290,12 @@ function AnalysisResults({
               <th>단위·수량</th>
               <th>견적 단가</th>
               <th>견적 금액</th>
+              <th>참조 기준가</th>
               <th>참조 최소·평균·최대</th>
-              <th>편차</th>
-              <th>근거</th>
-              <th>판정</th>
+              <th>편차 금액</th>
+              <th>편차율</th>
+              <th>매칭 / 근거</th>
+              <th>가격 판정</th>
             </tr>
           </thead>
           <tbody>
@@ -303,8 +309,10 @@ function AnalysisResults({
 }
 
 function AnalysisRow({ line }: { line: AnalysisLine }) {
-  const market = line.market_price_lookup_required;
-  const pending = line.assessment === "REVIEW_REQUIRED";
+  const hasPriceEvidence =
+    line.match_status === "MATCHED" &&
+    line.standard_item_id !== null &&
+    line.standard_price_version_id !== null;
   return (
     <tr>
       <td>
@@ -314,6 +322,7 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
       <td className="numeric">{line.unit ?? "—"} · {formatNumber(line.quantity)}</td>
       <td className="numeric">{formatMoney(line.quote_unit_price)}</td>
       <td className="numeric">{formatMoney(line.quote_amount)}</td>
+      <td className="numeric reference-basis">{formatMoney(line.reference_price)}</td>
       <td className="reference-range">
         {line.match_status === "MATCHED" ? (
           <>
@@ -323,15 +332,26 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
           </>
         ) : "—"}
       </td>
-      <td className="numeric">{line.variance_percent ? `${formatNumber(line.variance_percent)}%` : "—"}</td>
+      <td className="numeric">{formatSignedMoney(line.variance_amount)}</td>
+      <td className="numeric">{formatSignedPercent(line.variance_percent)}</td>
       <td>
         <div className="line-evidence">
-          {line.standard_item_id ? (
-            <a href={`/standard-prices?item_id=${line.standard_item_id}`}>
-              표준 DB #{line.standard_item_id}
+          <span className={`match-badge is-${line.match_status.toLowerCase()}`}>
+            {matchStatusLabel(line.match_status)}
+          </span>
+          {hasPriceEvidence ? (
+            <a
+              href={`/standard-prices?item_id=${line.standard_item_id}&version_id=${line.standard_price_version_id}`}
+              aria-label="표준 가격 근거 보기"
+            >
+              표준 DB #{line.standard_item_id} · v{line.standard_price_version_id}
             </a>
-          ) : (
-            <span className="muted">표준 근거 없음</span>
+          ) : null}
+          {line.market_price_lookup_status === "FUTURE_MARKET_LOOKUP" && (
+            <>
+              <small className="market-required">시장가 확인 필요</small>
+              <small className="market-queued">시장가 연동 예정</small>
+            </>
           )}
           <small>
             {line.source.sheet ?? "파일"} · {line.source.row ? `${line.source.row}행` : line.source.page ? `${line.source.page}쪽` : "위치 없음"}
@@ -341,9 +361,8 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
       <td>
         <div className="row-status">
           <span className={`assessment is-${line.assessment.toLowerCase()}`}>
-            {market ? "시장가 확인 필요" : assessmentLabels[line.assessment]}
+            {assessmentLabels[line.assessment]}
           </span>
-          {pending && <small>판정대기</small>}
         </div>
       </td>
     </tr>
@@ -415,4 +434,36 @@ function formatPercent(value: number) {
     style: "percent",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function formatSignedMoney(value: string | null) {
+  if (value === null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const formatted = new Intl.NumberFormat("ko-KR", {
+    maximumFractionDigits: 2,
+  }).format(Math.abs(number));
+  return `${number > 0 ? "+" : number < 0 ? "−" : ""}${formatted}원`;
+}
+
+function formatSignedPercent(value: string | null) {
+  if (value === null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const formatted = new Intl.NumberFormat("ko-KR", {
+    maximumFractionDigits: 2,
+  }).format(Math.abs(number));
+  return `${number > 0 ? "+" : number < 0 ? "−" : ""}${formatted}%`;
+}
+
+function matchStatusLabel(status: AnalysisLine["match_status"]) {
+  const labels: Record<AnalysisLine["match_status"], string> = {
+    MATCHED: "표준 DB 근거 매칭",
+    MATCHED_NO_PRICE: "표준단가 없음",
+    NO_MATCH: "매칭 없음",
+    CANDIDATE: "유사 후보 검토",
+    EXCLUDED: "정제 제외",
+    REVIEW_REQUIRED: "정제 판정대기",
+  };
+  return labels[status];
 }
