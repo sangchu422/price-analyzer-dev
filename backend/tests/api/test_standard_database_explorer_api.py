@@ -130,6 +130,129 @@ def _built_catalog(session: Session) -> int:
     return result.run_id
 
 
+def _seed_member_only_catalog(session: Session, count: int) -> None:
+    document = SourceDocument(logical_name="quotes/member-only.xlsx")
+    variant = SourceVariant(
+        document=document,
+        path="quotes/member-only.xlsx",
+        sha256="a" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        QuoteDocumentRole(
+            document_id=document.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            decided_by="fixture",
+            reason_detail="large catalog fixture",
+        )
+    )
+    for index in range(count):
+        name = f"ITEM-{index:04d}"
+        item = StandardItem()
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="Sheet1",
+            source_row=index + 1,
+            item_name_raw=name,
+            spec_raw="SPEC",
+            unit_raw="EA",
+            parser_name="xlsx",
+            parser_version="1",
+        )
+        session.add_all(
+            [
+                item,
+                StandardItemVersion(
+                    standard_item=item,
+                    version_number=1,
+                    canonical_name=name,
+                    canonical_spec="SPEC",
+                    canonical_unit="EA",
+                    aliases_json="[]",
+                    created_by="fixture",
+                ),
+                CleanDecision(
+                    raw_item=raw,
+                    status=CleanStatus.INCLUDED,
+                    reason_code="PRICE_MISSING",
+                    item_name_norm=name,
+                    spec_norm="SPEC",
+                    unit_norm="EA",
+                    unit_price=None,
+                    rule_version="clean-v1",
+                ),
+                ItemMembershipDecision(
+                    raw_item=raw,
+                    standard_item=item,
+                    status=MembershipStatus.MATCHED,
+                    method="FIXTURE",
+                    evidence_json="{}",
+                    decided_by="fixture",
+                ),
+            ]
+        )
+    session.commit()
+
+
+def _seed_priced_unique_rows(
+    session: Session,
+    count: int,
+) -> list[RawQuoteItem]:
+    document = SourceDocument(logical_name="quotes/unique-priced.xlsx")
+    variant = SourceVariant(
+        document=document,
+        path="quotes/unique-priced.xlsx",
+        sha256="b" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        QuoteDocumentRole(
+            document_id=document.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            decided_by="fixture",
+            reason_detail="filtered pagination fixture",
+        )
+    )
+    rows: list[RawQuoteItem] = []
+    for index in range(count):
+        name = f"FILTER-{index:04d}"
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="Sheet1",
+            source_row=index + 1,
+            item_name_raw=name,
+            spec_raw="SPEC",
+            unit_raw="EA",
+            parser_name="xlsx",
+            parser_version="1",
+        )
+        session.add(
+            CleanDecision(
+                raw_item=raw,
+                status=CleanStatus.INCLUDED,
+                reason_code="VALID",
+                item_name_norm=name,
+                spec_norm="SPEC",
+                unit_norm="EA",
+                unit_price=Decimal("100"),
+                rule_version="clean-v1",
+            )
+        )
+        rows.append(raw)
+    session.flush()
+    build_standard_database(session)
+    session.commit()
+    return rows
+
+
 def test_standard_catalog_explorer_exposes_current_price_and_provenance(
     client: TestClient,
     api_session: Session,
@@ -248,6 +371,100 @@ def test_standard_catalog_list_query_count_is_bounded(
     assert statements <= 8
 
 
+def test_standard_catalog_materializes_only_a_fixed_page_chunk(
+    client: TestClient,
+    api_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_member_only_catalog(api_session, 2_000)
+    api_session.expunge_all()
+    loaded_version_ids: list[int] = []
+    price_batch_sizes: list[int] = []
+
+    def record_load(
+        target: StandardItemVersion,
+        context: object,
+    ) -> None:
+        loaded_version_ids.append(target.id)
+
+    def no_prices(
+        session: Session,
+        standard_item_ids: object,
+    ) -> dict[int, StandardPriceVersion]:
+        item_ids = list(standard_item_ids)
+        price_batch_sizes.append(len(item_ids))
+        return {}
+
+    monkeypatch.setattr(
+        "app.standard_database.read_service.operational_standard_prices",
+        no_prices,
+    )
+    event.listen(StandardItemVersion, "load", record_load)
+    try:
+        first = client.get("/api/catalog/standard-items?limit=100")
+    finally:
+        event.remove(StandardItemVersion, "load", record_load)
+
+    assert first.status_code == 200, first.text
+    first_payload = first.json()
+    assert len(first_payload["items"]) == 100
+    assert first_payload["next_cursor"] is not None
+    assert len(loaded_version_ids) <= 128
+    assert price_batch_sizes and max(price_batch_sizes) <= 128
+
+
+def test_single_quality_pagination_skips_stale_chunks_without_gaps(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    rows = _seed_priced_unique_rows(api_session, 143)
+    for index, raw in enumerate(rows[:140]):
+        api_session.add(
+            CleanDecision(
+                raw_item_id=raw.id,
+                status=CleanStatus.INCLUDED,
+                reason_code="CORRECTED_PRICE",
+                item_name_norm=f"FILTER-{index:04d}",
+                spec_norm="SPEC",
+                unit_norm="EA",
+                unit_price=Decimal("101"),
+                rule_version="clean-v2",
+            )
+        )
+    api_session.commit()
+
+    first = client.get(
+        "/api/catalog/standard-items",
+        params={"limit": 2, "evidence_quality": "SINGLE_OBSERVATION"},
+    )
+    assert first.status_code == 200, first.text
+    first_payload = first.json()
+    first_names = [
+        row["current_version"]["canonical_name"]
+        for row in first_payload["items"]
+    ]
+    assert first_names == ["FILTER-0140", "FILTER-0141"]
+    assert first_payload["next_cursor"] is not None
+
+    second = client.get(
+        "/api/catalog/standard-items",
+        params={
+            "limit": 2,
+            "evidence_quality": "SINGLE_OBSERVATION",
+            "after_id": first_payload["next_cursor"],
+        },
+    )
+    assert second.status_code == 200, second.text
+    second_payload = second.json()
+    second_names = [
+        row["current_version"]["canonical_name"]
+        for row in second_payload["items"]
+    ]
+    assert second_names == ["FILTER-0142"]
+    assert second_payload["next_cursor"] is None
+    assert not set(first_names) & set(second_names)
+
+
 def test_member_count_includes_current_matched_rows_without_price_observation(
     client: TestClient,
     api_session: Session,
@@ -313,7 +530,20 @@ def test_member_count_includes_current_matched_rows_without_price_observation(
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
     assert item["member_count"] == 3
-    assert item["observation_count"] == 2
+    assert item["observation_count"] == 0
+    assert item["current_price_version_id"] is None
+
+    result = build_standard_database(api_session)
+    api_session.commit()
+    assert result.created_price_versions == 1
+
+    rebuilt = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    ).json()["items"][0]
+    assert rebuilt["member_count"] == 3
+    assert rebuilt["observation_count"] == 2
+    assert rebuilt["current_price"]["median"] == "110.000000"
 
 
 def test_catalog_hides_stale_standard_when_all_current_members_are_excluded(
@@ -595,6 +825,69 @@ def test_price_is_inactive_until_rebuild_matches_remaining_evidence(
         old_price.id,
         rebuilt["current_price_version_id"],
     ]
+
+
+def test_clean_value_change_hides_explorer_price_until_rebuild(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _built_catalog(api_session)
+    bearing = api_session.query(StandardItemVersion).filter_by(
+        canonical_name="BEARING"
+    ).one()
+    membership = (
+        api_session.query(ItemMembershipDecision)
+        .filter_by(
+            standard_item_id=bearing.standard_item_id,
+            status=MembershipStatus.MATCHED,
+        )
+        .order_by(ItemMembershipDecision.raw_item_id)
+        .first()
+    )
+    old_price = (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=bearing.standard_item_id)
+        .one()
+    )
+    api_session.add(
+        CleanDecision(
+            raw_item_id=membership.raw_item_id,
+            status=CleanStatus.INCLUDED,
+            reason_code="CORRECTED_PRICE",
+            item_name_norm="BEARING",
+            spec_norm="6204 ZZ",
+            unit_norm="EA",
+            unit_price=Decimal("200"),
+            maker_norm="SKF",
+            rule_version="clean-v2",
+        )
+    )
+    api_session.commit()
+
+    stale = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    ).json()["items"][0]
+    assert stale["member_count"] == 2
+    assert stale["current_price_version_id"] is None
+    assert stale["current_price"] is None
+
+    result = build_standard_database(api_session)
+    api_session.commit()
+    assert result.created_price_versions == 1
+
+    rebuilt = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    ).json()["items"][0]
+    assert rebuilt["current_price_version_id"] != old_price.id
+    assert rebuilt["current_price"]["median"] == "160.000000"
+    assert (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=bearing.standard_item_id)
+        .count()
+        == 2
+    )
 
 
 def test_evidence_pins_requested_price_version_across_new_approval(

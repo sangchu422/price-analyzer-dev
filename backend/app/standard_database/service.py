@@ -730,7 +730,6 @@ def _execute_standard_build(
         draft = calculate_standard_price(
             session,
             item.id,
-            raw_item_ids=selected_raw_item_ids,
         )
         current_price = current_standard_price_version(session, item.id)
         if (
@@ -745,7 +744,6 @@ def _execute_standard_build(
                     None if current_price is None else current_price.id
                 ),
                 approved_by=actor,
-                raw_item_ids=selected_raw_item_ids,
             )
             created_price_versions += 1
         standard_item_count += 1

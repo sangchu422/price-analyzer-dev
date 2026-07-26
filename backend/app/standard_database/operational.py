@@ -33,31 +33,30 @@ def _latest(parent_column, id_column, *, name: str):
     )
 
 
-def current_standard_member_counts(
-    session: Session,
-    standard_item_ids: Iterable[int] | None = None,
-) -> dict[int, int]:
-    """Count current matched, included rows from historical documents."""
+def current_standard_member_counts_subquery(*, name: str):
+    """Build the reusable current historical-member count relation."""
 
     latest_memberships = _latest(
         ItemMembershipDecision.raw_item_id,
         ItemMembershipDecision.id,
-        name="operational_latest_membership",
+        name=f"{name}_latest_membership",
     )
     latest_cleans = _latest(
         CleanDecision.raw_item_id,
         CleanDecision.id,
-        name="operational_latest_clean",
+        name=f"{name}_latest_clean",
     )
     latest_roles = _latest(
         QuoteDocumentRole.document_id,
         QuoteDocumentRole.id,
-        name="operational_latest_role",
+        name=f"{name}_latest_role",
     )
-    statement = (
+    return (
         select(
-            ItemMembershipDecision.standard_item_id,
-            func.count(ItemMembershipDecision.id),
+            ItemMembershipDecision.standard_item_id.label(
+                "standard_item_id"
+            ),
+            func.count(ItemMembershipDecision.id).label("member_count"),
         )
         .join(
             latest_memberships,
@@ -93,13 +92,29 @@ def current_standard_member_counts(
             == QuoteDocumentPurpose.HISTORICAL_REFERENCE,
         )
         .group_by(ItemMembershipDecision.standard_item_id)
+        .subquery(name)
+    )
+
+
+def current_standard_member_counts(
+    session: Session,
+    standard_item_ids: Iterable[int] | None = None,
+) -> dict[int, int]:
+    """Count current matched, included rows from historical documents."""
+
+    member_counts = current_standard_member_counts_subquery(
+        name="operational_member_counts"
+    )
+    statement = select(
+        member_counts.c.standard_item_id,
+        member_counts.c.member_count,
     )
     if standard_item_ids is not None:
         item_ids = tuple(dict.fromkeys(standard_item_ids))
         if not item_ids:
             return {}
         statement = statement.where(
-            ItemMembershipDecision.standard_item_id.in_(item_ids)
+            member_counts.c.standard_item_id.in_(item_ids)
         )
     return {
         standard_item_id: member_count
@@ -146,6 +161,7 @@ def operational_standard_prices(
             price.observation_count == len(current_ids)
             == len(captured_ids)
             and captured_ids == current_ids
+            and price.draft_fingerprint == draft.fingerprint
         ):
             operational[price.standard_item_id] = price
     return operational

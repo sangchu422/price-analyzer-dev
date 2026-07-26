@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import numpy as np
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.analysis.service import analyze_document
@@ -370,6 +370,135 @@ def test_stale_price_is_inactive_until_rebuild_captures_remaining_evidence() -> 
         assert rebuilt.match_status == "MATCHED"
         assert rebuilt.standard_price_version_id != old_price.id
         assert session.query(StandardPriceVersion).count() == 2
+
+
+def test_changed_clean_values_invalidate_price_until_rebuild() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        historical_rows: list[RawQuoteItem] = []
+        for index, price in enumerate(("100", "120"), start=1):
+            history = _document(session, f"history-value-{index}.xlsx")
+            session.add(
+                QuoteDocumentRole(
+                    document_id=history.id,
+                    purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                    decided_by="buyer",
+                    reason_detail="test historical price evidence",
+                )
+            )
+            raw, _, _ = _row(
+                session,
+                history,
+                row=index,
+                price=price,
+                item=item,
+            )
+            historical_rows.append(raw)
+        draft = calculate_standard_price(session, item.id)
+        old_price = approve_standard_price(
+            session,
+            item.id,
+            expected_fingerprint=draft.fingerprint,
+            expected_current_version_id=None,
+            approved_by="buyer",
+        )
+        incoming = _document(session, "incoming-value-change.xlsx")
+        _row(session, incoming, row=1, price="130")
+
+        session.add(
+            CleanDecision(
+                raw_item_id=historical_rows[0].id,
+                status=CleanStatus.INCLUDED,
+                reason_code="CORRECTED_PRICE",
+                item_name_norm="BEARING",
+                spec_norm="6204 ZZ",
+                unit_norm="EA",
+                unit_price=Decimal("200"),
+                maker_norm="SKF",
+                rule_version="clean-v2",
+            )
+        )
+        session.flush()
+
+        stale = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert stale.match_status == "MATCHED_NO_PRICE"
+        assert stale.standard_price_version_id is None
+        assert session.query(StandardPriceVersion).count() == 1
+
+        result = build_standard_database(session)
+        session.flush()
+        assert result.created_price_versions == 1
+
+        rebuilt = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert rebuilt.match_status == "MATCHED"
+        assert rebuilt.standard_price_version_id != old_price.id
+        assert rebuilt.reference_price == Decimal("160.000000")
+        assert session.query(StandardPriceVersion).count() == 2
+
+
+def test_equivalent_clean_supersession_still_follows_draft_fingerprint() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        old_price = _approve_reference_price(session, item, price="120")
+        historical_raw = session.scalar(
+            select(RawQuoteItem)
+            .join(ItemMembershipDecision)
+            .where(
+                ItemMembershipDecision.standard_item_id == item.id,
+                ItemMembershipDecision.status == MembershipStatus.MATCHED,
+            )
+        )
+        incoming = _document(session, "incoming-equivalent-clean.xlsx")
+        _row(session, incoming, row=1, price="130")
+
+        before = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert before.standard_price_version_id == old_price.id
+
+        session.add(
+            CleanDecision(
+                raw_item_id=historical_raw.id,
+                status=CleanStatus.INCLUDED,
+                reason_code="REAFFIRMED",
+                item_name_norm="BEARING",
+                spec_norm="6204 ZZ",
+                unit_norm="EA",
+                unit_price=Decimal("120"),
+                rule_version="clean-v2",
+            )
+        )
+        session.flush()
+
+        stale = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert stale.match_status == "MATCHED_NO_PRICE"
+        assert stale.standard_price_version_id is None
+
+        result = build_standard_database(session)
+        session.flush()
+        assert result.created_price_versions == 1
+        rebuilt = analyze_document(
+            session,
+            incoming.id,
+            deterministic_exact_match=True,
+        ).lines[0]
+        assert rebuilt.match_status == "MATCHED"
+        assert rebuilt.standard_price_version_id != old_price.id
+        assert rebuilt.reference_price == Decimal("120.000000")
 
 
 def test_candidate_never_applies_a_standard_price() -> None:

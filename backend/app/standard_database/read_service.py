@@ -25,9 +25,11 @@ from app.standard_database.models import (
     StandardDatabaseBuildRun,
 )
 from app.standard_database.operational import (
-    current_standard_member_counts,
+    current_standard_member_counts_subquery,
     operational_standard_prices,
 )
+
+EXPLORER_SCAN_CHUNK_SIZE = 128
 
 
 class EvidenceQuality(StrEnum):
@@ -141,59 +143,91 @@ def list_standard_explorer_items(
         StandardItemVersion.id,
         name="explorer_latest_item_version",
     )
-    member_counts = current_standard_member_counts(session)
-    eligible_item_ids = tuple(member_counts)
-    if not eligible_item_ids:
-        return [], None, latest_build_provenance(session)
-    statement = (
-        select(StandardItemVersion)
+    member_counts = current_standard_member_counts_subquery(
+        name="explorer_current_member_counts"
+    )
+    base_statement = (
+        select(
+            StandardItemVersion,
+            member_counts.c.member_count,
+        )
         .join(
             latest_versions,
             latest_versions.c.row_id == StandardItemVersion.id,
         )
-        .where(StandardItemVersion.standard_item_id.in_(eligible_item_ids))
-        .order_by(StandardItemVersion.standard_item_id)
+        .join(
+            member_counts,
+            member_counts.c.standard_item_id
+            == StandardItemVersion.standard_item_id,
+        )
     )
     if after_id is not None:
-        statement = statement.where(
+        base_statement = base_statement.where(
             StandardItemVersion.standard_item_id > after_id
         )
     if search and (needle := search.strip()):
         pattern = f"%{needle}%"
-        statement = statement.where(
+        base_statement = base_statement.where(
             or_(
                 StandardItemVersion.canonical_name.ilike(pattern),
                 StandardItemVersion.canonical_spec.ilike(pattern),
                 StandardItemVersion.canonical_unit.ilike(pattern),
             )
         )
-    versions = list(session.scalars(statement))
-    prices = operational_standard_prices(
-        session,
-        (version.standard_item_id for version in versions),
-    )
-    page = [
-        (
-            version,
-            prices.get(version.standard_item_id),
-            member_counts[version.standard_item_id],
+    page_candidates: list[
+        tuple[
+            StandardItemVersion,
+            StandardPriceVersion | None,
+            int,
+        ]
+    ] = []
+    scan_after = after_id
+    while len(page_candidates) < limit + 1:
+        chunk_statement = base_statement
+        if scan_after is not None:
+            chunk_statement = chunk_statement.where(
+                StandardItemVersion.standard_item_id > scan_after
+            )
+        chunk = list(
+            session.execute(
+                chunk_statement.order_by(
+                    StandardItemVersion.standard_item_id
+                ).limit(EXPLORER_SCAN_CHUNK_SIZE)
+            ).tuples()
         )
-        for version in versions
-    ]
-    if quality is EvidenceQuality.SINGLE_OBSERVATION:
-        page = [
-            row
-            for row in page
-            if row[1] is not None and row[1].observation_count == 1
-        ]
-    elif quality is EvidenceQuality.MULTI_OBSERVATION:
-        page = [
-            row
-            for row in page
-            if row[1] is not None and row[1].observation_count > 1
-        ]
-    has_more = len(page) > limit
-    page = page[:limit]
+        if not chunk:
+            break
+        scan_after = chunk[-1][0].standard_item_id
+        prices = operational_standard_prices(
+            session,
+            (version.standard_item_id for version, _ in chunk),
+        )
+        for version, member_count in chunk:
+            price = prices.get(version.standard_item_id)
+            if (
+                quality is EvidenceQuality.SINGLE_OBSERVATION
+                and (
+                    price is None
+                    or price.observation_count != 1
+                )
+            ):
+                continue
+            if (
+                quality is EvidenceQuality.MULTI_OBSERVATION
+                and (
+                    price is None
+                    or price.observation_count <= 1
+                )
+            ):
+                continue
+            page_candidates.append((version, price, member_count))
+            if len(page_candidates) == limit + 1:
+                break
+        if len(chunk) < EXPLORER_SCAN_CHUNK_SIZE:
+            break
+
+    has_more = len(page_candidates) > limit
+    page = page_candidates[:limit]
     if not page:
         return [], None, latest_build_provenance(session)
 
