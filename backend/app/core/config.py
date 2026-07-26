@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     project_root: Path = PROJECT_ROOT
     quote_folder: Path = Path("견적서")
     database_file: Path = Path("data/price_analyzer.sqlite3")
+    submission_folder: Path = Path("backend/.local/submissions")
+    submission_max_bytes: int = 25 * 1024 * 1024
     hchat_embedding_enabled: bool = False
     hchat_embedding_endpoint: str | None = None
     hchat_embedding_api_key: SecretStr | None = None
@@ -43,6 +45,10 @@ class Settings(BaseSettings):
     @property
     def embedding_index_path(self) -> Path:
         return self._resolve_from_project_root(self.embedding_index_file)
+
+    @property
+    def submission_path(self) -> Path:
+        return self._resolve_from_project_root(self.submission_folder)
 
     def _resolve_from_project_root(self, path: Path) -> Path:
         return path if path.is_absolute() else self.project_root / path

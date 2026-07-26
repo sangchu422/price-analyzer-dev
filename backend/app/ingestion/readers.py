@@ -14,6 +14,9 @@ from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
 
 
+SUPPORTED_QUOTE_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
+
+
 @dataclass(frozen=True)
 class ParsedRow:
     sheet: str | None

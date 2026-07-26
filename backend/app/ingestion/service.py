@@ -11,12 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.documents.models import SourceDocument, SourceVariant
-from app.ingestion.readers import ParsedRow, read_quote
+from app.ingestion.readers import (
+    SUPPORTED_QUOTE_EXTENSIONS,
+    ParsedRow,
+    read_quote,
+)
 from app.ingestion.source_selector import SourceGroup, build_source_groups
 from app.quotes.models import RawQuoteItem
 
 
-_SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".pdf"}
 _UNLOCKED_SUFFIX = "_보안해제"
 _PARSER_NAME = "quote-reader"
 _PARSER_VERSION = "reader-v1"
@@ -171,7 +174,7 @@ def _register_variant(
     selected_at_ingest: bool,
 ) -> SourceVariant:
     extension = source_path.suffix.lower()
-    if extension not in _SUPPORTED_EXTENSIONS:
+    if extension not in SUPPORTED_QUOTE_EXTENSIONS:
         raise ValueError(
             f"unsupported quote extension: {source_path.suffix}"
         )

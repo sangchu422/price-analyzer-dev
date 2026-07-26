@@ -10,6 +10,10 @@ from app.catalog.models import ItemMembershipDecision
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 def _document(
@@ -53,6 +57,15 @@ def _document(
             )
         )
     session.add(document)
+    session.flush()
+    session.add(
+        QuoteDocumentRole(
+            document_id=document.id,
+            purpose=QuoteDocumentPurpose.INCOMING_BID,
+            decided_by="test-submitter",
+            reason_detail="API analysis fixture",
+        )
+    )
     session.commit()
     return document
 

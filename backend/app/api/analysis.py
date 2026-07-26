@@ -7,6 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.service import (
@@ -21,6 +22,11 @@ from app.api.catalog import get_candidate_embedding_runtime
 from app.catalog.service import CandidateEmbeddingRuntime
 from app.core.config import settings
 from app.db.session import get_session
+from app.documents.models import SourceDocument
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 router = APIRouter()
@@ -48,6 +54,7 @@ class AnalysisDocumentListResponse(BaseModel):
 class AnalysisDocumentIdentityResponse(BaseModel):
     id: int
     logical_name: str
+    purpose: QuoteDocumentPurpose
 
 
 class AnalysisSourceResponse(BaseModel):
@@ -215,6 +222,7 @@ def _analyze(
     match_status: MatchStatus | set[MatchStatus] | None,
     assessment: Assessment | None = None,
 ) -> DocumentAnalysis:
+    _require_incoming_role(session, document_id)
     try:
         return analyze_document(
             session,
@@ -236,8 +244,33 @@ def _analysis_payload(result: DocumentAnalysis) -> dict[str, object]:
         "document": {
             "id": result.document_id,
             "logical_name": result.logical_name,
+            "purpose": QuoteDocumentPurpose.INCOMING_BID,
         },
         "lines": result.lines,
         "next_cursor": result.next_cursor,
         "limit": result.limit,
     }
+
+
+def _require_incoming_role(session: Session, document_id: int) -> None:
+    if session.get(SourceDocument, document_id) is None:
+        return
+    role = session.scalar(
+        select(QuoteDocumentRole)
+        .where(QuoteDocumentRole.document_id == document_id)
+        .order_by(QuoteDocumentRole.id.desc())
+        .limit(1)
+    )
+    if (
+        role is None
+        or role.purpose is not QuoteDocumentPurpose.INCOMING_BID
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "DOCUMENT_ROLE_MISMATCH",
+                "message": (
+                    "analysis accepts only current incoming bid documents"
+                ),
+            },
+        )

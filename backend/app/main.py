@@ -1,6 +1,13 @@
 from fastapi import FastAPI
 
-from app.api import analysis, catalog, cleansing, documents, pricing
+from app.api import (
+    analysis,
+    catalog,
+    cleansing,
+    documents,
+    pricing,
+    submissions,
+)
 from app.db import models as _models
 
 
@@ -29,6 +36,11 @@ app.include_router(
     analysis.router,
     prefix="/api/analysis",
     tags=["analysis"],
+)
+app.include_router(
+    submissions.router,
+    prefix="/api/submissions",
+    tags=["submissions"],
 )
 
 
