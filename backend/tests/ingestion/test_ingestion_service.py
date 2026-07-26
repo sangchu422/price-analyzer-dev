@@ -807,8 +807,8 @@ def test_pdf_raw_preflight_ignores_filter_text_in_comments_and_strings(
     quote = tmp_path / "lexical-comments.pdf"
     quote.write_bytes(
         b"%PDF-1.7\n"
-        b"% /Filter /RunLengthDecode\n"
-        b"1 0 obj << /Note (/Filter /LZWDecode) "
+        b"% /Filter /DCTDecode\n"
+        b"1 0 obj << /Note (/Filter /DCTDecode) "
         b"/Filter /FlateDecode >> endobj\n%%EOF\n"
     )
 
@@ -834,3 +834,83 @@ def test_pdf_raw_preflight_rejects_filter_chains_and_token_overflow(
     overflow.write_bytes(b"%PDF-1.7\n1 2 3 4 5 6 7\n")
     with pytest.raises(UnsafeQuoteFileError):
         read_quote(overflow)
+
+
+def test_pdf_raw_preflight_rejects_cr_only_hidden_filter_before_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    reader_called = False
+
+    def fail_reader(*args, **kwargs):
+        nonlocal reader_called
+        reader_called = True
+        raise AssertionError("PdfReader must not be constructed")
+
+    monkeypatch.setattr(readers, "PdfReader", fail_reader)
+    attack = tmp_path / "cr-comment-attack.pdf"
+    attack.write_bytes(
+        b"%PDF-1.7\r"
+        b"% harmless comment\r"
+        b"1 0 obj << /Filter /LZWDecode >> endobj\r%%EOF\r"
+    )
+
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(attack)
+    assert not reader_called
+
+
+def test_pdf_raw_preflight_does_not_skip_orphan_stream_decoy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    reader_called = False
+
+    def fail_reader(*args, **kwargs):
+        nonlocal reader_called
+        reader_called = True
+        raise AssertionError("PdfReader must not be constructed")
+
+    monkeypatch.setattr(readers, "PdfReader", fail_reader)
+    attack = tmp_path / "orphan-stream-decoy.pdf"
+    attack.write_bytes(
+        b"%PDF-1.7\nstream\n"
+        b"2 0 obj << /Type /ObjStm "
+        b"/Filter /Run#4cengthDecode >> endobj "
+        b"binary-endstream-decoy endstream\n"
+    )
+
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(attack)
+    assert not reader_called
+
+
+def test_pdf_raw_preflight_rejects_indirect_filter_and_false_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    reader_called = False
+
+    def fail_reader(*args, **kwargs):
+        nonlocal reader_called
+        reader_called = True
+        raise AssertionError("PdfReader must not be constructed")
+
+    monkeypatch.setattr(readers, "PdfReader", fail_reader)
+    attack = tmp_path / "indirect-filter.pdf"
+    attack.write_bytes(
+        b"%PDF-1.7\n"
+        b"1 0 obj << /Length 30 >> stream\n"
+        b"abc /Filter 9 0 R "
+        b"endstream false-boundary endstream\nendobj\n"
+    )
+
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(attack)
+    assert not reader_called

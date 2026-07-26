@@ -449,6 +449,7 @@ def _preflight_pdf_lexical(path: Path) -> None:
     data = path.read_bytes()
     if len(data) > MAX_PDF_RAW_BYTES:
         raise UnsafeQuoteFileError("pdf file exceeds safe raw byte limits")
+    _conservative_pdf_filter_prescan(data)
     tokens = _pdf_lexical_tokens(data)
     name_count = sum(token.kind == "name" for token in tokens)
     object_count = sum(
@@ -521,6 +522,8 @@ def _validate_lexical_filter(
 def _pdf_lexical_tokens(data: bytes) -> list[_PdfLexicalToken]:
     tokens: list[_PdfLexicalToken] = []
     array_children: list[int] = []
+    dictionary_starts: list[int] = []
+    candidate_stream_length: int | None = None
     index = 0
     while index < len(data):
         byte = data[index]
@@ -528,22 +531,41 @@ def _pdf_lexical_tokens(data: bytes) -> list[_PdfLexicalToken]:
             index += 1
             continue
         if byte == ord("%"):
-            newline = data.find(b"\n", index + 1)
-            index = len(data) if newline < 0 else newline + 1
+            index = _skip_pdf_comment(data, index + 1)
             continue
         if byte == ord("("):
+            candidate_stream_length = None
             index = _skip_pdf_literal_string(data, index + 1)
             continue
         if byte == ord("<") and not data.startswith(b"<<", index):
+            candidate_stream_length = None
             closing = data.find(b">", index + 1)
             index = len(data) if closing < 0 else closing + 1
             continue
         if data.startswith(b"<<", index) or data.startswith(b">>", index):
             token = data[index : index + 2].decode("ascii")
             index += 2
+            if token == "<<":
+                candidate_stream_length = None
+                if (
+                    len(dictionary_starts) + len(array_children) + 1
+                    > MAX_PDF_LEXICAL_DEPTH
+                ):
+                    raise UnsafeQuoteFileError(
+                        "pdf lexical nesting is too deep"
+                    )
+                dictionary_starts.append(len(tokens))
+            elif dictionary_starts:
+                dictionary_start = dictionary_starts.pop()
+                candidate_stream_length = _direct_pdf_stream_length(
+                    tokens[dictionary_start + 1 :]
+                )
+            else:
+                candidate_stream_length = None
             _append_pdf_token(tokens, "punct", token, array_children)
             continue
         if byte in b"[]{}":
+            candidate_stream_length = None
             token = chr(byte)
             index += 1
             if token == "[":
@@ -560,6 +582,7 @@ def _pdf_lexical_tokens(data: bytes) -> list[_PdfLexicalToken]:
             _append_pdf_token(tokens, "punct", token, array_children)
             continue
         if byte == ord("/"):
+            candidate_stream_length = None
             end = _pdf_token_end(data, index + 1)
             value = _decode_pdf_name(data[index + 1 : end])
             index = end
@@ -572,10 +595,133 @@ def _pdf_lexical_tokens(data: bytes) -> list[_PdfLexicalToken]:
         value = data[index:end].decode("latin-1")
         index = end
         _append_pdf_token(tokens, "word", value, array_children)
-        if value == "stream":
-            closing = data.find(b"endstream", index)
-            index = len(data) if closing < 0 else closing + len(b"endstream")
+        if value == "stream" and candidate_stream_length is not None:
+            stream_start = _pdf_stream_data_start(data, index)
+            if (
+                stream_start is not None
+                and candidate_stream_length
+                <= len(data) - stream_start
+            ):
+                index = stream_start + candidate_stream_length
+            candidate_stream_length = None
+        else:
+            candidate_stream_length = None
     return tokens
+
+
+def _direct_pdf_stream_length(
+    dictionary_tokens: list[_PdfLexicalToken],
+) -> int | None:
+    nesting = 0
+    lengths: list[int] = []
+    for index, token in enumerate(dictionary_tokens):
+        if token.kind == "punct":
+            if token.value in {"<<", "["}:
+                nesting += 1
+            elif token.value in {">>", "]"} and nesting:
+                nesting -= 1
+            continue
+        if (
+            nesting
+            or token.kind != "name"
+            or token.value != "Length"
+            or index + 1 >= len(dictionary_tokens)
+        ):
+            continue
+        value = dictionary_tokens[index + 1]
+        if value.kind != "word" or re.fullmatch(r"\d+", value.value) is None:
+            return None
+        if (
+            index + 3 < len(dictionary_tokens)
+            and dictionary_tokens[index + 2].kind == "word"
+            and re.fullmatch(
+                r"\d+",
+                dictionary_tokens[index + 2].value,
+            )
+            is not None
+            and dictionary_tokens[index + 3]
+            == _PdfLexicalToken("word", "R")
+        ):
+            return None
+        lengths.append(int(value.value))
+    if len(lengths) != 1 or lengths[0] > MAX_PDF_RAW_BYTES:
+        return None
+    return lengths[0]
+
+
+def _pdf_stream_data_start(data: bytes, index: int) -> int | None:
+    if data.startswith(b"\r\n", index):
+        return index + 2
+    if index < len(data) and data[index] in b"\r\n":
+        return index + 1
+    return None
+
+
+def _conservative_pdf_filter_prescan(data: bytes) -> None:
+    allowed = {"FlateDecode", "Fl", "DCTDecode", "JPXDecode"}
+    dangerous = {"RunLengthDecode", "RL", "LZWDecode", "LZW"}
+    for value, _, end in _raw_pdf_name_tokens(data):
+        if value in dangerous:
+            raise UnsafeQuoteFileError(
+                "pdf raw bytes contain an unsafe expansion filter"
+            )
+        if value != "Filter":
+            continue
+        cursor = end
+        while cursor < len(data) and data[cursor] in b"\x00\t\n\x0c\r ":
+            cursor += 1
+        if cursor >= len(data):
+            raise UnsafeQuoteFileError(
+                "pdf raw filter declaration is incomplete"
+            )
+        if data[cursor] == ord("["):
+            raise UnsafeQuoteFileError(
+                "pdf raw filter arrays and chains are unsafe"
+            )
+        if data[cursor] != ord("/"):
+            raise UnsafeQuoteFileError(
+                "pdf raw filter declaration is indirect or malformed"
+            )
+        value_end = _pdf_token_end(data, cursor + 1)
+        filter_name = _decode_pdf_name(data[cursor + 1 : value_end])
+        if filter_name not in allowed:
+            raise UnsafeQuoteFileError(
+                "pdf raw bytes declare an unsupported filter"
+            )
+
+
+def _raw_pdf_name_tokens(
+    data: bytes,
+) -> list[tuple[str, int, int]]:
+    names: list[tuple[str, int, int]] = []
+    index = 0
+    while index < len(data):
+        slash = data.find(b"/", index)
+        if slash < 0:
+            break
+        end = _pdf_token_end(data, slash + 1)
+        if end > slash + 1:
+            names.append(
+                (
+                    _decode_pdf_name(data[slash + 1 : end]),
+                    slash,
+                    end,
+                )
+            )
+        index = max(end, slash + 1)
+    return names
+
+
+def _skip_pdf_comment(data: bytes, index: int) -> int:
+    cr = data.find(b"\r", index)
+    lf = data.find(b"\n", index)
+    endings = [position for position in (cr, lf) if position >= 0]
+    if not endings:
+        return len(data)
+    ending = min(endings)
+    if data.startswith(b"\r\n", ending):
+        return ending + 2
+    return ending + 1
 
 
 def _append_pdf_token(
