@@ -94,7 +94,9 @@ class AnalysisLineResponse(BaseModel):
     item_name: str | None
     spec: str | None
     unit: str | None
+    quantity: Decimal | None
     quote_unit_price: Decimal | None
+    quote_amount: Decimal | None
     match_status: MatchStatus
     assessment: Assessment
     reference_price: Decimal | None
@@ -234,6 +236,7 @@ def _analyze(
             review_percent=settings.price_variance_review_percent,
             high_percent=settings.price_variance_high_percent,
             embedding_runtime=runtime,
+            deterministic_exact_match=True,
         )
     except AnalysisNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

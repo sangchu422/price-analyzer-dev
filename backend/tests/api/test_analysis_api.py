@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.catalog.models import ItemMembershipDecision
+from app.catalog.models import ItemMembershipDecision, StandardPriceVersion
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
@@ -14,6 +14,7 @@ from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
 )
+from app.standard_database.service import build_standard_database
 
 
 def _document(
@@ -105,6 +106,83 @@ def test_analysis_document_list_and_typed_detail(
     assert payload["lines"][0]["canonical_unit"] is None
     assert payload["lines"][0]["source"]["path"] == "quotes/new.xlsx"
     assert payload["next_cursor"] == payload["lines"][0]["raw_item_id"]
+
+
+def test_incoming_exact_key_uses_standard_price_without_membership_write(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    historical = SourceDocument(logical_name="historical.xlsx")
+    variant = SourceVariant(
+        document=historical,
+        path="historical.xlsx",
+        sha256="b" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    raw = RawQuoteItem(
+        source_variant=variant,
+        source_sheet="Sheet1",
+        source_row=1,
+        item_name_raw="CUSTOM ITEM 1",
+        spec_raw="ZZ-1",
+        unit_raw="EA",
+        quantity_raw="1",
+        unit_price_raw="80",
+        amount_raw="80",
+        parser_name="xlsx",
+        parser_version="reader-v1",
+    )
+    api_session.add(
+        CleanDecision(
+            raw_item=raw,
+            status=CleanStatus.INCLUDED,
+            reason_code="VALID",
+            item_name_norm="CUSTOM ITEM 1",
+            spec_norm="ZZ-1",
+            unit_norm="EA",
+            quantity=Decimal("1"),
+            unit_price=Decimal("80"),
+            amount=Decimal("80"),
+            rule_version="clean-v1",
+        )
+    )
+    api_session.flush()
+    api_session.add(
+        QuoteDocumentRole(
+            document_id=historical.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            decided_by="data-owner",
+            reason_detail="training evidence",
+        )
+    )
+    build_standard_database(api_session)
+    api_session.commit()
+    incoming = _document(api_session, rows=1)
+    before_memberships = api_session.scalar(
+        select(func.count(ItemMembershipDecision.id))
+    )
+    before_prices = api_session.scalar(
+        select(func.count(StandardPriceVersion.id))
+    )
+
+    response = client.get(
+        f"/api/analysis/documents/{incoming.id}?limit=100"
+    )
+
+    assert response.status_code == 200
+    line = response.json()["lines"][0]
+    assert line["match_status"] == "MATCHED"
+    assert line["membership_decision_id"] is None
+    assert line["quantity"] is None
+    assert line["quote_amount"] is None
+    assert api_session.scalar(
+        select(func.count(ItemMembershipDecision.id))
+    ) == before_memberships
+    assert api_session.scalar(
+        select(func.count(StandardPriceVersion.id))
+    ) == before_prices
 
 
 def test_analysis_list_excludes_historical_and_unclassified_documents(

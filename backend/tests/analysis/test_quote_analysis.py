@@ -80,6 +80,8 @@ def _row(
     name: str = "BEARING",
     spec: str = "6204 ZZ",
     price: str | None = "150",
+    quantity: str | None = "2",
+    amount: str | None = None,
     status: CleanStatus = CleanStatus.INCLUDED,
     item: StandardItem | None = None,
 ) -> tuple[RawQuoteItem, CleanDecision, ItemMembershipDecision | None]:
@@ -92,6 +94,8 @@ def _row(
         spec_raw=spec,
         unit_raw="EA",
         unit_price_raw=price,
+        quantity_raw=quantity,
+        amount_raw=amount,
         parser_name="xlsx",
         parser_version="reader-v1",
     )
@@ -103,6 +107,8 @@ def _row(
         spec_norm=spec,
         unit_norm="EA",
         unit_price=None if price is None else Decimal(price),
+        quantity=None if quantity is None else Decimal(quantity),
+        amount=None if amount is None else Decimal(amount),
         rule_version="clean-v1",
     )
     membership = None
@@ -119,6 +125,60 @@ def _row(
     session.add_all([raw, clean])
     session.flush()
     return raw, clean, membership
+
+
+def test_incoming_exact_normalized_key_is_compared_without_membership_mutation() -> None:
+    with _session() as session:
+        item, item_version = _item(session)
+        approved_price = _approve_reference_price(session, item)
+        quote = _document(session, "incoming-exact.xlsx")
+        raw, clean, _ = _row(
+            session,
+            quote,
+            row=9,
+            name=" bearing ",
+            spec="6204-zz",
+            price="132",
+            quantity="3",
+            amount="396",
+        )
+
+        before_memberships = session.query(ItemMembershipDecision).count()
+        line = analyze_document(
+            session, quote.id, deterministic_exact_match=True
+        ).lines[0]
+
+        assert line.match_status == "MATCHED"
+        assert line.standard_item_id == item.id
+        assert line.standard_item_version_id == item_version.id
+        assert line.standard_price_version_id == approved_price.id
+        assert line.membership_decision_id is None
+        assert line.quantity == Decimal("3.000000")
+        assert line.quote_amount == Decimal("396.000000")
+        assert line.raw_item_id == raw.id
+        assert line.clean_decision_id == clean.id
+        assert session.query(ItemMembershipDecision).count() == before_memberships
+
+
+def test_incoming_exact_key_does_not_attach_standard_to_excluded_row() -> None:
+    with _session() as session:
+        item, _ = _item(session)
+        _approve_reference_price(session, item)
+        quote = _document(session, "incoming-excluded.xlsx")
+        _row(
+            session,
+            quote,
+            row=10,
+            status=CleanStatus.EXCLUDED,
+        )
+
+        line = analyze_document(
+            session, quote.id, deterministic_exact_match=True
+        ).lines[0]
+
+        assert line.match_status == "EXCLUDED"
+        assert line.standard_item_id is None
+        assert line.standard_price_version_id is None
 
 
 def _approve_reference_price(

@@ -95,7 +95,9 @@ class AnalysisLine:
     item_name: str | None
     spec: str | None
     unit: str | None
+    quantity: Decimal | None
     quote_unit_price: Decimal | None
+    quote_amount: Decimal | None
     match_status: MatchStatus
     assessment: Assessment
     reference_price: Decimal | None
@@ -154,6 +156,7 @@ class _CatalogProjection:
     versions: dict[int, StandardItemVersion]
     prices: dict[int, StandardPriceVersion]
     candidate_items: tuple[CandidateItem, ...]
+    exact_versions: dict[tuple[str, str, str], StandardItemVersion]
 
 
 def list_analysis_documents(
@@ -262,6 +265,7 @@ def analyze_document(
     high_percent: Decimal = Decimal("20"),
     embedding_runtime: CandidateEmbeddingRuntime | None = None,
     top_n: int = 5,
+    deterministic_exact_match: bool = False,
 ) -> DocumentAnalysis:
     """Compare current parsed rows without creating catalog decisions."""
 
@@ -277,6 +281,7 @@ def analyze_document(
             high_percent=high_percent,
             embedding_runtime=embedding_runtime,
             top_n=top_n,
+            deterministic_exact_match=deterministic_exact_match,
         )
 
 
@@ -292,6 +297,7 @@ def _analyze_document(
     high_percent: Decimal,
     embedding_runtime: CandidateEmbeddingRuntime | None,
     top_n: int,
+    deterministic_exact_match: bool,
 ) -> DocumentAnalysis:
     _validate_detail_page(after_id=after_id, limit=limit, top_n=top_n)
     _validate_thresholds(review_percent, high_percent)
@@ -328,6 +334,7 @@ def _analyze_document(
             projection=projection,
             runtime=runtime,
             top_n=top_n,
+            skip_exact=deterministic_exact_match,
         )
         for raw, variant, clean, membership in rows:
             line = _classify_line(
@@ -340,6 +347,7 @@ def _analyze_document(
                 review_percent=review_percent,
                 high_percent=high_percent,
                 candidates=candidates_by_raw_id.get(raw.id, ()),
+                deterministic_exact_match=deterministic_exact_match,
             )
             if statuses is not None and line.match_status not in statuses:
                 continue
@@ -464,6 +472,16 @@ def _catalog_projection(session: Session) -> _CatalogProjection:
     )
     by_id = {version.standard_item_id: version for version in versions}
     prices_by_id = {price.standard_item_id: price for price in prices}
+    exact_candidates: dict[
+        tuple[str, str, str], list[StandardItemVersion]
+    ] = {}
+    for version in versions:
+        key = (
+            normalize_search_text(version.canonical_name),
+            normalize_search_text(version.canonical_spec),
+            normalize_search_text(version.canonical_unit),
+        )
+        exact_candidates.setdefault(key, []).append(version)
     return _CatalogProjection(
         versions=by_id,
         prices=prices_by_id,
@@ -477,6 +495,11 @@ def _catalog_projection(session: Session) -> _CatalogProjection:
             )
             for version in versions
         ),
+        exact_versions={
+            key: candidates[0]
+            for key, candidates in exact_candidates.items()
+            if len(candidates) == 1 and key[0]
+        },
     )
 
 
@@ -491,6 +514,7 @@ def _classify_line(
     review_percent: Decimal,
     high_percent: Decimal,
     candidates: tuple[AnalysisCandidate, ...],
+    deterministic_exact_match: bool,
 ) -> AnalysisLine:
     source = AnalysisSource(
         document_id=document.id,
@@ -512,6 +536,19 @@ def _classify_line(
         and membership.standard_item_id is not None
         else None
     )
+    if (
+        deterministic_exact_match
+        and matched_item_version is None
+        and clean is not None
+        and clean.status == CleanStatus.INCLUDED
+    ):
+        matched_item_version = projection.exact_versions.get(
+            (
+                normalize_search_text(clean.item_name_norm),
+                normalize_search_text(clean.spec_norm),
+                normalize_search_text(clean.unit_norm),
+            )
+        )
     base = {
         "raw_item_id": raw.id,
         "item_name": (
@@ -530,12 +567,18 @@ def _classify_line(
             else raw.unit_raw
         ),
         "quote_unit_price": None if clean is None else clean.unit_price,
+        "quantity": None if clean is None else clean.quantity,
+        "quote_amount": None if clean is None else clean.amount,
         "clean_decision_id": None if clean is None else clean.id,
         "membership_decision_id": (
             None if membership is None else membership.id
         ),
         "standard_item_id": (
-            None if membership is None else membership.standard_item_id
+            (
+                matched_item_version.standard_item_id
+                if membership is None and matched_item_version is not None
+                else None if membership is None else membership.standard_item_id
+            )
         ),
         "canonical_name": (
             None
@@ -566,12 +609,8 @@ def _classify_line(
             match_status="EXCLUDED",
             assessment="NOT_APPLICABLE",
         )
-    if (
-        membership is not None
-        and membership.status == MembershipStatus.MATCHED
-        and membership.standard_item_id is not None
-    ):
-        item_id = membership.standard_item_id
+    if matched_item_version is not None:
+        item_id = matched_item_version.standard_item_id
         item_version = projection.versions.get(item_id)
         price = projection.prices.get(item_id)
         if price is None:
@@ -639,7 +678,9 @@ def _unpriced_line(
     item_name: str | None,
     spec: str | None,
     unit: str | None,
+    quantity: Decimal | None,
     quote_unit_price: Decimal | None,
+    quote_amount: Decimal | None,
     clean_decision_id: int | None,
     membership_decision_id: int | None,
     standard_item_id: int | None,
@@ -658,7 +699,9 @@ def _unpriced_line(
         item_name=item_name,
         spec=spec,
         unit=unit,
+        quantity=quantity,
         quote_unit_price=quote_unit_price,
+        quote_amount=quote_amount,
         match_status=match_status,
         assessment=assessment,
         reference_price=None,
@@ -698,6 +741,7 @@ def _candidate_batch(
     projection: _CatalogProjection,
     runtime: CandidateEmbeddingRuntime,
     top_n: int,
+    skip_exact: bool = False,
 ) -> dict[int, tuple[AnalysisCandidate, ...]]:
     eligible: list[tuple[RawQuoteItem, CleanDecision, MatchQuery]] = []
     for raw, _, clean, membership in rows:
@@ -710,6 +754,12 @@ def _candidate_batch(
             continue
         name = clean.item_name_norm or raw.item_name_raw or ""
         if not normalize_search_text(name):
+            continue
+        if skip_exact and (
+            normalize_search_text(name),
+            normalize_search_text(clean.spec_norm),
+            normalize_search_text(clean.unit_norm),
+        ) in projection.exact_versions:
             continue
         eligible.append(
             (

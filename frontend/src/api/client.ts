@@ -332,7 +332,9 @@ export interface AnalysisLine {
   item_name: string | null;
   spec: string | null;
   unit: string | null;
+  quantity: string | null;
   quote_unit_price: string | null;
+  quote_amount: string | null;
   match_status: AnalysisMatchStatus;
   assessment: AnalysisAssessment;
   reference_price: string | null;
@@ -380,10 +382,27 @@ export interface AnalysisLine {
 }
 
 export interface DocumentAnalysis {
-  document: { id: number; logical_name: string };
+  document: {
+    id: number;
+    logical_name: string;
+    purpose: "INCOMING_BID";
+  };
   lines: AnalysisLine[];
   next_cursor: number | null;
   limit: number;
+}
+
+export interface SubmissionResponse {
+  document_id: number;
+  sha256: string;
+  purpose: "INCOMING_BID";
+  parser_name: string;
+  parser_version: string;
+  status: "INGESTED" | "UNCHANGED";
+  raw_item_count: number;
+  included_count: number;
+  excluded_count: number;
+  review_required_count: number;
 }
 
 interface ApiErrorDetail {
@@ -417,11 +436,14 @@ export class ApiError extends Error {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
   const response = await fetch(path, {
     ...init,
     headers: {
       Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !isFormData
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...init?.headers,
     },
   });
@@ -651,15 +673,17 @@ export function getDocumentAnalysis({
   matchStatus,
   assessment,
   afterId,
+  limit = 50,
   signal,
 }: {
   documentId: number;
   matchStatus?: AnalysisMatchStatus;
   assessment?: AnalysisAssessment;
   afterId?: number;
+  limit?: number;
   signal?: AbortSignal;
 }) {
-  const params = new URLSearchParams({ limit: "50" });
+  const params = new URLSearchParams({ limit: String(limit) });
   if (matchStatus) params.set("match_status", matchStatus);
   if (assessment) params.set("assessment", assessment);
   if (afterId !== undefined) params.set("after_id", String(afterId));
@@ -667,4 +691,40 @@ export function getDocumentAnalysis({
     `/api/analysis/documents/${documentId}?${params.toString()}`,
     { signal },
   );
+}
+
+export function submitIncomingBid(file: File, submittedBy: string) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("submitted_by", submittedBy);
+  return requestJson<SubmissionResponse>("/api/submissions", {
+    method: "POST",
+    body,
+  });
+}
+
+export async function getCompleteDocumentAnalysis(
+  documentId: number,
+  signal?: AbortSignal,
+) {
+  const lines: AnalysisLine[] = [];
+  let afterId: number | undefined;
+  let document: DocumentAnalysis["document"] | undefined;
+  do {
+    const page = await getDocumentAnalysis({
+      documentId,
+      afterId,
+      limit: 100,
+      signal,
+    });
+    document = page.document;
+    lines.push(...page.lines);
+    afterId = page.next_cursor ?? undefined;
+  } while (afterId !== undefined);
+  return {
+    document: document!,
+    lines,
+    next_cursor: null,
+    limit: 100,
+  } satisfies DocumentAnalysis;
 }
