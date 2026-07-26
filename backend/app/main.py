@@ -9,9 +9,11 @@ from app.api import (
     submissions,
 )
 from app.db import models as _models
+from app.middleware.submission_size import SubmissionBodyLimitMiddleware
 
 
 app = FastAPI(title="Price Analyzer", version="0.1.0")
+app.add_middleware(SubmissionBodyLimitMiddleware)
 app.include_router(
     documents.router,
     prefix="/api/documents",

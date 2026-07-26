@@ -6,9 +6,13 @@ import hashlib
 import ntpath
 import os
 import tempfile
+import threading
 import unicodedata
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import BinaryIO
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -50,6 +54,8 @@ _WINDOWS_RESERVED_BASENAMES = frozenset(
         *(f"LPT{number}" for number in range(1, 10)),
     }
 )
+_IDENTITY_LOCKS_GUARD = threading.Lock()
+_IDENTITY_LOCKS: dict[str, threading.Lock] = {}
 
 
 class SubmissionResponse(BaseModel):
@@ -66,7 +72,7 @@ class SubmissionResponse(BaseModel):
 
 
 @router.post("", response_model=SubmissionResponse, status_code=201)
-async def submit_bid(
+def submit_bid(
     file: UploadFile = File(...),
     submitted_by: str = Form(..., min_length=1, max_length=100),
     session: Session = Depends(get_session),
@@ -88,55 +94,65 @@ async def submit_bid(
         )
 
     root = settings.submission_path.resolve(strict=False)
-    try:
-        stored_path, digest = await _store_upload(
-            file,
-            root=root,
-            filename=filename,
-            maximum_bytes=settings.submission_max_bytes,
-        )
-    finally:
-        await file.close()
-
-    relative_path = stored_path.relative_to(root).as_posix()
-    existed = session.scalar(
-        select(func.count(SourceVariant.id)).where(
-            SourceVariant.path == relative_path
-        )
+    temporary, digest = _stage_upload(
+        file.file,
+        root=root,
+        maximum_bytes=settings.submission_max_bytes,
     )
     try:
-        variant = ingest_path(session, stored_path, root=root)
-        parsing_variant = parsing_variant_for(session, variant)
-        for raw_item in sorted(
-            parsing_variant.raw_items,
-            key=lambda item: item.id,
-        ):
-            apply_rules(session, raw_item)
-        session.flush()
-        role = _ensure_incoming_role(
-            session,
-            document_id=variant.document_id,
-            submitted_by=actor,
-        )
-        counts = _decision_counts(
-            session,
-            raw_item_ids=tuple(
-                row.id for row in parsing_variant.raw_items
-            ),
-        )
-        parser_name, parser_version = _parser_identity(parsing_variant)
-        session.commit()
-    except EXPECTED_INGESTION_ERRORS as exc:
-        session.rollback()
-        group = build_source_groups([stored_path], root=root)[0]
-        issue = ingestion_issue(group, exc, root=root)
-        raise _http_error(422, issue.error_code, issue.detail) from exc
-    except HTTPException:
-        session.rollback()
-        raise
-    except Exception:
-        session.rollback()
-        raise
+        with _submission_identity_lock(digest, filename):
+            stored_path = _place_staged_upload(
+                temporary,
+                root=root,
+                digest=digest,
+                filename=filename,
+            )
+            relative_path = stored_path.relative_to(root).as_posix()
+            existed = session.scalar(
+                select(func.count(SourceVariant.id)).where(
+                    SourceVariant.path == relative_path
+                )
+            )
+            try:
+                variant = ingest_path(session, stored_path, root=root)
+                parsing_variant = parsing_variant_for(session, variant)
+                for raw_item in sorted(
+                    parsing_variant.raw_items,
+                    key=lambda item: item.id,
+                ):
+                    apply_rules(session, raw_item)
+                session.flush()
+                role = _ensure_incoming_role(
+                    session,
+                    document_id=variant.document_id,
+                    submitted_by=actor,
+                )
+                counts = _decision_counts(
+                    session,
+                    raw_item_ids=tuple(
+                        row.id for row in parsing_variant.raw_items
+                    ),
+                )
+                parser_name, parser_version = _parser_identity(
+                    parsing_variant
+                )
+                session.commit()
+            except EXPECTED_INGESTION_ERRORS as exc:
+                session.rollback()
+                group = build_source_groups([stored_path], root=root)[0]
+                issue = ingestion_issue(group, exc, root=root)
+                raise _http_error(
+                    422, issue.error_code, issue.detail
+                ) from exc
+            except HTTPException:
+                session.rollback()
+                raise
+            except Exception:
+                session.rollback()
+                raise
+    finally:
+        temporary.unlink(missing_ok=True)
+        file.file.close()
 
     return {
         "document_id": variant.document_id,
@@ -150,6 +166,57 @@ async def submit_bid(
         "excluded_count": counts[CleanStatus.EXCLUDED],
         "review_required_count": counts[CleanStatus.REVIEW_REQUIRED],
     }
+
+
+def _canonical_filename_identity(filename: str) -> str:
+    return unicodedata.normalize("NFC", filename).casefold()
+
+
+@contextmanager
+def _submission_identity_lock(
+    digest: str,
+    filename: str,
+) -> Iterator[None]:
+    key = f"{digest}:{_canonical_filename_identity(filename)}"
+    with _IDENTITY_LOCKS_GUARD:
+        lock = _IDENTITY_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
+def _place_staged_upload(
+    temporary: Path,
+    *,
+    root: Path,
+    digest: str,
+    filename: str,
+) -> Path:
+    directory = root / digest
+    _assert_confined(directory, root)
+    directory.mkdir(parents=True, exist_ok=True)
+    identity = _canonical_filename_identity(filename)
+    aliases = sorted(
+        (
+            path
+            for path in directory.iterdir()
+            if path.is_file()
+            and _canonical_filename_identity(path.name) == identity
+        )
+    )
+    if aliases:
+        destination = aliases[0]
+        if _file_sha256(destination) != digest:
+            raise _http_error(
+                409,
+                "EVIDENCE_FILE_CONFLICT",
+                "stored evidence path contains different bytes",
+            )
+        temporary.unlink(missing_ok=True)
+        return destination
+    destination = directory / filename
+    _assert_confined(destination, root)
+    os.replace(temporary, destination)
+    return destination
 
 
 def _validated_filename(value: str | None) -> str:
@@ -166,10 +233,11 @@ def _validated_filename(value: str | None) -> str:
         or raw.endswith((" ", "."))
         or any(
             character in _WINDOWS_INVALID_FILENAME_CHARACTERS
-            or unicodedata.category(character) == "Cc"
+            or unicodedata.category(character) in {"Cc", "Cf"}
             for character in raw
         )
         or _windows_device_basename(raw)
+        or len(raw.encode("utf-8")) > 255
     ):
         raise _http_error(
             400,
@@ -184,11 +252,10 @@ def _windows_device_basename(filename: str) -> bool:
     return first_component in _WINDOWS_RESERVED_BASENAMES
 
 
-async def _store_upload(
-    upload: UploadFile,
+def _stage_upload(
+    upload: BinaryIO,
     *,
     root: Path,
-    filename: str,
     maximum_bytes: int,
 ) -> tuple[Path, str]:
     root.mkdir(parents=True, exist_ok=True)
@@ -202,7 +269,7 @@ async def _store_upload(
     size = 0
     try:
         with os.fdopen(descriptor, "wb") as stream:
-            while block := await upload.read(_CHUNK_SIZE):
+            while block := upload.read(_CHUNK_SIZE):
                 size += len(block)
                 if size > maximum_bytes:
                     raise _http_error(
@@ -220,21 +287,7 @@ async def _store_upload(
                 "EMPTY_UPLOAD",
                 "uploaded quote is empty",
             )
-        hexdigest = digest.hexdigest()
-        destination = root / hexdigest / filename
-        _assert_confined(destination, root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            if _file_sha256(destination) != hexdigest:
-                raise _http_error(
-                    409,
-                    "EVIDENCE_FILE_CONFLICT",
-                    "stored evidence path contains different bytes",
-                )
-            temporary.unlink()
-        else:
-            os.replace(temporary, destination)
-        return destination, hexdigest
+        return temporary, digest.hexdigest()
     except Exception:
         temporary.unlink(missing_ok=True)
         raise

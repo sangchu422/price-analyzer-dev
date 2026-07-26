@@ -107,6 +107,60 @@ def test_analysis_document_list_and_typed_detail(
     assert payload["next_cursor"] == payload["lines"][0]["raw_item_id"]
 
 
+def test_analysis_list_excludes_historical_and_unclassified_documents(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    incoming = _document(api_session, name="incoming.xlsx", rows=1)
+    historical = SourceDocument(logical_name="historical.xlsx")
+    unclassified = SourceDocument(logical_name="unclassified.xlsx")
+    api_session.add_all([historical, unclassified])
+    api_session.flush()
+    api_session.add(
+        QuoteDocumentRole(
+            document_id=historical.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            decided_by="data-owner",
+            reason_detail="training evidence",
+        )
+    )
+    api_session.commit()
+
+    response = client.get("/api/analysis/documents?limit=10")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["items"]] == [incoming.id]
+
+
+def test_analysis_list_uses_only_latest_document_role(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document = _document(api_session, name="reclassified.xlsx", rows=1)
+    current = api_session.scalar(
+        select(QuoteDocumentRole)
+        .where(QuoteDocumentRole.document_id == document.id)
+        .order_by(QuoteDocumentRole.id.desc())
+    )
+    api_session.add(
+        QuoteDocumentRole(
+            document_id=document.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            supersedes_role_id=current.id,
+            decided_by="data-owner",
+            reason_detail="corrected classification",
+        )
+    )
+    api_session.commit()
+
+    response = client.get("/api/analysis/documents?limit=10")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+    assert response.json()["items"] == []
+
+
 def test_detail_cursor_and_status_filter_are_stable(
     client: TestClient,
     api_session: Session,

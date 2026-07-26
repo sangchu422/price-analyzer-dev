@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import unicodedata
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +15,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import sessionmaker
 
 from app.catalog.models import (
     ItemMembershipDecision,
@@ -20,6 +25,8 @@ from app.catalog.models import (
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import settings
 from app.documents.models import SourceDocument, SourceVariant
+from app.db.session import get_session
+from app.main import app
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
@@ -173,6 +180,31 @@ def test_upload_preserves_valid_special_characters_without_name_collision(
     ).read_bytes() == content
 
 
+def test_case_and_unicode_equivalent_filename_reuses_first_evidence_name(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    submission_root = tmp_path / "submitted"
+    monkeypatch.setattr(settings, "submission_folder", submission_root)
+    content = _xlsx_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    first_name = "Café가격.xlsx"
+    alias_name = unicodedata.normalize("NFD", "CAFÉ가격.XLSX")
+
+    first = _post(client, content, filename=first_name)
+    alias = _post(client, content, filename=alias_name)
+
+    assert first.status_code == alias.status_code == 201
+    assert alias.json()["document_id"] == first.json()["document_id"]
+    assert alias.json()["status"] == "UNCHANGED"
+    assert (submission_root / digest / first_name).read_bytes() == content
+    assert not (submission_root / digest / alias_name).exists()
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 1
+    assert api_session.scalar(select(func.count(SourceVariant.id))) == 1
+
+
 @pytest.mark.parametrize(
     "filename",
     [
@@ -196,6 +228,102 @@ def test_upload_rejects_unsafe_windows_basenames(
 
     assert raised.value.status_code == 400
     assert raised.value.detail["error_code"] == "INVALID_FILENAME"
+
+
+def test_filename_component_utf8_boundary_and_format_controls() -> None:
+    from app.api.submissions import _validated_filename
+
+    valid = f"{'a' * 250}.xlsx"
+    assert len(valid.encode("utf-8")) == 255
+    assert _validated_filename(valid) == valid
+
+    for invalid in (f"{'a' * 251}.xlsx", "safe\u202ename.xlsx"):
+        with pytest.raises(HTTPException) as raised:
+            _validated_filename(invalid)
+        assert raised.value.status_code == 400
+        assert raised.value.detail["error_code"] == "INVALID_FILENAME"
+
+
+def test_request_body_limiter_rejects_before_multipart_ingestion(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    submission_root = tmp_path / "submitted"
+    monkeypatch.setattr(settings, "submission_folder", submission_root)
+    monkeypatch.setattr(settings, "submission_request_max_bytes", 100)
+
+    response = _post(client, _xlsx_bytes())
+
+    assert response.status_code == 413
+    assert (
+        response.json()["detail"]["error_code"]
+        == "REQUEST_BODY_TOO_LARGE"
+    )
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 0
+    assert not submission_root.exists()
+
+
+def test_xlsx_archive_bomb_is_rejected_without_database_rows(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    submission_root = tmp_path / "submitted"
+    monkeypatch.setattr(settings, "submission_folder", submission_root)
+    stream = BytesIO()
+    with zipfile.ZipFile(
+        stream, mode="w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", b"0" * 2_000_000)
+
+    response = _post(client, stream.getvalue(), filename="bomb.xlsx")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "UNSAFE_SOURCE"
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 0
+    assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 0
+
+
+def test_incomplete_xlsx_archive_returns_structured_422(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "submission_folder", tmp_path / "submitted")
+    stream = BytesIO()
+    with zipfile.ZipFile(
+        stream, mode="w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", b"<worksheet />")
+
+    response = _post(client, stream.getvalue(), filename="incomplete.xlsx")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "UNSAFE_SOURCE"
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 0
+
+
+def test_xlsx_dimension_limit_is_rejected_without_database_rows(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.ingestion import readers
+
+    monkeypatch.setattr(settings, "submission_folder", tmp_path / "submitted")
+    monkeypatch.setattr(readers, "MAX_XLSX_WORKSHEET_ROWS", 1)
+
+    response = _post(client, _xlsx_bytes(), filename="too-many-rows.xlsx")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "UNSAFE_SOURCE"
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 0
+    assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 0
 
 
 def test_upload_rejects_blank_actor_and_configured_size_limit(
@@ -287,6 +415,65 @@ def test_same_upload_is_idempotent(
     assert api_session.scalar(select(func.count(SourceVariant.id))) == 1
     assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 1
     assert api_session.scalar(select(func.count(CleanDecision.id))) == 1
+    assert api_session.scalar(select(func.count(QuoteDocumentRole.id))) == 1
+
+
+def test_concurrent_identical_uploads_converge_to_one_document(
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import submissions
+
+    monkeypatch.setattr(settings, "submission_folder", tmp_path / "submitted")
+    barrier = threading.Barrier(2)
+    original_stage = submissions._stage_upload
+
+    def synchronized_stage(*args, **kwargs):
+        result = original_stage(*args, **kwargs)
+        barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        submissions,
+        "_stage_upload",
+        synchronized_stage,
+    )
+    factory = sessionmaker(
+        bind=api_session.get_bind(),
+        autoflush=False,
+        expire_on_commit=False,
+    )
+
+    def override_session():
+        with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    content = _xlsx_bytes()
+    try:
+        with TestClient(app) as concurrent_client:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                responses = list(
+                    executor.map(
+                        lambda _: _post(concurrent_client, content),
+                        range(2),
+                    )
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert [response.status_code for response in responses] == [201, 201]
+    assert len(
+        {response.json()["document_id"] for response in responses}
+    ) == 1
+    assert sorted(response.json()["status"] for response in responses) == [
+        "INGESTED",
+        "UNCHANGED",
+    ]
+    api_session.rollback()
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 1
+    assert api_session.scalar(select(func.count(SourceVariant.id))) == 1
     assert api_session.scalar(select(func.count(QuoteDocumentRole.id))) == 1
 
 

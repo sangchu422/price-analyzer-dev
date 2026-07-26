@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     database_file: Path = Path("data/price_analyzer.sqlite3")
     submission_folder: Path = Path("backend/.local/submissions")
     submission_max_bytes: int = 25 * 1024 * 1024
+    submission_request_max_bytes: int = 26 * 1024 * 1024
     hchat_embedding_enabled: bool = False
     hchat_embedding_endpoint: str | None = None
     hchat_embedding_api_key: SecretStr | None = None

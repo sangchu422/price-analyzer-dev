@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import zipfile
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -15,6 +16,26 @@ from pypdf import PdfReader
 
 
 SUPPORTED_QUOTE_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
+MAX_XLSX_ARCHIVE_ENTRIES = 5_000
+MAX_XLSX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
+MAX_XLSX_COMPRESSION_RATIO = 200
+MAX_XLSX_WORKSHEETS = 200
+MAX_XLSX_WORKSHEET_ROWS = 200_000
+MAX_XLSX_WORKSHEET_COLUMNS = 500
+MAX_XLSX_WORKSHEET_CELLS = 2_000_000
+MAX_XLSX_TOTAL_CELLS = 5_000_000
+MAX_XLS_SHEETS = 200
+MAX_XLS_SHEET_ROWS = 200_000
+MAX_XLS_SHEET_COLUMNS = 500
+MAX_XLS_SHEET_CELLS = 2_000_000
+MAX_XLS_TOTAL_CELLS = 5_000_000
+REQUIRED_XLSX_ARCHIVE_ENTRIES = frozenset(
+    {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}
+)
+
+
+class UnsafeQuoteFileError(ValueError):
+    """A quote exceeds bounded local parsing resources."""
 
 
 @dataclass(frozen=True)
@@ -68,10 +89,28 @@ def read_quote(path: Path) -> list[ParsedRow]:
 
 
 def read_xlsx(path: Path) -> list[ParsedRow]:
+    _validate_xlsx_archive(path)
     workbook = load_workbook(path, data_only=True, read_only=True)
     try:
+        if len(workbook.worksheets) > MAX_XLSX_WORKSHEETS:
+            raise UnsafeQuoteFileError("xlsx has too many worksheets")
         parsed: list[ParsedRow] = []
+        total_cells = 0
         for sheet in workbook.worksheets:
+            cells = sheet.max_row * sheet.max_column
+            if (
+                sheet.max_row > MAX_XLSX_WORKSHEET_ROWS
+                or sheet.max_column > MAX_XLSX_WORKSHEET_COLUMNS
+                or cells > MAX_XLSX_WORKSHEET_CELLS
+            ):
+                raise UnsafeQuoteFileError(
+                    "xlsx worksheet dimensions exceed safe limits"
+                )
+            total_cells += cells
+            if total_cells > MAX_XLSX_TOTAL_CELLS:
+                raise UnsafeQuoteFileError(
+                    "xlsx total cell count exceeds safe limits"
+                )
             matrix = [
                 [cell.value for cell in row]
                 for row in sheet.iter_rows()
@@ -92,8 +131,26 @@ def read_xlsx(path: Path) -> list[ParsedRow]:
 
 def read_xls(path: Path) -> list[ParsedRow]:
     workbook = xlrd.open_workbook(str(path))
+    sheets = workbook.sheets()
+    if len(sheets) > MAX_XLS_SHEETS:
+        raise UnsafeQuoteFileError("xls has too many worksheets")
     parsed: list[ParsedRow] = []
-    for sheet in workbook.sheets():
+    total_cells = 0
+    for sheet in sheets:
+        cells = sheet.nrows * sheet.ncols
+        if (
+            sheet.nrows > MAX_XLS_SHEET_ROWS
+            or sheet.ncols > MAX_XLS_SHEET_COLUMNS
+            or cells > MAX_XLS_SHEET_CELLS
+        ):
+            raise UnsafeQuoteFileError(
+                "xls worksheet dimensions exceed safe limits"
+            )
+        total_cells += cells
+        if total_cells > MAX_XLS_TOTAL_CELLS:
+            raise UnsafeQuoteFileError(
+                "xls total cell count exceeds safe limits"
+            )
         matrix = [
             [sheet.cell_value(row, column) for column in range(sheet.ncols)]
             for row in range(sheet.nrows)
@@ -108,6 +165,50 @@ def read_xls(path: Path) -> list[ParsedRow]:
             )
         )
     return parsed
+
+
+def _validate_xlsx_archive(path: Path) -> None:
+    with zipfile.ZipFile(path) as archive:
+        entries = archive.infolist()
+        if len(entries) > MAX_XLSX_ARCHIVE_ENTRIES:
+            raise UnsafeQuoteFileError("xlsx archive has too many entries")
+        entry_names = {entry.filename for entry in entries}
+        if not REQUIRED_XLSX_ARCHIVE_ENTRIES <= entry_names:
+            raise UnsafeQuoteFileError(
+                "xlsx archive is missing required workbook entries"
+            )
+        total_uncompressed = 0
+        total_compressed = 0
+        for entry in entries:
+            total_uncompressed += entry.file_size
+            total_compressed += entry.compress_size
+            if (
+                entry.file_size > 0
+                and entry.compress_size == 0
+            ):
+                raise UnsafeQuoteFileError(
+                    "xlsx archive contains an invalid compressed entry"
+                )
+            if (
+                entry.compress_size > 0
+                and entry.file_size / entry.compress_size
+                > MAX_XLSX_COMPRESSION_RATIO
+            ):
+                raise UnsafeQuoteFileError(
+                    "xlsx archive entry compression ratio is unsafe"
+                )
+        if total_uncompressed > MAX_XLSX_UNCOMPRESSED_BYTES:
+            raise UnsafeQuoteFileError(
+                "xlsx archive expands beyond the safe byte limit"
+            )
+        if (
+            total_compressed > 0
+            and total_uncompressed / total_compressed
+            > MAX_XLSX_COMPRESSION_RATIO
+        ):
+            raise UnsafeQuoteFileError(
+                "xlsx archive compression ratio is unsafe"
+            )
 
 
 def read_pdf(path: Path) -> list[ParsedRow]:

@@ -29,6 +29,10 @@ from app.matching.candidates import (
 )
 from app.matching.normalization import normalize_search_text
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 MatchStatus = Literal[
@@ -162,9 +166,51 @@ def list_analysis_documents(
     """List logical documents with current cleansing counts in bounded queries."""
 
     _validate_list_page(limit=limit, offset=offset)
-    total = session.scalar(select(func.count(SourceDocument.id))) or 0
+    latest_role = (
+        select(
+            QuoteDocumentRole.document_id.label("document_id"),
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
+    incoming_documents = (
+        select(SourceDocument.id)
+        .join(
+            latest_role,
+            latest_role.c.document_id == SourceDocument.id,
+        )
+        .join(
+            QuoteDocumentRole,
+            QuoteDocumentRole.id == latest_role.c.role_id,
+        )
+        .where(
+            QuoteDocumentRole.purpose
+            == QuoteDocumentPurpose.INCOMING_BID
+        )
+    )
+    total = (
+        session.scalar(
+            select(func.count()).select_from(
+                incoming_documents.subquery()
+            )
+        )
+        or 0
+    )
     statement = (
         select(SourceDocument)
+        .join(
+            latest_role,
+            latest_role.c.document_id == SourceDocument.id,
+        )
+        .join(
+            QuoteDocumentRole,
+            QuoteDocumentRole.id == latest_role.c.role_id,
+        )
+        .where(
+            QuoteDocumentRole.purpose
+            == QuoteDocumentPurpose.INCOMING_BID
+        )
         .options(selectinload(SourceDocument.variants))
         .order_by(SourceDocument.id)
         .limit(limit + 1)

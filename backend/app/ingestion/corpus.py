@@ -25,11 +25,12 @@ from app.ingestion.service import (
     parsing_variant_for,
     sha256,
 )
+from app.ingestion.readers import (
+    SUPPORTED_QUOTE_EXTENSIONS,
+    UnsafeQuoteFileError,
+)
 from app.ingestion.source_selector import SourceGroup, build_source_groups
 from app.quotes.models import RawQuoteItem
-
-
-SUPPORTED_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,7 @@ def scan_supported_files(root: Path) -> list[Path]:
             path
             for path in root.rglob("*")
             if path.is_file()
-            and path.suffix.lower() in SUPPORTED_EXTENSIONS
+            and path.suffix.lower() in SUPPORTED_QUOTE_EXTENSIONS
             and not path.name.startswith("~$")
         ),
         key=lambda path: _relative_name(path, root).casefold(),
@@ -403,6 +404,7 @@ def prepare_source_groups(
 
 EXPECTED_INGESTION_ERRORS = (
     UnsupportedQuoteLayoutError,
+    UnsafeQuoteFileError,
     SourceFileChangedError,
     SourceEvidenceConflictError,
     BadZipFile,
@@ -419,7 +421,10 @@ def ingestion_issue(
     *,
     root: Path,
 ) -> CorpusIssue:
-    if isinstance(exc, UnsupportedQuoteLayoutError):
+    if isinstance(exc, UnsafeQuoteFileError):
+        code = "UNSAFE_SOURCE"
+        detail = "source exceeds bounded parsing safety limits"
+    elif isinstance(exc, UnsupportedQuoteLayoutError):
         code = "UNSUPPORTED_LAYOUT"
         detail = "source layout is not currently supported"
     elif isinstance(exc, SourceFileChangedError):
