@@ -1,3 +1,9 @@
+# ARCHIVED — 초기 BRD v1
+
+> **폐기된 문서 (2026-07-27):** 아래 내용은 초기 업무 구상 기록이며 현재
+> 제품 요구사항이 아니다. 현재 기준은 `DECISIONS.md`와
+> `superpowers/specs/2026-07-26-automatic-standard-database-design.md`다.
+
 # BRD (Business Requirements Document)
 # 협력사 견적 단가 AI 비교·분석 시스템
 

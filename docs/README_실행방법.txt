@@ -21,7 +21,8 @@
    동일 입력 재실행은 기존 성공 실행을 재사용한다.
 
 4. 백엔드 실행
-   > set DATABASE_FILE=backend/.local/price-analyzer.sqlite3
+   > $env:DATABASE_FILE = (Resolve-Path '.local\standard-item-migration-v2.sqlite3').Path
+   > $env:SUBMISSION_FOLDER = (Join-Path (Get-Location) '.local\submissions')
    > ..\.venv\Scripts\python -m uvicorn app.main:app --reload
 
 5. 프런트엔드 실행(별도 터미널)

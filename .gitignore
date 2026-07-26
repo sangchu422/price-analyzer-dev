@@ -5,8 +5,11 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-# .env intentionally tracked for cross-environment handoff
-# .env
+# Local environment files can contain credentials.
+.env
+**/.env
+!.env.example
+!**/.env.example
 .venv
 venv/
 

@@ -1,3 +1,11 @@
+# ARCHIVED — 초기 시제품 설계
+
+> **폐기된 문서 (2026-07-27):** 아래 내용은 Streamlit·PostgreSQL·Excel
+> 리포트를 전제로 작성한 초기 구상이며 현재 구현 요구사항이나 실행 절차가
+> 아니다. 현재 기준은 `DECISIONS.md`,
+> `superpowers/specs/2026-07-26-automatic-standard-database-design.md`,
+> `HANDOFF_2026-07-24.md`다.
+
 # DESIGN.md — 협력사 견적 단가 AI 분석 시스템
 
 > 참조: PRD_견적가비교분석시스템_v2.md, BRD_견적가비교분석시스템_v2.md, 엠로 기획안 (이미지 1~3)
@@ -59,7 +67,7 @@
 ┌──────────────────────────────────────────────────────────────┐
 │                     OUTPUT LAYER (예정)                      │
 │                                                              │
-│  검토 리포트 (Excel 다운로드)                                  │
+│  [폐기] 파일 리포트 출력 — 현재는 웹 분석 화면만 사용           │
 │  대시보드 (Streamlit MVP → React 정식)                        │
 │  단가 추이 그래프 (월별)                                       │
 └──────────────────────────────────────────────────────────────┘
@@ -164,7 +172,7 @@ Phase 2 (진행 예정)
   ⬜ AI 유사도 검색 (F-205)
   ⬜ FastAPI 백엔드
   ⬜ Streamlit 대시보드 (MVP UI)
-  ⬜ Excel 리포트 출력 (F-403)
+  ❌ 파일 리포트 출력 (F-403, 현재 요구사항에서 폐기)
 
 Phase 3
   ⬜ 할인 룰 엔진 (F-311)
@@ -303,7 +311,7 @@ Subagent는 메인 대화에서 `Agent` 도구로 생성하는 독립 에이전�
 
 | MCP 서버 | 제공 도구 | price_analyzer 활용 |
 |----------|-----------|-------------------|
-| `playwright@claude-plugins-official` | 브라우저 탐색, 스냅샷 | Streamlit MVP 파일 업로드 UI, 비교 테이블, Excel 다운로드 E2E 검증 |
+| `playwright@claude-plugins-official` | 브라우저 탐색, 스냅샷 | 초기 Streamlit MVP UI 검증 기록(현재 실행 절차 아님) |
 | `context7@claude-plugins-official` | 최신 라이브러리 문서 조회 | `sentence-transformers`, `FAISS`, `FastAPI` 문서 실시간 참조 |
 
 Phase 2 FastAPI 구현 시 `price_analyzer/.mcp.json`에 프로젝트 전용 MCP 서버 추가 가능 — PostgreSQL 쿼리 도구, 나라장터 API 호출 도구 등을 Claude에게 직접 노출.
