@@ -2,6 +2,10 @@
 
 현재 제품은 React + FastAPI + SQLite로 구성된 로컬 웹 애플리케이션이다.
 
+작업을 시작하면 먼저 `docs/HANDOFF_2026-07-24.md`의
+`사내 Claude 첫 작업 체크리스트`를 읽고 현재 브랜치·DB·실행 상태를
+확인한다. 실제 DB를 임의로 초기화하거나 archive 코드를 실행하지 않는다.
+
 ## 제품 흐름
 
 1. 과거 견적 원본을 `HISTORICAL_REFERENCE`로 수집하고 정제한다.
