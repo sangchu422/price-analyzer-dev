@@ -109,12 +109,26 @@ def assign_initial_historical_roles(
     """Classify the pre-existing corpus once, before the first build."""
 
     session.flush()
-    if session.scalar(select(func.count(QuoteDocumentRole.id))) != 0:
-        return 0
-    if session.scalar(select(func.count(StandardDatabaseBuildRun.id))) != 0:
+    succeeded = session.scalar(
+        select(func.count(StandardDatabaseBuildRun.id)).where(
+            StandardDatabaseBuildRun.status
+            == StandardBuildStatus.SUCCEEDED
+        )
+    )
+    if succeeded != 0:
         return 0
     document_ids = tuple(
-        session.scalars(select(SourceDocument.id).order_by(SourceDocument.id))
+        session.scalars(
+            select(SourceDocument.id)
+            .where(
+                ~select(QuoteDocumentRole.id)
+                .where(
+                    QuoteDocumentRole.document_id == SourceDocument.id
+                )
+                .exists()
+            )
+            .order_by(SourceDocument.id)
+        )
     )
     for document_id in document_ids:
         session.add(

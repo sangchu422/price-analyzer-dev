@@ -519,6 +519,137 @@ def test_standard_db_build_cli_commits_once_and_reports_repeatable_result(
         }
 
 
+def test_standard_db_bootstrap_preserves_incoming_and_classifies_only_unroled(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, local = _local_project(tmp_path, monkeypatch)
+    database = local / "mixed-roles.sqlite3"
+    report = local / "mixed-roles.json"
+    _write_quote(
+        root / "legacy.xlsx",
+        [["BEARING", "6204", "EA", 1, 100, 100]],
+    )
+    _write_quote(
+        root / "incoming.xlsx",
+        [["SENSOR", "PX-1", "EA", 1, 999, 999]],
+    )
+    assert main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    with Session(engine) as session:
+        incoming = session.scalar(
+            select(SourceDocument).where(
+                SourceDocument.logical_name == "incoming"
+            )
+        )
+        session.add(
+            QuoteDocumentRole(
+                document_id=incoming.id,
+                purpose=QuoteDocumentPurpose.INCOMING_BID,
+                decided_by="submission-api",
+                reason_detail="incoming fixture",
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+    exit_code = main(
+        [
+            "standard-db-build",
+            "--database-file",
+            str(database),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["groups"] == 1
+    assert payload["observations"] == 1
+    with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
+        roles = {
+            document.logical_name: role.purpose
+            for document, role in session.execute(
+                select(SourceDocument, QuoteDocumentRole).join(
+                    QuoteDocumentRole,
+                    QuoteDocumentRole.document_id == SourceDocument.id,
+                )
+            )
+        }
+        assert roles == {
+            "incoming": QuoteDocumentPurpose.INCOMING_BID,
+            "legacy": QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+        }
+
+
+def test_standard_db_build_cli_rolls_back_and_sanitizes_unexpected_error(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, local = _local_project(tmp_path, monkeypatch)
+    database = local / "unexpected.sqlite3"
+    report = local / "unexpected.json"
+    _write_quote(
+        root / "legacy.xlsx",
+        [["BEARING", "6204", "EA", 1, 100, 100]],
+    )
+    assert main(
+        [
+            "ingest",
+            "--quote-root",
+            str(root),
+            "--database-file",
+            str(database),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    def fail_after_bootstrap(*args, **kwargs):
+        raise ValueError(f"private failure at {tmp_path}")
+
+    monkeypatch.setattr("app.cli.build_standard_database", fail_after_bootstrap)
+    exit_code = main(
+        [
+            "standard-db-build",
+            "--database-file",
+            str(database),
+            "--report",
+            str(report),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert exit_code == 2
+    assert payload == {
+        "error_code": "STANDARD_DB_BUILD_ERROR",
+        "detail": "standard database build failed",
+    }
+    assert str(tmp_path) not in output
+    assert not report.exists()
+    with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
+        assert session.scalar(select(func.count(QuoteDocumentRole.id))) == 0
+        assert session.scalar(
+            select(func.count(StandardDatabaseBuildRun.id))
+        ) == 0
+
+
 def test_catalog_cli_rejects_original_and_output_alias_without_modification(
     tmp_path: Path,
     capsys,

@@ -335,6 +335,16 @@ def _run_standard_db_command(args: argparse.Namespace) -> int:
                     "standard database report could not be written",
                     json_output=args.json,
                 )
+            except (DBAPIError, sqlite3.DatabaseError):
+                session.rollback()
+                raise
+            except Exception:
+                session.rollback()
+                return _emit_error(
+                    "STANDARD_DB_BUILD_ERROR",
+                    "standard database build failed",
+                    json_output=args.json,
+                )
         _emit_catalog(payload, json_output=args.json)
         return EXIT_OK
     except (DBAPIError, sqlite3.DatabaseError) as exc:
