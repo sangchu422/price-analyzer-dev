@@ -79,3 +79,14 @@ it("keeps the cleansing review page and URL available", async () => {
   ).toHaveFocus();
   expect(window.location.pathname).toBe("/cleansing");
 });
+
+it("does not expose the legacy reconciliation page or navigation link", () => {
+  renderApp("/reconciliation");
+
+  expect(
+    screen.queryByRole("heading", { name: "기존 표준단가 대조" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("link", { name: "기존 DB 대조" }),
+  ).not.toBeInTheDocument();
+});
