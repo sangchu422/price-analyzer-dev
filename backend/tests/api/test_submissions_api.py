@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 from sqlalchemy import func, select
@@ -146,6 +147,55 @@ def test_upload_rejects_empty_unsupported_and_traversal_filenames(
     assert traversal.status_code == 400
     assert traversal.json()["detail"]["error_code"] == "INVALID_FILENAME"
     assert not (tmp_path / "escape.xlsx").exists()
+
+
+def test_upload_preserves_valid_special_characters_without_name_collision(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    submission_root = tmp_path / "submitted"
+    monkeypatch.setattr(settings, "submission_folder", submission_root)
+    content = _xlsx_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    exact_name = "RFQ#123+가격&조건.xlsx"
+    underscore_name = "RFQ_123_가격_조건.xlsx"
+
+    exact = _post(client, content, filename=exact_name)
+    underscore = _post(client, content, filename=underscore_name)
+
+    assert exact.status_code == 201
+    assert underscore.status_code == 201
+    assert exact.json()["document_id"] != underscore.json()["document_id"]
+    assert (submission_root / digest / exact_name).read_bytes() == content
+    assert (
+        submission_root / digest / underscore_name
+    ).read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "CON.xlsx",
+        "lpt1.xlsx",
+        "trailing-space.xlsx ",
+        "trailing-dot.xlsx.",
+        "bad\u0001name.xlsx",
+        "bad:name.xlsx",
+        r"C:\absolute.xlsx",
+        r"\\server\share.xlsx",
+    ],
+)
+def test_upload_rejects_unsafe_windows_basenames(
+    filename: str,
+) -> None:
+    from app.api.submissions import _validated_filename
+
+    with pytest.raises(HTTPException) as raised:
+        _validated_filename(filename)
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail["error_code"] == "INVALID_FILENAME"
 
 
 def test_upload_rejects_blank_actor_and_configured_size_limit(

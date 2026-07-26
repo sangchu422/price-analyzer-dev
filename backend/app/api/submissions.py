@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import ntpath
 import os
-import re
 import tempfile
 import unicodedata
 from collections import Counter
@@ -39,8 +38,18 @@ from app.standard_database.models import (
 
 router = APIRouter()
 
-_SAFE_FILENAME_CHARACTER = re.compile(r"[^\w .()\-]", re.UNICODE)
 _CHUNK_SIZE = 1024 * 1024
+_WINDOWS_INVALID_FILENAME_CHARACTERS = frozenset('<>:"/\\|?*')
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
+    }
+)
 
 
 class SubmissionResponse(BaseModel):
@@ -69,7 +78,7 @@ async def submit_bid(
             "INVALID_SUBMITTED_BY",
             "submitted_by must contain a non-whitespace actor name",
         )
-    filename = _sanitized_filename(file.filename)
+    filename = _validated_filename(file.filename)
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_QUOTE_EXTENSIONS:
         raise _http_error(
@@ -143,28 +152,36 @@ async def submit_bid(
     }
 
 
-def _sanitized_filename(value: str | None) -> str:
-    raw = unicodedata.normalize("NFKC", value or "").strip()
+def _validated_filename(value: str | None) -> str:
+    raw = value or ""
+    drive, _ = ntpath.splitdrive(raw)
     if (
         not raw
         or raw in {".", ".."}
+        or drive
+        or ntpath.isabs(raw)
         or "/" in raw
         or "\\" in raw
         or ntpath.basename(raw) != raw
+        or raw.endswith((" ", "."))
+        or any(
+            character in _WINDOWS_INVALID_FILENAME_CHARACTERS
+            or unicodedata.category(character) == "Cc"
+            for character in raw
+        )
+        or _windows_device_basename(raw)
     ):
         raise _http_error(
             400,
             "INVALID_FILENAME",
             "upload filename must be a plain basename",
         )
-    sanitized = _SAFE_FILENAME_CHARACTER.sub("_", raw).strip(" .")
-    if not sanitized or sanitized in {".", ".."}:
-        raise _http_error(
-            400,
-            "INVALID_FILENAME",
-            "upload filename has no safe characters",
-        )
-    return sanitized
+    return raw
+
+
+def _windows_device_basename(filename: str) -> bool:
+    first_component = filename.split(".", 1)[0].rstrip(" .").upper()
+    return first_component in _WINDOWS_RESERVED_BASENAMES
 
 
 async def _store_upload(
