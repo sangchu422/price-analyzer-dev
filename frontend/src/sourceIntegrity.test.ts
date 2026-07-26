@@ -6,12 +6,15 @@ import { describe, expect, it } from "vitest";
 const frontendRoot = resolve(process.cwd());
 const sourceRoot = join(frontendRoot, "src");
 const supportedExtensions = new Set([".ts", ".tsx", ".css", ".html"]);
-const mojibakeMarkers = [
-  [0x5360, 0xc465, 0xc637],
+const exactKoreanMojibakeCodePoints = [
+  [0x5360, 0xc3d9, 0xc619],
   [0xf9cf],
   [0x5bc3, 0x044a],
-  [0x003f, 0xc496, 0xc73c],
+  [0x003f, 0xc496],
   [0xfffd],
+] as const;
+const mojibakeMarkers = [
+  ...exactKoreanMojibakeCodePoints,
   [0x5a9b],
   [0x5bc3],
   [0xafb8, 0xc815],
@@ -41,15 +44,15 @@ function collectSourceFiles(directory: string): string[] {
 
 describe("frontend source integrity", () => {
   it("detects every known Korean mojibake marker and accepts clean Korean", () => {
-    const requiredMarkers = [
-      [0x5360, 0xc465, 0xc637],
-      [0xf9cf],
-      [0x5bc3, 0x044a],
-      [0x003f, 0xc496, 0xc73c],
-      [0xfffd],
-    ].map((points) => String.fromCodePoint(...points));
+    const requiredMarkers = exactKoreanMojibakeCodePoints.map((points) => ({
+      points,
+      marker: String.fromCodePoint(...points),
+    }));
 
-    for (const marker of requiredMarkers) {
+    for (const { marker, points } of requiredMarkers) {
+      expect(
+        Array.from(marker, (character) => character.codePointAt(0)),
+      ).toEqual(points);
       expect(containsSuspiciousMojibake(`앞${marker}뒤`)).toBe(true);
     }
     expect(containsSuspiciousMojibake("정상적인 신규 견적 분석 화면")).toBe(
