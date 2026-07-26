@@ -36,6 +36,7 @@ from app.standard_database import (
     StandardBuildStatus,
     StandardDatabaseBuildRun,
     build_standard_database,
+    eligible_historical_rows,
     standard_build_fingerprint,
 )
 
@@ -628,3 +629,48 @@ def test_reused_item_price_excludes_existing_incoming_bid_membership(
     assert price.average_price == Decimal("100.000000")
     assert price.maximum_price == Decimal("100.000000")
     assert [row.raw_item_id for row in observations] == [historical_raw.id]
+
+
+def test_build_flushes_pending_latest_clean_before_evidence_snapshot(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/pending-clean.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    raw, included = _row(
+        session,
+        variant,
+        row_number=2,
+        name="Bearing",
+        spec="6204 ZZ",
+        unit="EA",
+        price="100",
+    )
+    included_fingerprint = standard_build_fingerprint(
+        eligible_historical_rows(session)
+    )
+    pending_excluded = CleanDecision(
+        raw_item=raw,
+        status=CleanStatus.EXCLUDED,
+        reason_code="LATEST_EXCLUDED",
+        item_name_norm="Bearing",
+        spec_norm="6204 ZZ",
+        unit_norm="EA",
+        unit_price=Decimal("100"),
+        rule_version="clean-v2",
+    )
+    session.add(pending_excluded)
+
+    result = build_standard_database(session)
+
+    run = session.get(StandardDatabaseBuildRun, result.run_id)
+    assert pending_excluded.id is not None
+    assert pending_excluded.id > included.id
+    assert result.standard_item_count == 0
+    assert result.observation_count == 0
+    assert run is not None
+    assert run.input_fingerprint != included_fingerprint
+    session.rollback()
+    assert session.get(StandardDatabaseBuildRun, result.run_id) is None

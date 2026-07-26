@@ -314,6 +314,7 @@ def build_standard_database(
 
     from app.standard_database.fingerprint import standard_build_fingerprint
 
+    session.flush()
     with session.no_autoflush:
         evidence_rows, initial_exclusions = _load_historical_rows(session)
     fingerprint = standard_build_fingerprint(evidence_rows)
