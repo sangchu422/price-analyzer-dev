@@ -28,6 +28,7 @@ from app.pricing.service import (
 )
 from app.standard_database import (
     CALCULATION_VERSION,
+    ManualMembershipConflict,
     NORMALIZATION_VERSION,
     RULE_VERSION,
     EligibleHistoricalRow,
@@ -444,6 +445,190 @@ def test_build_marks_run_succeeded_without_committing(session: Session) -> None:
     assert json.loads(run.counts_json)["observation_count"] == 1
     session.rollback()
     assert session.get(StandardDatabaseBuildRun, result.run_id) is None
+
+
+def test_identical_build_reuses_successful_run_without_new_rows(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/idempotent.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    _row(
+        session,
+        variant,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+
+    first = build_standard_database(session)
+    session.commit()
+    counts_before = {
+        model: session.scalar(select(func.count(model.id)))
+        for model in (
+            StandardDatabaseBuildRun,
+            StandardItem,
+            ItemMembershipDecision,
+            StandardPriceVersion,
+        )
+    }
+
+    second = build_standard_database(session)
+    session.commit()
+
+    assert second.run_id == first.run_id
+    assert second.reused_run_id == first.run_id
+    assert second.created_standard_items == 0
+    assert second.created_memberships == 0
+    assert second.created_price_versions == 0
+    assert {
+        model: session.scalar(select(func.count(model.id)))
+        for model in counts_before
+    } == counts_before
+
+
+def test_identical_incoming_bid_does_not_change_build_fingerprint(
+    session: Session,
+) -> None:
+    historical = _source(
+        session,
+        name="quotes/historical-relay.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    _row(
+        session,
+        historical,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    first = build_standard_database(session)
+    first_run = session.get(StandardDatabaseBuildRun, first.run_id)
+    assert first_run is not None
+    first_fingerprint = first_run.input_fingerprint
+    session.commit()
+
+    incoming = _source(
+        session,
+        name="quotes/incoming-relay.xlsx",
+        purpose=QuoteDocumentPurpose.INCOMING_BID,
+    )
+    _row(
+        session,
+        incoming,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="999",
+    )
+    session.commit()
+
+    second = build_standard_database(session)
+    second_run = session.get(StandardDatabaseBuildRun, second.run_id)
+
+    assert second.reused_run_id == first.run_id
+    assert second_run is not None
+    assert second_run.input_fingerprint == first_fingerprint
+    assert second.observation_count == 1
+    assert session.scalar(select(func.count(StandardPriceVersion.id))) == 1
+
+
+def test_manual_membership_conflict_is_preflighted_before_any_build_write(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/manual-conflict.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    _row(
+        session,
+        variant,
+        row_number=2,
+        name="AAA Cable",
+        spec="1SQ",
+        unit="M",
+        price="10",
+    )
+    conflicting_raw, _ = _row(
+        session,
+        variant,
+        row_number=3,
+        name="ZZZ Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    deterministic_target = StandardItem()
+    manual_target = StandardItem()
+    session.add_all(
+        [
+            StandardItemVersion(
+                standard_item=deterministic_target,
+                version_number=1,
+                canonical_name="ZZZ RELAY",
+                canonical_spec="24VDC",
+                canonical_unit="EA",
+                aliases_json="[]",
+                created_by="buyer",
+                change_reason="deterministic exact target",
+            ),
+            StandardItemVersion(
+                standard_item=manual_target,
+                version_number=1,
+                canonical_name="MANUAL RELAY GROUP",
+                canonical_spec=None,
+                canonical_unit="EA",
+                aliases_json="[]",
+                created_by="buyer",
+                change_reason="human grouping",
+            ),
+            ItemMembershipDecision(
+                raw_item=conflicting_raw,
+                standard_item=manual_target,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json='{"reason_detail":"buyer decision"}',
+                decided_by="buyer",
+            ),
+        ]
+    )
+    session.commit()
+    counts_before = {
+        model: session.scalar(select(func.count(model.id)))
+        for model in (
+            StandardDatabaseBuildRun,
+            StandardItem,
+            ItemMembershipDecision,
+            StandardPriceVersion,
+        )
+    }
+
+    with pytest.raises(ManualMembershipConflict) as raised:
+        build_standard_database(session)
+
+    assert raised.value.raw_item_id == conflicting_raw.id
+    assert raised.value.current_standard_item_id == manual_target.id
+    assert raised.value.deterministic_standard_item_id == (
+        deterministic_target.id
+    )
+    assert not session.new
+    assert {
+        model: session.scalar(select(func.count(model.id)))
+        for model in counts_before
+    } == counts_before
+    session.rollback()
+    assert {
+        model: session.scalar(select(func.count(model.id)))
+        for model in counts_before
+    } == counts_before
 
 
 def test_build_fingerprint_includes_invalid_current_price_evidence(

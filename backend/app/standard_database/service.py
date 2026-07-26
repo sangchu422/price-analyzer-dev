@@ -47,6 +47,31 @@ NORMALIZATION_VERSION = "match-v1"
 BUILD_ACTOR = "LOCAL_STANDARD_DB_BUILD"
 
 
+class ManualMembershipConflict(RuntimeError):
+    """A historical row is already assigned to a different manual target."""
+
+    def __init__(
+        self,
+        *,
+        raw_item_id: int,
+        current_standard_item_id: int,
+        deterministic_standard_item_id: int | None,
+    ) -> None:
+        self.raw_item_id = raw_item_id
+        self.current_standard_item_id = current_standard_item_id
+        self.deterministic_standard_item_id = deterministic_standard_item_id
+        target = (
+            "a new deterministic standard item"
+            if deterministic_standard_item_id is None
+            else f"standard item {deterministic_standard_item_id}"
+        )
+        super().__init__(
+            f"raw item {raw_item_id} is currently MATCHED to standard item "
+            f"{current_standard_item_id}, not {target}; manual membership "
+            "requires review"
+        )
+
+
 @dataclass(frozen=True)
 class EligibleHistoricalRow:
     raw_item_id: int
@@ -90,6 +115,13 @@ class StandardDatabaseBuildResult:
     unit_conflict_count: int
     exclusions: tuple[StandardDatabaseBuildIssue, ...]
     conflicts: tuple[StandardDatabaseBuildIssue, ...]
+    created_memberships: int = 0
+    created_price_versions: int = 0
+    reused_run_id: int | None = None
+
+    @property
+    def created_standard_items(self) -> int:
+        return self.created_count
 
 
 def _latest_id(parent_column, id_column):
@@ -299,12 +331,112 @@ def _counts_payload(result: StandardDatabaseBuildResult) -> dict[str, object]:
         "created_count": result.created_count,
         "reused_count": result.reused_count,
         "changed_count": result.changed_count,
+        "created_memberships": result.created_memberships,
+        "created_price_versions": result.created_price_versions,
         "unit_conflict_count": result.unit_conflict_count,
         "exclusions": [asdict(issue) for issue in result.exclusions],
         "conflicts": [asdict(issue) for issue in result.conflicts],
         "normalization_version": NORMALIZATION_VERSION,
         "calculation_version": CALCULATION_VERSION,
     }
+
+
+def _issues_from_payload(value: object) -> tuple[StandardDatabaseBuildIssue, ...]:
+    if not isinstance(value, list):
+        return ()
+    issues: list[StandardDatabaseBuildIssue] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        evidence_value = item.get("evidence", ())
+        evidence = (
+            tuple(
+                (str(pair[0]), str(pair[1]))
+                for pair in evidence_value
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            )
+            if isinstance(evidence_value, (list, tuple))
+            else ()
+        )
+        issues.append(
+            StandardDatabaseBuildIssue(
+                code=str(item.get("code", "")),
+                detail=str(item.get("detail", "")),
+                raw_item_id=(
+                    item.get("raw_item_id")
+                    if isinstance(item.get("raw_item_id"), int)
+                    else None
+                ),
+                evidence=evidence,
+            )
+        )
+    return tuple(issues)
+
+
+def _reused_result(
+    run: StandardDatabaseBuildRun,
+) -> StandardDatabaseBuildResult:
+    try:
+        payload = json.loads(run.counts_json)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    def count(name: str) -> int:
+        value = payload.get(name, 0)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return 0
+
+    return StandardDatabaseBuildResult(
+        run_id=run.id,
+        standard_item_count=count("standard_item_count"),
+        observation_count=count("observation_count"),
+        single_observation_count=count("single_observation_count"),
+        created_count=0,
+        reused_count=count("reused_count"),
+        changed_count=0,
+        unit_conflict_count=count("unit_conflict_count"),
+        exclusions=_issues_from_payload(payload.get("exclusions")),
+        conflicts=_issues_from_payload(payload.get("conflicts")),
+        created_memberships=0,
+        created_price_versions=0,
+        reused_run_id=run.id,
+    )
+
+
+def _raise_membership_conflicts(
+    session: Session,
+    *,
+    groups: dict[tuple[str, str, str], list[EligibleHistoricalRow]],
+    current_versions: dict[
+        tuple[str, str, str], list[StandardItemVersion]
+    ],
+) -> None:
+    for key in sorted(groups):
+        versions = current_versions.get(key, [])
+        if len(versions) > 1:
+            continue
+        deterministic_standard_item_id = (
+            versions[0].standard_item_id if versions else None
+        )
+        for row in groups[key]:
+            membership = current_membership(session, row.raw_item_id)
+            if (
+                membership is not None
+                and membership.status is MembershipStatus.MATCHED
+                and membership.standard_item_id
+                != deterministic_standard_item_id
+            ):
+                assert membership.standard_item_id is not None
+                raise ManualMembershipConflict(
+                    raw_item_id=row.raw_item_id,
+                    current_standard_item_id=membership.standard_item_id,
+                    deterministic_standard_item_id=(
+                        deterministic_standard_item_id
+                    ),
+                )
 
 
 def build_standard_database(
@@ -318,12 +450,18 @@ def build_standard_database(
     with session.no_autoflush:
         evidence_rows, initial_exclusions = _load_historical_rows(session)
     fingerprint = standard_build_fingerprint(evidence_rows)
-    run = StandardDatabaseBuildRun(
-        input_fingerprint=fingerprint,
-        rule_version=RULE_VERSION,
+    succeeded_run = session.scalar(
+        select(StandardDatabaseBuildRun)
+        .where(
+            StandardDatabaseBuildRun.input_fingerprint == fingerprint,
+            StandardDatabaseBuildRun.rule_version == RULE_VERSION,
+            StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED,
+        )
+        .order_by(StandardDatabaseBuildRun.id)
+        .limit(1)
     )
-    session.add(run)
-    session.flush()
+    if succeeded_run is not None:
+        return _reused_result(succeeded_run)
 
     exclusions = list(initial_exclusions)
     groups: dict[
@@ -348,7 +486,22 @@ def build_standard_database(
 
     conflicts = _unit_conflicts(groups)
     current_versions = _current_versions_by_key(session)
+    with session.no_autoflush:
+        _raise_membership_conflicts(
+            session,
+            groups=groups,
+            current_versions=current_versions,
+        )
+
+    run = StandardDatabaseBuildRun(
+        input_fingerprint=fingerprint,
+        rule_version=RULE_VERSION,
+    )
+    session.add(run)
+    session.flush()
     created_count = 0
+    created_memberships = 0
+    created_price_versions = 0
     reused_count = 0
     changed_count = 0
     standard_item_count = 0
@@ -469,6 +622,7 @@ def build_standard_database(
                     decided_by=BUILD_ACTOR,
                     reason_detail=RULE_VERSION,
                 )
+                created_memberships += 1
                 selected_raw_item_ids.append(row.raw_item_id)
 
             draft = calculate_standard_price(
@@ -491,6 +645,7 @@ def build_standard_database(
                     approved_by=BUILD_ACTOR,
                     raw_item_ids=selected_raw_item_ids,
                 )
+                created_price_versions += 1
             standard_item_count += 1
             observation_count += draft.observation_count
             if draft.observation_count == 1:
@@ -509,6 +664,8 @@ def build_standard_database(
             ),
             exclusions=tuple(exclusions),
             conflicts=tuple(conflicts),
+            created_memberships=created_memberships,
+            created_price_versions=created_price_versions,
         )
         run.status = StandardBuildStatus.SUCCEEDED
         run.counts_json = json.dumps(

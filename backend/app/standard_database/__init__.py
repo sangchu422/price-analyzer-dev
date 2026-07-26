@@ -9,6 +9,7 @@ from app.standard_database.models import (
     StandardDatabaseBuildRun,
 )
 from app.standard_database.service import (
+    ManualMembershipConflict,
     NORMALIZATION_VERSION,
     RULE_VERSION,
     EligibleHistoricalRow,
@@ -23,6 +24,7 @@ __all__ = [
     "NORMALIZATION_VERSION",
     "RULE_VERSION",
     "EligibleHistoricalRow",
+    "ManualMembershipConflict",
     "QuoteDocumentPurpose",
     "QuoteDocumentRole",
     "StandardBuildStatus",
