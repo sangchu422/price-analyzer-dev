@@ -6,6 +6,7 @@ import re
 import threading
 import zipfile
 import zlib
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -569,7 +570,10 @@ def _pdf_lexical_tokens(data: bytes) -> list[_PdfLexicalToken]:
             token = chr(byte)
             index += 1
             if token == "[":
-                if len(array_children) >= MAX_PDF_LEXICAL_DEPTH:
+                if (
+                    len(dictionary_starts) + len(array_children) + 1
+                    > MAX_PDF_LEXICAL_DEPTH
+                ):
                     raise UnsafeQuoteFileError(
                         "pdf lexical nesting is too deep"
                     )
@@ -660,7 +664,15 @@ def _pdf_stream_data_start(data: bytes, index: int) -> int | None:
 def _conservative_pdf_filter_prescan(data: bytes) -> None:
     allowed = {"FlateDecode", "Fl", "DCTDecode", "JPXDecode"}
     dangerous = {"RunLengthDecode", "RL", "LZWDecode", "LZW"}
+    name_count = 0
+    # This deliberately scans every raw slash-name, including names in
+    # comments, strings, and stream bytes. A safe file can therefore be
+    # rejected, but an unsafe expansion filter cannot hide behind lexer
+    # context before a third-party PDF reader sees the bytes.
     for value, _, end in _raw_pdf_name_tokens(data):
+        name_count += 1
+        if name_count > MAX_PDF_LEXICAL_NAMES:
+            raise UnsafeQuoteFileError("pdf has too many raw names")
         if value in dangerous:
             raise UnsafeQuoteFileError(
                 "pdf raw bytes contain an unsafe expansion filter"
@@ -692,8 +704,7 @@ def _conservative_pdf_filter_prescan(data: bytes) -> None:
 
 def _raw_pdf_name_tokens(
     data: bytes,
-) -> list[tuple[str, int, int]]:
-    names: list[tuple[str, int, int]] = []
+) -> Iterator[tuple[str, int, int]]:
     index = 0
     while index < len(data):
         slash = data.find(b"/", index)
@@ -701,15 +712,12 @@ def _raw_pdf_name_tokens(
             break
         end = _pdf_token_end(data, slash + 1)
         if end > slash + 1:
-            names.append(
-                (
-                    _decode_pdf_name(data[slash + 1 : end]),
-                    slash,
-                    end,
-                )
+            yield (
+                _decode_pdf_name(data[slash + 1 : end]),
+                slash,
+                end,
             )
         index = max(end, slash + 1)
-    return names
 
 
 def _skip_pdf_comment(data: bytes, index: int) -> int:

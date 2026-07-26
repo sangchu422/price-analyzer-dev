@@ -914,3 +914,45 @@ def test_pdf_raw_preflight_rejects_indirect_filter_and_false_boundary(
     with pytest.raises(UnsafeQuoteFileError):
         read_quote(attack)
     assert not reader_called
+
+
+def test_pdf_raw_name_limit_rejects_before_contextual_lexing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    monkeypatch.setattr(readers, "MAX_PDF_LEXICAL_NAMES", 3)
+    raw_names = readers._raw_pdf_name_tokens(b"/a /b")
+    assert iter(raw_names) is raw_names
+
+    def fail_lexer(*args, **kwargs):
+        raise AssertionError("contextual lexer must not be reached")
+
+    monkeypatch.setattr(readers, "_pdf_lexical_tokens", fail_lexer)
+    attack = tmp_path / "many-raw-names.pdf"
+    attack.write_bytes(b"%PDF-1.7\n" + (b"/a " * 4))
+
+    with pytest.raises(UnsafeQuoteFileError, match="too many raw names"):
+        read_quote(attack)
+
+
+def test_pdf_raw_preflight_caps_combined_dictionary_and_array_depth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    class FakePdf:
+        pages = []
+
+    monkeypatch.setattr(readers, "MAX_PDF_LEXICAL_DEPTH", 2)
+    monkeypatch.setattr(readers, "PdfReader", lambda _: FakePdf())
+    attack = tmp_path / "combined-depth.pdf"
+    attack.write_bytes(
+        b"%PDF-1.7\n"
+        b"1 0 obj << /Kids [[ ]] >> endobj\n%%EOF\n"
+    )
+
+    with pytest.raises(UnsafeQuoteFileError, match="nesting is too deep"):
+        read_quote(attack)
