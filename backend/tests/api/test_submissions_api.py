@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from app.catalog.models import (
     ItemMembershipDecision,
     StandardItem,
+    StandardItemVersion,
     StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
@@ -129,6 +130,49 @@ def test_upload_ingests_incoming_bid_and_preserves_exact_evidence(
     assert document is not None
     assert _current_role(api_session, document.id).purpose is (
         QuoteDocumentPurpose.INCOMING_BID
+    )
+
+
+def test_uploaded_incoming_bid_cannot_be_matched_into_standard_database(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "submission_folder", tmp_path / "submitted")
+    uploaded = _post(client, _xlsx_bytes())
+    assert uploaded.status_code == 201
+    raw_item_id = api_session.scalar(select(RawQuoteItem.id))
+    item = StandardItem()
+    item.versions.append(
+        StandardItemVersion(
+            version_number=1,
+            canonical_name="RELAY",
+            canonical_spec="24VDC",
+            canonical_unit="EA",
+            created_by="buyer-a",
+        )
+    )
+    api_session.add(item)
+    api_session.commit()
+
+    response = client.post(
+        f"/api/catalog/raw-items/{raw_item_id}/memberships",
+        json={
+            "standard_item_id": item.id,
+            "status": "MATCHED",
+            "expected_current_decision_id": None,
+            "candidate_score": None,
+            "method": "MANUAL",
+            "evidence": {},
+            "decided_by": "buyer-a",
+            "reason_detail": "must be rejected because this is a new bid",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == (
+        "RAW_ITEM_NOT_HISTORICAL_REFERENCE"
     )
 
 

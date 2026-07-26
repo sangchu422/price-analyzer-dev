@@ -21,12 +21,17 @@ from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
 from app.pricing.service import (
+    NoEligiblePriceObservations,
     PriceDraftChanged,
     PriceStatistics,
     approve_standard_price,
     calculate_standard_price,
 )
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 def _session() -> Session:
@@ -63,6 +68,7 @@ def _observation(
     unit: str | None = "EA",
     supplier: str | None = None,
     quote_date: date | None = None,
+    purpose: QuoteDocumentPurpose = QuoteDocumentPurpose.HISTORICAL_REFERENCE,
 ) -> tuple[RawQuoteItem, CleanDecision, ItemMembershipDecision]:
     document = SourceDocument(logical_name=f"quote-{row}.xlsx")
     variant = SourceVariant(
@@ -112,6 +118,15 @@ def _observation(
         )
         session.add(document_metadata)
     session.add_all([document, clean, membership])
+    session.flush()
+    session.add(
+        QuoteDocumentRole(
+            document_id=document.id,
+            purpose=purpose,
+            decided_by="buyer",
+            reason_detail="test document purpose",
+        )
+    )
     session.flush()
     return raw, clean, membership
 
@@ -216,6 +231,68 @@ def test_one_observation_with_missing_metadata_has_empty_metadata_counts() -> No
             average=Decimal("100"),
             maximum=Decimal("100"),
         )
+
+
+def test_incoming_matched_membership_is_never_standard_price_evidence() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(
+            session,
+            item,
+            row=1,
+            price="999",
+            purpose=QuoteDocumentPurpose.INCOMING_BID,
+        )
+
+        with pytest.raises(NoEligiblePriceObservations):
+            calculate_standard_price(session, item.id)
+
+
+def test_draft_uses_historical_and_excludes_bypassed_incoming_membership() -> None:
+    with _session() as session:
+        item = _item(session)
+        historical, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            price="100",
+        )
+        incoming, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            price="999",
+            purpose=QuoteDocumentPurpose.INCOMING_BID,
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        observed_ids = tuple(row.raw_item_id for row in draft.observations)
+        assert observed_ids == (historical.id,)
+        assert incoming.id not in observed_ids
+
+
+def test_scoped_draft_rejects_incoming_raw_item_ids() -> None:
+    with _session() as session:
+        item = _item(session)
+        incoming, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            price="999",
+            purpose=QuoteDocumentPurpose.INCOMING_BID,
+        )
+
+        with pytest.raises(
+            NoEligiblePriceObservations,
+            match="historical",
+        ):
+            calculate_standard_price(
+                session,
+                item.id,
+                raw_item_ids=[incoming.id],
+            )
 
 
 def test_even_median_and_repeating_average_are_exact() -> None:

@@ -34,6 +34,10 @@ from app.db.types import EXACT_DECIMAL_MAX, EXACT_DECIMAL_QUANTUM
 from app.documents.models import SourceDocument, SourceVariant
 from app.matching.normalization import normalize_search_text
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 CALCULATION_VERSION = "INTERNAL_STANDARD_PRICE_V1"
@@ -300,6 +304,14 @@ def _current_evidence_rows(
         .group_by(DocumentMetadataVersion.source_document_id)
         .subquery()
     )
+    latest_role = (
+        select(
+            QuoteDocumentRole.document_id.label("document_id"),
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
     statement = (
         select(
             RawQuoteItem,
@@ -317,6 +329,14 @@ def _current_evidence_rows(
         .join(
             SourceDocument,
             SourceDocument.id == SourceVariant.document_id,
+        )
+        .join(
+            latest_role,
+            latest_role.c.document_id == SourceDocument.id,
+        )
+        .join(
+            QuoteDocumentRole,
+            QuoteDocumentRole.id == latest_role.c.role_id,
         )
         .outerjoin(
             latest_clean,
@@ -346,6 +366,10 @@ def _current_evidence_rows(
         .options(
             contains_eager(RawQuoteItem.source_variant)
             .contains_eager(SourceVariant.document)
+        )
+        .where(
+            QuoteDocumentRole.purpose
+            == QuoteDocumentPurpose.HISTORICAL_REFERENCE
         )
         .order_by(RawQuoteItem.id)
     )
@@ -446,7 +470,8 @@ def _draft_from_evidence_rows(
         )
     if not observations:
         raise NoEligiblePriceObservations(
-            "standard item has no eligible positive price observations"
+            "standard item has no eligible positive price observations "
+            "from current historical references"
         )
     supplier_count = len(
         {
@@ -645,6 +670,14 @@ def _current_evidence_rows_for_items(
         .group_by(DocumentMetadataVersion.source_document_id)
         .subquery()
     )
+    latest_role = (
+        select(
+            QuoteDocumentRole.document_id.label("document_id"),
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
     statement = (
         select(
             candidate_rows.c.target_standard_item_id,
@@ -666,6 +699,14 @@ def _current_evidence_rows_for_items(
         .join(
             SourceDocument,
             SourceDocument.id == SourceVariant.document_id,
+        )
+        .join(
+            latest_role,
+            latest_role.c.document_id == SourceDocument.id,
+        )
+        .join(
+            QuoteDocumentRole,
+            QuoteDocumentRole.id == latest_role.c.role_id,
         )
         .outerjoin(
             latest_clean,
@@ -691,6 +732,10 @@ def _current_evidence_rows_for_items(
         .outerjoin(
             DocumentMetadataVersion,
             DocumentMetadataVersion.id == latest_metadata.c.metadata_id,
+        )
+        .where(
+            QuoteDocumentRole.purpose
+            == QuoteDocumentPurpose.HISTORICAL_REFERENCE
         )
         .order_by(
             candidate_rows.c.target_standard_item_id,

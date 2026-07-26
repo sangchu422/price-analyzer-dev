@@ -19,7 +19,9 @@ class Settings(BaseSettings):
 
     project_root: Path = PROJECT_ROOT
     quote_folder: Path = Path("견적서")
-    database_file: Path = Path("data/price_analyzer.sqlite3")
+    database_file: Path = Path(
+        "backend/.local/standard-item-migration-v2.sqlite3"
+    )
     submission_folder: Path = Path("backend/.local/submissions")
     submission_max_bytes: int = 25 * 1024 * 1024
     submission_request_max_bytes: int = 26 * 1024 * 1024

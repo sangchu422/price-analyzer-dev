@@ -644,7 +644,7 @@ def test_standard_db_build_cli_rolls_back_and_sanitizes_unexpected_error(
     assert str(tmp_path) not in output
     assert json.loads(report.read_text(encoding="utf-8")) == payload
     with Session(create_engine(f"sqlite:///{database.as_posix()}")) as session:
-        assert session.scalar(select(func.count(QuoteDocumentRole.id))) == 0
+        assert session.scalar(select(func.count(QuoteDocumentRole.id))) == 1
         assert session.scalar(
             select(func.count(StandardDatabaseBuildRun.id))
         ) == 0

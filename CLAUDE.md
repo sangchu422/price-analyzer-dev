@@ -1,27 +1,53 @@
-# 협력사 견적 단가 AI 분석 시스템 — 작업 규칙
+# Price Analyzer 작업 기준
 
-협력사 견적서(Excel/PDF)를 파싱해 품목별 표준단가 DB를 구축하고, 신규 견적서의 단가 적정성을 AI로 자동 검토하는 시스템.
+현재 제품은 React + FastAPI + SQLite로 구성된 로컬 웹 애플리케이션이다.
 
-**핵심 파이프라인**
+## 제품 흐름
+
+1. 과거 견적 원본을 `HISTORICAL_REFERENCE`로 수집하고 정제한다.
+2. 최신 `INCLUDED` 행만 품명·사양·단위 기준으로 그룹화해 내부 표준 DB를
+   자동 구축한다.
+3. 웹 `/analysis`에서 신규 견적을 업로드한다. 신규 문서는
+   `INCOMING_BID`이며 표준 DB의 멤버나 가격 근거가 될 수 없다.
+4. 표준 DB에 가격 근거가 있으면 신규 견적 단가를 비교한다. 매칭이나 가격
+   근거가 없으면 검토 대기로 남긴다.
+
+## 현재 실행 경로
+
+- Backend: `backend/app`
+- Frontend: `frontend/src`
+- Alembic: `backend/alembic`
+- 단일 로컬 DB:
+  `backend/.local/standard-item-migration-v2.sqlite3`
+- 실행기: `scripts/start-local.ps1` 또는 `앱실행.bat`
+
+루트의 과거 Streamlit·Excel 프로토타입은
+`archive/legacy-excel-prototype/`에 역사 자료로만 보관한다. 그 코드를
+실행하거나 Excel 산출물을 현재 제품의 입력·검증·비교에 사용하지 않는다.
+
+## 개발 명령
+
+```powershell
+$repo = (Resolve-Path '.').Path
+$db = Join-Path $repo 'backend\.local\standard-item-migration-v2.sqlite3'
+$env:DATABASE_FILE = $db
+
+Push-Location backend
+try {
+  ..\.venv\Scripts\python -m alembic upgrade head
+  ..\.venv\Scripts\python -m pytest -q
+} finally {
+  Pop-Location
+}
+
+Push-Location frontend
+try {
+  npm test -- --run
+  npm run lint
+  npm run build
+} finally {
+  Pop-Location
+}
 ```
-견적서(xlsx/pdf) → parse_all.py → apply_rules.py → 표준단가DB_집계.json → build_db.py → 표준단가DB.xlsx
-```
 
----
-
-## 개발 환경
-
-- Python 3.x, openpyxl, pdfplumber
-- 실행: `python parse_all.py` → `python build_db.py`
-- 플랫폼: Windows (경로 구분자 주의)
-
----
-
-## 참조 문서
-
-| 문서 | 내용 |
-|------|------|
-| [`docs/PARSING_RULES.md`](docs/PARSING_RULES.md) | 견적서 파싱 규칙 상세 명세 (파서 종류, 규칙 절차, 데이터 품질, 출력 파일) |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | 시스템 설계 문서 |
-| [`docs/TODO.md`](docs/TODO.md) | 작업 목록 |
-| [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | AI 작업 행동 지침 |
+서버 설치, hChat 실연결, DeviceMart·Mouser 시장가 수집은 후속 단계다.

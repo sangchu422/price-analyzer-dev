@@ -11,10 +11,10 @@
 
 2. 과거 견적서 사전 점검과 적재
    > ..\.venv\Scripts\python -m app.cli preflight --quote-root ..\견적서
-   > ..\.venv\Scripts\python -m app.cli ingest --quote-root ..\견적서 --database-file .local\price-analyzer.sqlite3
+   > ..\.venv\Scripts\python -m app.cli ingest --quote-root ..\견적서 --database-file .local\standard-item-migration-v2.sqlite3
 
 3. 표준 DB 자동 구축
-   > ..\.venv\Scripts\python -m app.cli standard-db-build --database-file .local\price-analyzer.sqlite3
+   > ..\.venv\Scripts\python -m app.cli standard-db-build --database-file .local\standard-item-migration-v2.sqlite3
 
    최신 HISTORICAL_REFERENCE 문서의 최신 INCLUDED 원본 행만 사용한다.
    정규화된 품명·사양·단위 완전 일치 그룹을 만들며 근거 1건도 포함한다.

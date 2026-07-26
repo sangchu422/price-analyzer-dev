@@ -31,6 +31,10 @@ from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
 from app.embeddings.index import IndexMetadata, save_index
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 @pytest.fixture
@@ -46,6 +50,7 @@ def _raw_item(
     session: Session,
     *,
     status: CleanStatus = CleanStatus.INCLUDED,
+    purpose: QuoteDocumentPurpose = QuoteDocumentPurpose.HISTORICAL_REFERENCE,
 ) -> RawQuoteItem:
     document = SourceDocument(logical_name="quotes/sample.xlsx")
     variant = SourceVariant(
@@ -76,7 +81,19 @@ def _raw_item(
         unit_price=Decimal("120"),
         rule_version="clean-v1",
     )
-    session.add_all([document, decision])
+    session.add(document)
+    session.flush()
+    session.add_all(
+        [
+            decision,
+            QuoteDocumentRole(
+                document_id=document.id,
+                purpose=purpose,
+                decided_by="buyer-1",
+                reason_detail="test document purpose",
+            ),
+        ]
+    )
     session.commit()
     return raw
 
@@ -314,6 +331,56 @@ def test_only_currently_included_rows_can_receive_membership(
         )
 
     assert blocked.value.error_code == "RAW_ITEM_NOT_INCLUDED"
+
+
+def test_incoming_bid_cannot_receive_matched_membership(
+    session: Session,
+) -> None:
+    raw = _raw_item(
+        session,
+        purpose=QuoteDocumentPurpose.INCOMING_BID,
+    )
+    item = _standard_item(session)
+
+    with pytest.raises(CatalogConflict) as blocked:
+        append_membership_decision(
+            session,
+            raw_item_id=raw.id,
+            standard_item_id=item.id,
+            status=MembershipStatus.MATCHED,
+            expected_current_decision_id=None,
+            candidate_score=None,
+            method="MANUAL",
+            evidence={},
+            decided_by="buyer-1",
+            reason_detail="incoming bid must stay outside the standard DB",
+        )
+
+    assert blocked.value.error_code == "RAW_ITEM_NOT_HISTORICAL_REFERENCE"
+
+
+def test_incoming_bid_can_receive_manual_rejected_membership(
+    session: Session,
+) -> None:
+    raw = _raw_item(
+        session,
+        purpose=QuoteDocumentPurpose.INCOMING_BID,
+    )
+
+    row = append_membership_decision(
+        session,
+        raw_item_id=raw.id,
+        standard_item_id=None,
+        status=MembershipStatus.REJECTED,
+        expected_current_decision_id=None,
+        candidate_score=None,
+        method="MANUAL",
+        evidence={},
+        decided_by="buyer-1",
+        reason_detail="record analyst rejection without adding a standard",
+    )
+
+    assert row.status is MembershipStatus.REJECTED
 
 
 def test_member_projection_eager_loads_source_in_constant_queries(

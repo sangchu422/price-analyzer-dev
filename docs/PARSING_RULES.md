@@ -29,9 +29,9 @@ cd backend
 ..\.venv\Scripts\python -m app.cli preflight --quote-root ..\견적서
 ..\.venv\Scripts\python -m app.cli ingest `
   --quote-root ..\견적서 `
-  --database-file .local\price-analyzer.sqlite3
+  --database-file .local\standard-item-migration-v2.sqlite3
 ..\.venv\Scripts\python -m app.cli standard-db-build `
-  --database-file .local\price-analyzer.sqlite3
+  --database-file .local\standard-item-migration-v2.sqlite3
 ```
 
 `standard-db-build`는 동일 fingerprint와 규칙 버전의 성공 실행을 재사용한다.

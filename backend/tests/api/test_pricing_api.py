@@ -19,9 +19,22 @@ from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 from app.api.pricing import _safe_exclusion_context
 from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
     StandardBuildStatus,
     StandardDatabaseBuildRun,
 )
+
+
+def _historical_role(
+    document: SourceDocument,
+) -> QuoteDocumentRole:
+    return QuoteDocumentRole(
+        document_id=document.id,
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+        decided_by="buyer",
+        reason_detail="test historical reference",
+    )
 
 
 def _seed(session: Session) -> StandardItem:
@@ -80,6 +93,8 @@ def _seed(session: Session) -> StandardItem:
             decided_by="buyer",
         )
         session.add_all([document, clean, membership, metadata])
+        session.flush()
+        session.add(_historical_role(document))
     session.add(item)
     session.commit()
     return item
@@ -294,6 +309,8 @@ def test_price_history_returns_frozen_exclusion_audit(
         decided_by="buyer",
     )
     api_session.add_all([document, excluded, membership])
+    api_session.flush()
+    api_session.add(_historical_role(document))
     api_session.commit()
     draft = client.get(
         f"/api/pricing/standard-items/{item.id}/draft"
@@ -368,6 +385,7 @@ def test_price_history_cursor_pagination_and_bounded_queries(
         )
         api_session.add_all(
             [
+                document,
                 CleanDecision(
                     raw_item=raw,
                     status=CleanStatus.INCLUDED,
@@ -387,6 +405,8 @@ def test_price_history_cursor_pagination_and_bounded_queries(
                 ),
             ]
         )
+        api_session.flush()
+        api_session.add(_historical_role(document))
     api_session.commit()
     draft = client.get(
         f"/api/pricing/standard-items/{item.id}/draft"

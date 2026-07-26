@@ -1,41 +1,37 @@
-"""Append-only evidence and deterministic standard-database builds."""
+"""Public standard-database API without import-time service cycles."""
 
-from app.pricing.service import CALCULATION_VERSION
-from app.standard_database.fingerprint import standard_build_fingerprint
-from app.standard_database.models import (
-    QuoteDocumentPurpose,
-    QuoteDocumentRole,
-    StandardBuildStatus,
-    StandardDatabaseBuildRun,
-)
-from app.standard_database.service import (
-    ConcurrentStandardBuild,
-    DuplicateStandardKeyConflict,
-    ManualMembershipConflict,
-    NORMALIZATION_VERSION,
-    RULE_VERSION,
-    EligibleHistoricalRow,
-    StandardDatabaseBuildIssue,
-    StandardDatabaseBuildResult,
-    build_standard_database,
-    eligible_historical_rows,
-)
+from __future__ import annotations
 
-__all__ = [
-    "CALCULATION_VERSION",
-    "ConcurrentStandardBuild",
-    "DuplicateStandardKeyConflict",
-    "NORMALIZATION_VERSION",
-    "RULE_VERSION",
-    "EligibleHistoricalRow",
-    "ManualMembershipConflict",
-    "QuoteDocumentPurpose",
-    "QuoteDocumentRole",
-    "StandardBuildStatus",
-    "StandardDatabaseBuildIssue",
-    "StandardDatabaseBuildResult",
-    "StandardDatabaseBuildRun",
-    "build_standard_database",
-    "eligible_historical_rows",
-    "standard_build_fingerprint",
-]
+from importlib import import_module
+from typing import Any
+
+
+_EXPORT_MODULES = {
+    "CALCULATION_VERSION": "app.pricing.service",
+    "standard_build_fingerprint": "app.standard_database.fingerprint",
+    "QuoteDocumentPurpose": "app.standard_database.models",
+    "QuoteDocumentRole": "app.standard_database.models",
+    "StandardBuildStatus": "app.standard_database.models",
+    "StandardDatabaseBuildRun": "app.standard_database.models",
+    "ConcurrentStandardBuild": "app.standard_database.service",
+    "DuplicateStandardKeyConflict": "app.standard_database.service",
+    "ManualMembershipConflict": "app.standard_database.service",
+    "NORMALIZATION_VERSION": "app.standard_database.service",
+    "RULE_VERSION": "app.standard_database.service",
+    "EligibleHistoricalRow": "app.standard_database.service",
+    "StandardDatabaseBuildIssue": "app.standard_database.service",
+    "StandardDatabaseBuildResult": "app.standard_database.service",
+    "build_standard_database": "app.standard_database.service",
+    "eligible_historical_rows": "app.standard_database.service",
+}
+
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value

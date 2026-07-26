@@ -23,6 +23,10 @@ from app.embeddings.index import EmbeddingIndex, IndexMetadata
 from app.main import app
 from app.api.catalog import get_candidate_embedding_runtime
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 def _source(
@@ -53,9 +57,16 @@ def _source(
         parser_name="xlsx",
         parser_version="1",
     )
+    session.add(document)
+    session.flush()
     session.add_all(
         [
-            document,
+            QuoteDocumentRole(
+                document_id=document.id,
+                purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                decided_by="buyer-1",
+                reason_detail="test historical reference",
+            ),
             CleanDecision(
                 raw_item=raw,
                 status=status,

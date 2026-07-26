@@ -31,6 +31,13 @@ from app.ingestion.readers import (
 )
 from app.ingestion.source_selector import SourceGroup, build_source_groups
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
+
+
+HISTORICAL_INGEST_ACTOR = "LOCAL_HISTORICAL_INGEST"
 
 
 @dataclass(frozen=True)
@@ -273,6 +280,28 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
         before_decisions = _count(session, CleanDecision.id)
         try:
             selected = ingest_group(session, group, root=root)
+            current_role = session.scalar(
+                select(QuoteDocumentRole)
+                .where(
+                    QuoteDocumentRole.document_id == selected.document_id
+                )
+                .order_by(QuoteDocumentRole.id.desc())
+                .limit(1)
+            )
+            if current_role is None:
+                session.add(
+                    QuoteDocumentRole(
+                        document_id=selected.document_id,
+                        purpose=(
+                            QuoteDocumentPurpose.HISTORICAL_REFERENCE
+                        ),
+                        decided_by=HISTORICAL_INGEST_ACTOR,
+                        reason_detail=(
+                            "ingested from the configured historical "
+                            "quote corpus"
+                        ),
+                    )
+                )
             parsing_variant = parsing_variant_for(session, selected)
             for raw_item in sorted(
                 parsing_variant.raw_items,

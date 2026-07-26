@@ -37,6 +37,10 @@ from app.matching.candidates import (
     rank_candidates,
 )
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 def _escape_like(value: str) -> str:
@@ -145,6 +149,28 @@ def _require_included(
             current_key="current_decision_id",
         )
     return raw_item, decision
+
+
+def _require_historical_reference(
+    session: Session,
+    raw_item: RawQuoteItem,
+) -> None:
+    purpose = session.scalar(
+        select(QuoteDocumentRole.purpose)
+        .join(
+            SourceVariant,
+            SourceVariant.document_id == QuoteDocumentRole.document_id,
+        )
+        .where(SourceVariant.id == raw_item.source_variant_id)
+        .order_by(QuoteDocumentRole.id.desc())
+        .limit(1)
+    )
+    if purpose is not QuoteDocumentPurpose.HISTORICAL_REFERENCE:
+        raise CatalogConflict(
+            "RAW_ITEM_NOT_HISTORICAL_REFERENCE",
+            "only a raw item whose current document role is "
+            "HISTORICAL_REFERENCE can be matched into the standard database",
+        )
 
 
 def current_standard_item_version(
@@ -475,6 +501,7 @@ def append_membership_decision(
             current_key="current_decision_id",
         )
     if status == MembershipStatus.MATCHED:
+        _require_historical_reference(session, raw_item)
         if standard_item_id is None:
             raise ValueError("MATCHED requires a standard item")
         if session.get(StandardItem, standard_item_id) is None:
@@ -652,6 +679,14 @@ def unmatched_included(
     current_membership = ItemMembershipDecision.__table__.alias(
         "current_membership"
     )
+    latest_role = (
+        select(
+            QuoteDocumentRole.document_id,
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
     query = (
         select(RawQuoteItem, CleanDecision, current_membership.c.id)
         .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
@@ -664,7 +699,27 @@ def unmatched_included(
             current_membership,
             current_membership.c.id == latest_membership.c.decision_id,
         )
+        .join(
+            SourceVariant,
+            SourceVariant.id == RawQuoteItem.source_variant_id,
+        )
+        .join(
+            SourceDocument,
+            SourceDocument.id == SourceVariant.document_id,
+        )
+        .join(
+            latest_role,
+            latest_role.c.document_id == SourceDocument.id,
+        )
+        .join(
+            QuoteDocumentRole,
+            QuoteDocumentRole.id == latest_role.c.role_id,
+        )
         .where(CleanDecision.status == CleanStatus.INCLUDED)
+        .where(
+            QuoteDocumentRole.purpose
+            == QuoteDocumentPurpose.HISTORICAL_REFERENCE
+        )
         .where(
             or_(
                 current_membership.c.id.is_(None),

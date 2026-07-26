@@ -20,6 +20,7 @@ from app.catalog.models import (
 from app.catalog.service import catalog_fingerprint
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import Settings, settings as default_settings
+from app.documents.models import SourceDocument, SourceVariant
 from app.embeddings.base import (
     EmbeddingContractNotConfiguredError,
     EmbeddingUnavailableError,
@@ -32,6 +33,10 @@ from app.pricing.service import (
     calculate_standard_prices,
 )
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 CATALOG_SEED_RULE = "EXACT_RULE_V1"
@@ -104,6 +109,14 @@ def _latest_included_rows(session: Session) -> list[_IncludedRow]:
         .group_by(CleanDecision.raw_item_id)
         .subquery()
     )
+    latest_role = (
+        select(
+            QuoteDocumentRole.document_id,
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
     rows = session.execute(
         select(RawQuoteItem, CleanDecision)
         .join(
@@ -114,7 +127,27 @@ def _latest_included_rows(session: Session) -> list[_IncludedRow]:
             CleanDecision,
             CleanDecision.id == latest_clean.c.decision_id,
         )
+        .join(
+            SourceVariant,
+            SourceVariant.id == RawQuoteItem.source_variant_id,
+        )
+        .join(
+            SourceDocument,
+            SourceDocument.id == SourceVariant.document_id,
+        )
+        .join(
+            latest_role,
+            latest_role.c.document_id == SourceDocument.id,
+        )
+        .join(
+            QuoteDocumentRole,
+            QuoteDocumentRole.id == latest_role.c.role_id,
+        )
         .where(CleanDecision.status == CleanStatus.INCLUDED)
+        .where(
+            QuoteDocumentRole.purpose
+            == QuoteDocumentPurpose.HISTORICAL_REFERENCE
+        )
         .order_by(RawQuoteItem.id)
     ).all()
     result: list[_IncludedRow] = []

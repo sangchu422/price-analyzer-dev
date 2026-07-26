@@ -28,6 +28,10 @@ from app.pricing.service import (
     calculate_standard_price,
 )
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
 def _session() -> Session:
@@ -221,6 +225,14 @@ def _approve_reference_price(
     price: str = "120",
 ):
     history = _document(session, "history.xlsx")
+    session.add(
+        QuoteDocumentRole(
+            document_id=history.id,
+            purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+            decided_by="buyer",
+            reason_detail="test historical price evidence",
+        )
+    )
     _row(session, history, row=1, price=price, item=item)
     draft = calculate_standard_price(session, item.id)
     return approve_standard_price(
