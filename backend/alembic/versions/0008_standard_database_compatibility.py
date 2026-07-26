@@ -24,6 +24,31 @@ _LEGACY_TABLES = (
     "legacy_standard_snapshot",
     "legacy_reconciliation_run",
 )
+_PROTECTED_LEGACY_TABLES = (
+    "legacy_reconciliation_decision",
+    "standard_item_external_code",
+)
+
+
+def _assert_legacy_cleanup_is_safe(tables: set[str]) -> None:
+    """Refuse cleanup when rejected-workflow approval evidence exists."""
+
+    connection = op.get_bind()
+    protected_with_rows = [
+        table_name
+        for table_name in _PROTECTED_LEGACY_TABLES
+        if table_name in tables
+        and connection.execute(
+            sa.text(f"SELECT COUNT(*) FROM {table_name}")
+        ).scalar_one()
+        > 0
+    ]
+    if protected_with_rows:
+        raise RuntimeError(
+            "Cannot automatically remove approved legacy decisions or "
+            "external code evidence; manual recovery is required "
+            f"for: {', '.join(protected_with_rows)}"
+        )
 
 
 def _create_quote_document_role(table_name: str) -> None:
@@ -171,6 +196,7 @@ def _rebuild_quote_document_role() -> None:
 
 def upgrade() -> None:
     tables = set(sa.inspect(op.get_bind()).get_table_names())
+    _assert_legacy_cleanup_is_safe(tables)
     if "quote_document_role" not in tables:
         _create_quote_document_role("quote_document_role")
         op.create_index(

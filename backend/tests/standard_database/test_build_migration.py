@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import Connection, create_engine, inspect
 from sqlalchemy.exc import IntegrityError
 
 
@@ -29,6 +29,85 @@ def _alembic(
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+_LEGACY_TABLES = {
+    "legacy_reconciliation_run",
+    "legacy_standard_snapshot",
+    "legacy_source_row_snapshot",
+    "legacy_raw_item_link",
+    "legacy_reconciliation_decision",
+    "standard_item_external_code",
+}
+
+
+def _seed_rejected_legacy_schema(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE legacy_reconciliation_run (
+            id INTEGER NOT NULL PRIMARY KEY,
+            workbook_sha256 VARCHAR(64) NOT NULL
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE legacy_standard_snapshot (
+            id INTEGER NOT NULL PRIMARY KEY,
+            run_id INTEGER NOT NULL REFERENCES legacy_reconciliation_run(id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE legacy_source_row_snapshot (
+            id INTEGER NOT NULL PRIMARY KEY,
+            run_id INTEGER NOT NULL REFERENCES legacy_reconciliation_run(id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE legacy_raw_item_link (
+            id INTEGER NOT NULL PRIMARY KEY,
+            run_id INTEGER NOT NULL REFERENCES legacy_reconciliation_run(id),
+            legacy_source_row_id INTEGER NOT NULL
+                REFERENCES legacy_source_row_snapshot(id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE legacy_reconciliation_decision (
+            id INTEGER NOT NULL PRIMARY KEY,
+            run_id INTEGER NOT NULL REFERENCES legacy_reconciliation_run(id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE standard_item_external_code (
+            id INTEGER NOT NULL PRIMARY KEY,
+            reconciliation_run_id INTEGER NOT NULL
+                REFERENCES legacy_reconciliation_run(id),
+            legacy_standard_snapshot_id INTEGER NOT NULL
+                REFERENCES legacy_standard_snapshot(id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO legacy_reconciliation_run VALUES (1, ?)",
+        ("a" * 64,),
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO legacy_standard_snapshot VALUES (1, 1)"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO legacy_source_row_snapshot VALUES (1, 1)"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO legacy_raw_item_link VALUES (1, 1, 1)"
     )
 
 
@@ -189,22 +268,7 @@ def test_0008_replaces_legacy_stamped_schema_with_standard_build_tables(
     assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE legacy_reconciliation_run (
-                id INTEGER NOT NULL PRIMARY KEY,
-                workbook_sha256 VARCHAR(64) NOT NULL
-            )
-            """
-        )
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE legacy_standard_snapshot (
-                id INTEGER NOT NULL PRIMARY KEY,
-                run_id INTEGER NOT NULL REFERENCES legacy_reconciliation_run(id)
-            )
-            """
-        )
+        _seed_rejected_legacy_schema(connection)
         connection.exec_driver_sql(
             "UPDATE alembic_version SET version_num = '0007'"
         )
@@ -220,6 +284,65 @@ def test_0008_replaces_legacy_stamped_schema_with_standard_build_tables(
     )
     tables = set(inspect(engine).get_table_names())
     assert {"quote_document_role", "standard_database_build_run"} <= tables
-    assert not {name for name in tables if name.startswith("legacy_")}
+    assert not _LEGACY_TABLES & tables
     check = _alembic(backend_path, environment, "check")
     assert check.returncode == 0, check.stdout + check.stderr
+
+
+@pytest.mark.parametrize(
+    "protected_table",
+    ["legacy_reconciliation_decision", "standard_item_external_code"],
+)
+def test_0008_preserves_populated_protected_legacy_evidence(
+    tmp_path: Path,
+    protected_table: str,
+) -> None:
+    backend_path = Path(__file__).resolve().parents[2]
+    database_path = tmp_path / f"protected-{protected_table}.sqlite3"
+    environment = os.environ.copy()
+    environment["DATABASE_FILE"] = str(database_path)
+
+    upgrade = _alembic(backend_path, environment, "upgrade", "0006")
+    assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        _seed_rejected_legacy_schema(connection)
+        if protected_table == "legacy_reconciliation_decision":
+            connection.exec_driver_sql(
+                "INSERT INTO legacy_reconciliation_decision VALUES (1, 1)"
+            )
+        else:
+            connection.exec_driver_sql(
+                "INSERT INTO standard_item_external_code VALUES (1, 1, 1)"
+            )
+        connection.exec_driver_sql(
+            "UPDATE alembic_version SET version_num = '0007'"
+        )
+
+    compatibility_upgrade = _alembic(
+        backend_path,
+        environment,
+        "upgrade",
+        "head",
+    )
+    assert compatibility_upgrade.returncode != 0
+    assert "manual recovery is required" in (
+        compatibility_upgrade.stdout + compatibility_upgrade.stderr
+    )
+    tables = set(inspect(engine).get_table_names())
+    assert _LEGACY_TABLES <= tables
+    assert "quote_document_role" not in tables
+    assert "standard_database_build_run" not in tables
+    with engine.connect() as connection:
+        for table_name in (
+            "legacy_reconciliation_run",
+            "legacy_standard_snapshot",
+            "legacy_source_row_snapshot",
+            "legacy_raw_item_link",
+        ):
+            assert connection.exec_driver_sql(
+                f"SELECT COUNT(*) FROM {table_name}"
+            ).scalar_one() == 1
+        assert connection.exec_driver_sql(
+            f"SELECT COUNT(*) FROM {protected_table}"
+        ).scalar_one() == 1
