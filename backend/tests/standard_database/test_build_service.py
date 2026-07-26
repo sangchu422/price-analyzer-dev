@@ -555,3 +555,76 @@ def test_build_reuses_exact_catalog_membership_and_unchanged_price(
     assert (
         session.scalar(select(func.count(StandardPriceVersion.id))) == 1
     )
+
+
+def test_reused_item_price_excludes_existing_incoming_bid_membership(
+    session: Session,
+) -> None:
+    historical_variant = _source(
+        session,
+        name="quotes/historical-bearing.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    incoming_variant = _source(
+        session,
+        name="quotes/incoming-bearing.xlsx",
+        purpose=QuoteDocumentPurpose.INCOMING_BID,
+    )
+    historical_raw, _ = _row(
+        session,
+        historical_variant,
+        row_number=2,
+        name="Bearing",
+        spec="6204 ZZ",
+        unit="EA",
+        price="100",
+    )
+    incoming_raw, _ = _row(
+        session,
+        incoming_variant,
+        row_number=2,
+        name="Bearing",
+        spec="6204 ZZ",
+        unit="EA",
+        price="900",
+    )
+    item = StandardItem()
+    session.add_all(
+        [
+            StandardItemVersion(
+                standard_item=item,
+                version_number=1,
+                canonical_name="BEARING",
+                canonical_spec="6204 ZZ",
+                canonical_unit="EA",
+                aliases_json="[]",
+                created_by="buyer",
+                change_reason="existing exact catalog identity",
+            ),
+            ItemMembershipDecision(
+                raw_item=incoming_raw,
+                standard_item=item,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json="{}",
+                decided_by="buyer",
+            ),
+        ]
+    )
+    session.flush()
+
+    result = build_standard_database(session)
+    session.commit()
+
+    price = session.scalar(select(StandardPriceVersion))
+    observations = list(session.scalars(select(StandardPriceObservation)))
+    assert result.reused_count == 1
+    assert result.observation_count == 1
+    assert result.single_observation_count == 1
+    assert price is not None
+    assert price.observation_count == 1
+    assert price.minimum_price == Decimal("100.000000")
+    assert price.median_price == Decimal("100.000000")
+    assert price.average_price == Decimal("100.000000")
+    assert price.maximum_price == Decimal("100.000000")
+    assert [row.raw_item_id for row in observations] == [historical_raw.id]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -242,7 +243,10 @@ def _fingerprint(
 
 
 def _current_evidence_rows(
-    session: Session, standard_item_id: int
+    session: Session,
+    standard_item_id: int,
+    *,
+    raw_item_ids: tuple[int, ...] | None = None,
 ) -> list[
     tuple[
         RawQuoteItem,
@@ -253,15 +257,18 @@ def _current_evidence_rows(
         DocumentMetadataVersion | None,
     ]
 ]:
-    candidate_ids = (
+    candidate_statement = (
         select(ItemMembershipDecision.raw_item_id)
         .where(
         ItemMembershipDecision.standard_item_id == standard_item_id,
         ItemMembershipDecision.status == MembershipStatus.MATCHED,
         )
-        .distinct()
-        .subquery()
     )
+    if raw_item_ids is not None:
+        candidate_statement = candidate_statement.where(
+            ItemMembershipDecision.raw_item_id.in_(raw_item_ids)
+        )
+    candidate_ids = candidate_statement.distinct().subquery()
     latest_clean = (
         select(
             CleanDecision.raw_item_id.label("raw_item_id"),
@@ -473,24 +480,55 @@ def _draft_from_evidence_rows(
 
 
 def _calculate_standard_price(
-    session: Session, standard_item_id: int
+    session: Session,
+    standard_item_id: int,
+    *,
+    raw_item_ids: tuple[int, ...] | None = None,
 ) -> StandardPriceDraft:
     """Calculate a deterministic draft without adding or changing rows."""
 
     item_version = _current_item_version(session, standard_item_id)
     return _draft_from_evidence_rows(
         item_version,
-        _current_evidence_rows(session, standard_item_id),
+        _current_evidence_rows(
+            session,
+            standard_item_id,
+            raw_item_ids=raw_item_ids,
+        ),
     )
 
 
-def calculate_standard_price(
-    session: Session, standard_item_id: int
-) -> StandardPriceDraft:
-    """Read a deterministic draft without flushing caller-owned state."""
+def _normalize_raw_item_ids(
+    raw_item_ids: Iterable[int] | None,
+) -> tuple[int, ...] | None:
+    if raw_item_ids is None:
+        return None
+    values = tuple(raw_item_ids)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        for value in values
+    ):
+        raise ValueError("raw_item_ids must contain only positive integers")
+    return tuple(sorted(set(values)))
 
+
+def calculate_standard_price(
+    session: Session,
+    standard_item_id: int,
+    *,
+    raw_item_ids: Iterable[int] | None = None,
+) -> StandardPriceDraft:
+    """Read a deterministic draft, optionally restricted to explicit rows."""
+
+    selected_ids = _normalize_raw_item_ids(raw_item_ids)
     with session.no_autoflush:
-        return _calculate_standard_price(session, standard_item_id)
+        return _calculate_standard_price(
+            session,
+            standard_item_id,
+            raw_item_ids=selected_ids,
+        )
 
 
 def calculate_standard_prices(
@@ -722,13 +760,18 @@ def approve_standard_price(
     expected_fingerprint: str,
     expected_current_version_id: int | None,
     approved_by: str,
+    raw_item_ids: Iterable[int] | None = None,
 ) -> StandardPriceVersion:
     """Append an immutable version and its evidence in one caller transaction."""
 
     actor = approved_by.strip()
     if not actor or actor.casefold() == "system":
         raise ValueError("standard-price approval requires a human actor")
-    draft = calculate_standard_price(session, standard_item_id)
+    draft = calculate_standard_price(
+        session,
+        standard_item_id,
+        raw_item_ids=raw_item_ids,
+    )
     current = current_standard_price_version(session, standard_item_id)
     current_id = None if current is None else current.id
     if (

@@ -414,6 +414,7 @@ def build_standard_database(
                 created_count += 1
                 current_versions[key] = [version]
 
+            selected_raw_item_ids: list[int] = []
             for row in groups[key]:
                 membership = current_membership(session, row.raw_item_id)
                 if (
@@ -421,6 +422,7 @@ def build_standard_database(
                     and membership.status is MembershipStatus.MATCHED
                     and membership.standard_item_id == item.id
                 ):
+                    selected_raw_item_ids.append(row.raw_item_id)
                     continue
                 if (
                     membership is not None
@@ -466,8 +468,13 @@ def build_standard_database(
                     decided_by=BUILD_ACTOR,
                     reason_detail=RULE_VERSION,
                 )
+                selected_raw_item_ids.append(row.raw_item_id)
 
-            draft = calculate_standard_price(session, item.id)
+            draft = calculate_standard_price(
+                session,
+                item.id,
+                raw_item_ids=selected_raw_item_ids,
+            )
             current_price = current_standard_price_version(session, item.id)
             if (
                 current_price is None
@@ -481,6 +488,7 @@ def build_standard_database(
                         None if current_price is None else current_price.id
                     ),
                     approved_by=BUILD_ACTOR,
+                    raw_item_ids=selected_raw_item_ids,
                 )
             standard_item_count += 1
             observation_count += draft.observation_count
