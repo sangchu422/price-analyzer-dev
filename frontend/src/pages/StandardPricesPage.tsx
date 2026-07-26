@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import {
@@ -17,6 +17,10 @@ export function StandardPricesPage() {
   const [search, setSearch] = useState("");
   const [quality, setQuality] = useState<EvidenceQuality | "">("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [requestedItemId, setRequestedItemId] = useState<number | null>(
+    positiveIntegerParam("item_id"),
+  );
+  const attemptedCatalogCursors = useRef(new Set<number>());
 
   useEffect(() => {
     document.title = "표준 DB · Price Analyzer";
@@ -41,9 +45,44 @@ export function StandardPricesPage() {
   const items = uniqueById(
     catalog.data?.pages.flatMap((page) => page.items) ?? [],
   );
+  const {
+    fetchNextPage: fetchNextCatalogPage,
+    hasNextPage: hasNextCatalogPage,
+    isFetchNextPageError: isFetchNextCatalogPageError,
+    isFetchingNextPage: isFetchingNextCatalogPage,
+  } = catalog;
+  const requestedItem = items.find((item) => item.id === requestedItemId);
   const selected =
-    items.find((item) => item.id === selectedId) ?? items[0] ?? null;
+    requestedItem ??
+    (requestedItemId === null
+      ? items.find((item) => item.id === selectedId) ?? items[0] ?? null
+      : null);
   const latestBuild = catalog.data?.pages[0]?.latest_build ?? null;
+  const catalogCursor = catalog.data?.pages.at(-1)?.next_cursor ?? null;
+
+  useEffect(() => {
+    if (
+      requestedItemId === null ||
+      requestedItem ||
+      !hasNextCatalogPage ||
+      isFetchingNextCatalogPage ||
+      isFetchNextCatalogPageError ||
+      catalogCursor === null ||
+      attemptedCatalogCursors.current.has(catalogCursor)
+    ) {
+      return;
+    }
+    attemptedCatalogCursors.current.add(catalogCursor);
+    void fetchNextCatalogPage();
+  }, [
+    requestedItemId,
+    requestedItem,
+    hasNextCatalogPage,
+    isFetchingNextCatalogPage,
+    isFetchNextCatalogPageError,
+    catalogCursor,
+    fetchNextCatalogPage,
+  ]);
 
   const evidence = useInfiniteQuery({
     queryKey: ["standard-db-evidence", selected?.id],
@@ -58,8 +97,9 @@ export function StandardPricesPage() {
     enabled: selected !== null,
     retry: false,
   });
-  const observations =
-    evidence.data?.pages.flatMap((page) => page.observations) ?? [];
+  const observations = uniqueByRawItemId(
+    evidence.data?.pages.flatMap((page) => page.observations) ?? [],
+  );
 
   const history = useInfiniteQuery({
     queryKey: ["standard-db-history", selected?.id],
@@ -101,6 +141,7 @@ export function StandardPricesPage() {
         onSubmit={(event) => {
           event.preventDefault();
           setSelectedId(null);
+          setRequestedItemId(null);
           setSearch(searchInput.trim());
         }}
       >
@@ -120,6 +161,7 @@ export function StandardPricesPage() {
             value={quality}
             onChange={(event) => {
               setSelectedId(null);
+              setRequestedItemId(null);
               setQuality(event.target.value as EvidenceQuality | "");
             }}
           >
@@ -138,11 +180,19 @@ export function StandardPricesPage() {
             <span>{items.length.toLocaleString("ko-KR")}건 표시</span>
           </header>
           {catalog.isPending && <p className="inline-state">목록을 불러오는 중…</p>}
-          {catalog.isError && (
+          {catalog.isError && !isFetchNextCatalogPageError && (
             <div className="inline-state is-error" role="alert">
               <p>표준 품목을 불러오지 못했습니다.</p>
               <button type="button" onClick={() => void catalog.refetch()}>
                 다시 시도
+              </button>
+            </div>
+          )}
+          {isFetchNextCatalogPageError && (
+            <div className="inline-state is-error" role="alert">
+              <p>다음 표준 품목을 불러오지 못했습니다.</p>
+              <button type="button" onClick={() => void fetchNextCatalogPage()}>
+                품목 다시 시도
               </button>
             </div>
           )}
@@ -157,17 +207,18 @@ export function StandardPricesPage() {
                 index={index}
                 key={item.id}
                 onSelect={() => setSelectedId(item.id)}
+                onClearRequested={() => setRequestedItemId(null)}
               />
             ))}
           </ul>
-          {catalog.hasNextPage && (
+          {hasNextCatalogPage && (
             <button
               className="load-more-button"
               type="button"
-              disabled={catalog.isFetchingNextPage}
-              onClick={() => void catalog.fetchNextPage()}
+              disabled={isFetchingNextCatalogPage}
+              onClick={() => void fetchNextCatalogPage()}
             >
-              {catalog.isFetchingNextPage ? "불러오는 중…" : "품목 더 보기"}
+              {isFetchingNextCatalogPage ? "불러오는 중…" : "품목 더 보기"}
             </button>
           )}
         </section>
@@ -183,14 +234,21 @@ export function StandardPricesPage() {
               observations={observations}
               evidencePending={evidence.isPending}
               evidenceError={evidence.isError}
+              evidenceNextError={evidence.isFetchNextPageError}
               retryEvidence={() => void evidence.refetch()}
+              retryNextEvidence={() => void evidence.fetchNextPage()}
               hasMoreEvidence={Boolean(evidence.hasNextPage)}
               loadMoreEvidence={() => void evidence.fetchNextPage()}
               evidenceLoadingMore={evidence.isFetchingNextPage}
               versions={versions}
               historyPending={history.isPending}
               historyError={history.isError}
+              historyNextError={history.isFetchNextPageError}
               retryHistory={() => void history.refetch()}
+              retryNextHistory={() => void history.fetchNextPage()}
+              hasMoreHistory={Boolean(history.hasNextPage)}
+              loadMoreHistory={() => void history.fetchNextPage()}
+              historyLoadingMore={history.isFetchingNextPage}
             />
           )}
         </section>
@@ -204,18 +262,23 @@ function StandardItemRow({
   selected,
   index,
   onSelect,
+  onClearRequested,
 }: {
   item: StandardItemSummary;
   selected: boolean;
   index: number;
   onSelect: () => void;
+  onClearRequested: () => void;
 }) {
   return (
     <li style={{ "--row-index": index } as React.CSSProperties}>
       <button
         type="button"
         className={`standard-db-row ${selected ? "is-selected" : ""}`}
-        onClick={onSelect}
+        onClick={() => {
+          onClearRequested();
+          onSelect();
+        }}
       >
         <span>
           <strong>{item.current_version.canonical_name}</strong>
@@ -241,14 +304,21 @@ function StandardItemDetail({
   observations,
   evidencePending,
   evidenceError,
+  evidenceNextError,
   retryEvidence,
+  retryNextEvidence,
   hasMoreEvidence,
   loadMoreEvidence,
   evidenceLoadingMore,
   versions,
   historyPending,
   historyError,
+  historyNextError,
   retryHistory,
+  retryNextHistory,
+  hasMoreHistory,
+  loadMoreHistory,
+  historyLoadingMore,
 }: {
   item: StandardItemSummary;
   observations: Array<{
@@ -268,14 +338,21 @@ function StandardItemDetail({
   }>;
   evidencePending: boolean;
   evidenceError: boolean;
+  evidenceNextError: boolean;
   retryEvidence: () => void;
+  retryNextEvidence: () => void;
   hasMoreEvidence: boolean;
   loadMoreEvidence: () => void;
   evidenceLoadingMore: boolean;
   versions: PriceVersion[];
   historyPending: boolean;
   historyError: boolean;
+  historyNextError: boolean;
   retryHistory: () => void;
+  retryNextHistory: () => void;
+  hasMoreHistory: boolean;
+  loadMoreHistory: () => void;
+  historyLoadingMore: boolean;
 }) {
   const price = item.current_price;
   return (
@@ -322,10 +399,18 @@ function StandardItemDetail({
           <span>{item.observation_count}건</span>
         </div>
         {evidencePending && <p className="inline-state">근거를 불러오는 중…</p>}
-        {evidenceError && (
+        {evidenceError && !evidenceNextError && (
           <div className="inline-state is-error" role="alert">
             <p>가격 근거를 불러오지 못했습니다.</p>
             <button type="button" onClick={retryEvidence}>다시 시도</button>
+          </div>
+        )}
+        {evidenceNextError && (
+          <div className="inline-state is-error" role="alert">
+            <p>다음 가격 근거를 불러오지 못했습니다.</p>
+            <button type="button" onClick={retryNextEvidence}>
+              근거 다시 시도
+            </button>
           </div>
         )}
         {!evidencePending && !evidenceError && observations.length === 0 && (
@@ -385,10 +470,18 @@ function StandardItemDetail({
           <span>{versions.length}개 버전</span>
         </div>
         {historyPending && <p className="inline-state">이력을 불러오는 중…</p>}
-        {historyError && (
+        {historyError && !historyNextError && (
           <div className="inline-state is-error" role="alert">
             <p>가격 버전 이력을 불러오지 못했습니다.</p>
             <button type="button" onClick={retryHistory}>다시 시도</button>
+          </div>
+        )}
+        {historyNextError && (
+          <div className="inline-state is-error" role="alert">
+            <p>다음 가격 이력을 불러오지 못했습니다.</p>
+            <button type="button" onClick={retryNextHistory}>
+              이력 다시 시도
+            </button>
           </div>
         )}
         {!historyPending && !historyError && versions.length === 0 && (
@@ -412,6 +505,16 @@ function StandardItemDetail({
             </li>
           ))}
         </ol>
+        {hasMoreHistory && (
+          <button
+            className="load-more-button"
+            type="button"
+            disabled={historyLoadingMore}
+            onClick={loadMoreHistory}
+          >
+            {historyLoadingMore ? "불러오는 중…" : "가격 이력 더 보기"}
+          </button>
+        )}
       </section>
     </div>
   );
@@ -456,8 +559,18 @@ function sourceLocation(source: {
 
 function safeNextCursor<T extends { next_cursor: number | null }>(
   lastPage: T,
+  allPages: T[],
+  lastPageParam: number | undefined,
 ) {
-  return lastPage.next_cursor ?? undefined;
+  const next = lastPage.next_cursor;
+  if (
+    next === null ||
+    next === lastPageParam ||
+    allPages.slice(0, -1).some((page) => page.next_cursor === next)
+  ) {
+    return undefined;
+  }
+  return next;
 }
 
 function uniqueById<T extends { id: number }>(items: T[]) {
@@ -467,4 +580,18 @@ function uniqueById<T extends { id: number }>(items: T[]) {
     seen.add(item.id);
     return true;
   });
+}
+
+function uniqueByRawItemId<T extends { raw_item_id: number }>(items: T[]) {
+  const seen = new Set<number>();
+  return items.filter((item) => {
+    if (seen.has(item.raw_item_id)) return false;
+    seen.add(item.raw_item_id);
+    return true;
+  });
+}
+
+function positiveIntegerParam(name: string) {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isInteger(value) && value > 0 ? value : null;
 }

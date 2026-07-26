@@ -8,6 +8,11 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.catalog.models import DocumentMetadataVersion
+from app.catalog.models import (
+    ItemMembershipDecision,
+    MembershipStatus,
+    StandardItemVersion,
+)
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
@@ -232,3 +237,63 @@ def test_standard_catalog_list_query_count_is_bounded(
 
     assert response.status_code == 200, response.text
     assert statements <= 5
+
+
+def test_member_count_includes_current_matched_rows_without_price_observation(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _built_catalog(api_session)
+    bearing = api_session.query(StandardItemVersion).filter_by(
+        canonical_name="BEARING"
+    ).one()
+    document = SourceDocument(logical_name="quotes/no-price.xlsx")
+    variant = SourceVariant(
+        document=document,
+        path="quotes/no-price.xlsx",
+        sha256="f" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    raw = RawQuoteItem(
+        source_variant=variant,
+        item_name_raw="BEARING",
+        spec_raw="6204 ZZ",
+        unit_raw="EA",
+        parser_name="xlsx",
+        parser_version="1",
+    )
+    api_session.add_all(
+        [
+            CleanDecision(
+                raw_item=raw,
+                status=CleanStatus.INCLUDED,
+                reason_code="PRICE_MISSING",
+                item_name_norm="BEARING",
+                spec_norm="6204 ZZ",
+                unit_norm="EA",
+                unit_price=None,
+                rule_version="clean-v1",
+            ),
+            ItemMembershipDecision(
+                raw_item=raw,
+                standard_item_id=bearing.standard_item_id,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json="{}",
+                decided_by="buyer",
+            ),
+        ]
+    )
+    api_session.commit()
+
+    response = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["member_count"] == 3
+    assert item["observation_count"] == 2

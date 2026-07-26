@@ -13,11 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.catalog.models import (
     DocumentMetadataVersion,
+    ItemMembershipDecision,
+    MembershipStatus,
     StandardItemVersion,
     StandardPriceObservation,
     StandardPriceVersion,
 )
-from app.cleansing.models import CleanDecision
+from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
@@ -47,6 +49,7 @@ class StandardBuildProvenance:
 class StandardExplorerSummary:
     current_version: StandardItemVersion
     current_price: StandardPriceVersion | None
+    member_count: int
     supplier_summary: tuple[str, ...]
     maker_summary: tuple[str, ...]
     quote_date_start: date | None
@@ -188,6 +191,7 @@ def list_standard_explorer_items(
         return [], None, latest_build_provenance(session)
 
     price_ids = [price.id for _, price in page if price is not None]
+    item_ids = [version.standard_item_id for version, _ in page]
     suppliers: dict[int, set[str]] = defaultdict(set)
     makers: dict[int, set[str]] = defaultdict(set)
     dates: dict[int, list[date]] = defaultdict(list)
@@ -222,11 +226,51 @@ def list_standard_explorer_items(
             if quote_date:
                 dates[price_id].append(quote_date)
 
+    latest_memberships = _latest(
+        ItemMembershipDecision.raw_item_id,
+        ItemMembershipDecision.id,
+        name="explorer_latest_membership",
+    )
+    latest_cleans = _latest(
+        CleanDecision.raw_item_id,
+        CleanDecision.id,
+        name="explorer_latest_clean",
+    )
+    member_counts = dict(
+        session.execute(
+            select(
+                ItemMembershipDecision.standard_item_id,
+                func.count(ItemMembershipDecision.id),
+            )
+            .join(
+                latest_memberships,
+                latest_memberships.c.row_id
+                == ItemMembershipDecision.id,
+            )
+            .join(
+                latest_cleans,
+                latest_cleans.c.parent_id
+                == ItemMembershipDecision.raw_item_id,
+            )
+            .join(
+                CleanDecision,
+                CleanDecision.id == latest_cleans.c.row_id,
+            )
+            .where(
+                ItemMembershipDecision.standard_item_id.in_(item_ids),
+                ItemMembershipDecision.status == MembershipStatus.MATCHED,
+                CleanDecision.status == CleanStatus.INCLUDED,
+            )
+            .group_by(ItemMembershipDecision.standard_item_id)
+        ).tuples().all()
+    )
+
     provenance = latest_build_provenance(session)
     summaries = [
         StandardExplorerSummary(
             current_version=version,
             current_price=price,
+            member_count=member_counts.get(version.standard_item_id, 0),
             supplier_summary=(
                 () if price is None else tuple(sorted(suppliers[price.id]))
             ),

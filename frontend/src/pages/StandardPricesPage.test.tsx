@@ -205,3 +205,179 @@ it("searches and filters standard groups through the paginated API", async () =>
   expect(await screen.findByRole("button", { name: /SENSOR/ })).toBeVisible();
   expect(urls.some((url) => url.includes("search=PX-1"))).toBe(true);
 });
+
+it("merges paginated catalog, evidence, and history without duplicates and retries a failed cursor", async () => {
+  const secondItem = {
+    ...sensor,
+    id: 13,
+    current_version: {
+      ...sensor.current_version,
+      id: 23,
+      standard_item_id: 13,
+      canonical_name: "SENSOR TWO",
+    },
+  };
+  let evidenceCursorAttempts = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        return url.includes("after_id=12")
+          ? jsonResponse({
+              items: [sensor, secondItem],
+              next_cursor: null,
+              limit: 50,
+              latest_build: build,
+            })
+          : jsonResponse({
+              items: [sensor],
+              next_cursor: 12,
+              limit: 50,
+              latest_build: build,
+            });
+      }
+      if (url.includes("/standard-items/12/evidence?")) {
+        const row = (id: number) => ({
+          raw_item_id: id,
+          unit_price: "50000.000000",
+          supplier_name: `SUPPLIER ${id}`,
+          maker: "OMRON",
+          quote_date: "2026-07-03",
+          source: {
+            document_id: id,
+            logical_name: `quotes/${id}.xlsx`,
+            variant_id: id,
+            path: `quotes/${id}.xlsx`,
+            sheet: "견적",
+            page: null,
+            row: id,
+            cells: `A${id}:G${id}`,
+          },
+        });
+        if (url.includes("after_id=7")) {
+          evidenceCursorAttempts += 1;
+          return evidenceCursorAttempts === 1
+            ? Promise.reject(new Error("cursor unavailable"))
+            : jsonResponse({
+                standard_item_id: 12,
+                standard_price_version_id: 31,
+                observation_count: 2,
+                evidence_quality: "MULTI_OBSERVATION",
+                provenance: build,
+                observations: [row(7), row(8)],
+                next_cursor: null,
+                limit: 50,
+              });
+        }
+        return jsonResponse({
+          standard_item_id: 12,
+          standard_price_version_id: 31,
+          observation_count: 2,
+          evidence_quality: "MULTI_OBSERVATION",
+          provenance: build,
+          observations: [row(7)],
+          next_cursor: 7,
+          limit: 50,
+        });
+      }
+      if (url.includes("/standard-items/12/versions?")) {
+        return url.includes("after_id=50")
+          ? jsonResponse({
+              standard_item_id: 12,
+              versions: [version(50), version(51)],
+              next_cursor: null,
+              limit: 50,
+              latest_build: build,
+            })
+          : jsonResponse({
+              standard_item_id: 12,
+              versions: Array.from({ length: 50 }, (_, index) =>
+                version(index + 1),
+              ),
+              next_cursor: 50,
+              limit: 50,
+              latest_build: build,
+            });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  const user = userEvent.setup();
+  renderApp("/standard-prices");
+
+  await user.click(await screen.findByRole("button", { name: "품목 더 보기" }));
+  expect(screen.getAllByRole("button", { name: /SENSOR/ })).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: "품목 더 보기" })).not.toBeInTheDocument();
+
+  await user.click(await screen.findByRole("button", { name: "근거 더 보기" }));
+  expect(
+    await screen.findByText("다음 가격 근거를 불러오지 못했습니다."),
+  ).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "근거 다시 시도" }));
+  expect(await screen.findByText("SUPPLIER 8")).toBeVisible();
+  expect(screen.getAllByRole("link", { name: "원본 견적 근거" })).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: "근거 더 보기" })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "가격 이력 더 보기" }));
+  expect(await screen.findByText("v51")).toBeVisible();
+  expect(screen.getAllByText("v50")).toHaveLength(1);
+  expect(
+    screen.queryByRole("button", { name: "가격 이력 더 보기" }),
+  ).not.toBeInTheDocument();
+});
+
+it("loads catalog cursors until a linked standard item is selected", async () => {
+  const linked = {
+    ...sensor,
+    id: 13,
+    current_version: {
+      ...sensor.current_version,
+      id: 23,
+      standard_item_id: 13,
+      canonical_name: "LINKED SENSOR",
+    },
+  };
+  const catalogUrls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/catalog/standard-items?")) {
+        catalogUrls.push(url);
+        return url.includes("after_id=12")
+          ? jsonResponse({ items: [linked], next_cursor: null, limit: 50, latest_build: build })
+          : jsonResponse({ items: [sensor], next_cursor: 12, limit: 50, latest_build: build });
+      }
+      if (url.includes("/standard-items/13/evidence?")) {
+        return jsonResponse({
+          standard_item_id: 13,
+          standard_price_version_id: 32,
+          observation_count: 1,
+          evidence_quality: "SINGLE_OBSERVATION",
+          provenance: build,
+          observations: [],
+          next_cursor: null,
+          limit: 50,
+        });
+      }
+      if (url.includes("/standard-items/13/versions?")) {
+        return jsonResponse({
+          standard_item_id: 13,
+          versions: [],
+          next_cursor: null,
+          limit: 50,
+          latest_build: build,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/standard-prices?item_id=13");
+
+  expect(
+    await screen.findByRole("heading", { name: "LINKED SENSOR" }),
+  ).toBeVisible();
+  expect(catalogUrls.filter((url) => url.includes("after_id=12"))).toHaveLength(1);
+});

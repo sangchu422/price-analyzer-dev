@@ -579,7 +579,7 @@ def _explorer_summary_payload(
     return {
         "id": summary.current_version.standard_item_id,
         "current_version": _version_payload(summary.current_version),
-        "member_count": observation_count,
+        "member_count": summary.member_count,
         "observation_count": observation_count,
         "evidence_quality": (
             None
