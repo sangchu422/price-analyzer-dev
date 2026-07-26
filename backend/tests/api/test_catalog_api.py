@@ -131,21 +131,7 @@ def test_catalog_workspace_lists_current_items_and_cas_context(
 
     assert listing.status_code == 200
     assert listing.json() == {
-        "items": [
-            {
-                "id": item["id"],
-                "current_version": item["current_version"],
-                "member_count": 0,
-                "observation_count": 0,
-                "evidence_quality": None,
-                "current_price": None,
-                "supplier_summary": [],
-                "maker_summary": [],
-                "quote_date_start": None,
-                "quote_date_end": None,
-                "provenance": None,
-            }
-        ],
+        "items": [],
         "next_cursor": None,
         "limit": 20,
         "latest_build": None,

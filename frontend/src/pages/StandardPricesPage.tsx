@@ -85,16 +85,22 @@ export function StandardPricesPage() {
   ]);
 
   const evidence = useInfiniteQuery({
-    queryKey: ["standard-db-evidence", selected?.id],
+    queryKey: [
+      "standard-db-evidence",
+      selected?.id,
+      selected?.current_price_version_id,
+    ],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
       getStandardEvidence({
         standardItemId: selected!.id,
+        priceVersionId: selected!.current_price_version_id!,
         afterId: pageParam,
         signal,
       }),
     getNextPageParam: safeNextCursor,
-    enabled: selected !== null,
+    enabled:
+      selected !== null && selected.current_price_version_id !== null,
     retry: false,
   });
   const observations = uniqueByRawItemId(
@@ -275,6 +281,8 @@ function StandardItemRow({
       <button
         type="button"
         className={`standard-db-row ${selected ? "is-selected" : ""}`}
+        aria-current={selected ? "true" : undefined}
+        aria-pressed={selected}
         onClick={() => {
           onClearRequested();
           onSelect();

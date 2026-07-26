@@ -424,6 +424,52 @@ def test_history_marks_migrated_rows_as_legacy_without_fake_fingerprint(
     assert "audit_status" in version_schema["properties"]
 
 
+def test_price_history_summary_skips_observation_eager_load(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    item = _seed(api_session)
+    draft = client.get(
+        f"/api/pricing/standard-items/{item.id}/draft"
+    ).json()
+    approved = client.post(
+        f"/api/pricing/standard-items/{item.id}/versions",
+        json={
+            "expected_fingerprint": draft["fingerprint"],
+            "expected_current_version_id": None,
+            "approved_by": "buyer",
+        },
+    )
+    assert approved.status_code == 201
+    statements = 0
+    engine = api_session.get_bind()
+
+    def count_selects(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        nonlocal statements
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements += 1
+
+    event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        response = client.get(
+            f"/api/pricing/standard-items/{item.id}/versions",
+            params={"include_observations": "false"},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_selects)
+
+    assert response.status_code == 200
+    assert response.json()["versions"][0]["observations"] == []
+    assert statements <= 3
+
+
 def test_invalid_stored_exclusion_context_degrades_safely() -> None:
     exclusions, valid, error = _safe_exclusion_context(
         '[{"reason":"UNKNOWN"}]'

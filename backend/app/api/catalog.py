@@ -193,6 +193,7 @@ class StandardItemResponse(BaseModel):
 class StandardItemSummaryResponse(StandardItemResponse):
     member_count: int
     observation_count: int
+    current_price_version_id: int | None
     evidence_quality: EvidenceQuality | None
     current_price: "ExplorerPriceResponse | None"
     supplier_summary: list[str]
@@ -581,6 +582,7 @@ def _explorer_summary_payload(
         "current_version": _version_payload(summary.current_version),
         "member_count": summary.member_count,
         "observation_count": observation_count,
+        "current_price_version_id": None if price is None else price.id,
         "evidence_quality": (
             None
             if summary.evidence_quality is None
@@ -630,6 +632,7 @@ def get_standard_item_evidence(
     standard_item_id: int,
     session: Session = Depends(get_session),
     *,
+    price_version_id: int = Query(..., gt=0),
     after_id: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=100),
 ) -> dict[str, object]:
@@ -638,6 +641,7 @@ def get_standard_item_evidence(
             standard_item_evidence(
                 session,
                 standard_item_id,
+                price_version_id=price_version_id,
                 after_id=after_id,
                 limit=limit,
             )

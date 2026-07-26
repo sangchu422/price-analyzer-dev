@@ -15,6 +15,7 @@ const build = {
 
 const sensor = {
   id: 12,
+  current_price_version_id: 31,
   member_count: 1,
   observation_count: 1,
   evidence_quality: "SINGLE_OBSERVATION",
@@ -154,6 +155,22 @@ it("renders the standard DB as a read-only evidence explorer", async () => {
   expect(screen.queryByRole("button", { name: /승인/ })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("승인자")).not.toBeInTheDocument();
   expect(requests.every(({ method }) => method === "GET")).toBe(true);
+  expect(
+    requests.some(({ url }) =>
+      url.includes("/standard-items/12/evidence?") &&
+      url.includes("price_version_id=31"),
+    ),
+  ).toBe(true);
+  expect(
+    requests.some(({ url }) =>
+      url.includes("/standard-items/12/versions?") &&
+      url.includes("include_observations=false"),
+    ),
+  ).toBe(true);
+  expect(screen.getByRole("button", { name: /SENSOR/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 it("searches and filters standard groups through the paginated API", async () => {

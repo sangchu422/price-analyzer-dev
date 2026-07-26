@@ -144,11 +144,57 @@ def list_standard_explorer_items(
         StandardPriceVersion.id,
         name="explorer_latest_price_version",
     )
+    latest_memberships = _latest(
+        ItemMembershipDecision.raw_item_id,
+        ItemMembershipDecision.id,
+        name="explorer_latest_membership",
+    )
+    latest_cleans = _latest(
+        CleanDecision.raw_item_id,
+        CleanDecision.id,
+        name="explorer_latest_clean",
+    )
+    eligible_member_counts = (
+        select(
+            ItemMembershipDecision.standard_item_id.label(
+                "standard_item_id"
+            ),
+            func.count(ItemMembershipDecision.id).label("member_count"),
+        )
+        .join(
+            latest_memberships,
+            latest_memberships.c.row_id == ItemMembershipDecision.id,
+        )
+        .join(
+            latest_cleans,
+            latest_cleans.c.parent_id
+            == ItemMembershipDecision.raw_item_id,
+        )
+        .join(
+            CleanDecision,
+            CleanDecision.id == latest_cleans.c.row_id,
+        )
+        .where(
+            ItemMembershipDecision.status == MembershipStatus.MATCHED,
+            CleanDecision.status == CleanStatus.INCLUDED,
+        )
+        .group_by(ItemMembershipDecision.standard_item_id)
+        .subquery("explorer_eligible_member_counts")
+    )
     statement = (
-        select(StandardItemVersion, StandardPriceVersion)
+        select(
+            StandardItemVersion,
+            StandardPriceVersion,
+            eligible_member_counts.c.member_count,
+        )
         .join(
             latest_versions,
             latest_versions.c.row_id == StandardItemVersion.id,
+        )
+        .join(
+            eligible_member_counts,
+            eligible_member_counts.c.standard_item_id
+            == StandardItemVersion.standard_item_id,
         )
         .outerjoin(
             latest_prices,
@@ -190,8 +236,7 @@ def list_standard_explorer_items(
     if not page:
         return [], None, latest_build_provenance(session)
 
-    price_ids = [price.id for _, price in page if price is not None]
-    item_ids = [version.standard_item_id for version, _ in page]
+    price_ids = [price.id for _, price, _ in page if price is not None]
     suppliers: dict[int, set[str]] = defaultdict(set)
     makers: dict[int, set[str]] = defaultdict(set)
     dates: dict[int, list[date]] = defaultdict(list)
@@ -226,51 +271,12 @@ def list_standard_explorer_items(
             if quote_date:
                 dates[price_id].append(quote_date)
 
-    latest_memberships = _latest(
-        ItemMembershipDecision.raw_item_id,
-        ItemMembershipDecision.id,
-        name="explorer_latest_membership",
-    )
-    latest_cleans = _latest(
-        CleanDecision.raw_item_id,
-        CleanDecision.id,
-        name="explorer_latest_clean",
-    )
-    member_counts = dict(
-        session.execute(
-            select(
-                ItemMembershipDecision.standard_item_id,
-                func.count(ItemMembershipDecision.id),
-            )
-            .join(
-                latest_memberships,
-                latest_memberships.c.row_id
-                == ItemMembershipDecision.id,
-            )
-            .join(
-                latest_cleans,
-                latest_cleans.c.parent_id
-                == ItemMembershipDecision.raw_item_id,
-            )
-            .join(
-                CleanDecision,
-                CleanDecision.id == latest_cleans.c.row_id,
-            )
-            .where(
-                ItemMembershipDecision.standard_item_id.in_(item_ids),
-                ItemMembershipDecision.status == MembershipStatus.MATCHED,
-                CleanDecision.status == CleanStatus.INCLUDED,
-            )
-            .group_by(ItemMembershipDecision.standard_item_id)
-        ).tuples().all()
-    )
-
     provenance = latest_build_provenance(session)
     summaries = [
         StandardExplorerSummary(
             current_version=version,
             current_price=price,
-            member_count=member_counts.get(version.standard_item_id, 0),
+            member_count=member_count,
             supplier_summary=(
                 () if price is None else tuple(sorted(suppliers[price.id]))
             ),
@@ -289,7 +295,7 @@ def list_standard_explorer_items(
             ),
             provenance=provenance,
         )
-        for version, price in page
+        for version, price, member_count in page
     ]
     next_cursor = (
         summaries[-1].current_version.standard_item_id if has_more else None
@@ -301,6 +307,7 @@ def standard_item_evidence(
     session: Session,
     standard_item_id: int,
     *,
+    price_version_id: int,
     after_id: int | None,
     limit: int,
 ) -> tuple[
@@ -309,13 +316,8 @@ def standard_item_evidence(
     int | None,
     StandardBuildProvenance | None,
 ]:
-    price = session.scalar(
-        select(StandardPriceVersion)
-        .where(StandardPriceVersion.standard_item_id == standard_item_id)
-        .order_by(StandardPriceVersion.id.desc())
-        .limit(1)
-    )
-    if price is None:
+    price = session.get(StandardPriceVersion, price_version_id)
+    if price is None or price.standard_item_id != standard_item_id:
         raise StandardExplorerNotFound("standard item price not found")
 
     statement = (

@@ -79,6 +79,7 @@ export interface StandardItemVersion {
 
 export interface StandardItemSummary {
   id: number;
+  current_price_version_id: number | null;
   current_version: StandardItemVersion;
   member_count: number;
   observation_count: number;
@@ -569,14 +570,19 @@ export function getStandardItems({
 
 export function getStandardEvidence({
   standardItemId,
+  priceVersionId,
   afterId,
   signal,
 }: {
   standardItemId: number;
+  priceVersionId: number;
   afterId?: number;
   signal?: AbortSignal;
 }) {
-  const params = new URLSearchParams({ limit: "50" });
+  const params = new URLSearchParams({
+    limit: "50",
+    price_version_id: String(priceVersionId),
+  });
   if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<StandardEvidence>(
     `/api/catalog/standard-items/${standardItemId}/evidence?${params.toString()}`,
@@ -600,7 +606,10 @@ export function getStandardPriceVersions({
   afterId?: number;
   signal?: AbortSignal;
 }) {
-  const params = new URLSearchParams({ limit: "50" });
+  const params = new URLSearchParams({
+    limit: "50",
+    include_observations: "false",
+  });
   if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<PriceHistory>(
     `/api/pricing/standard-items/${standardItemId}/versions?${params.toString()}`,

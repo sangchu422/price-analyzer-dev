@@ -728,6 +728,7 @@ def standard_price_versions(
     *,
     after_id: int | None = None,
     limit: int = 50,
+    include_observations: bool = True,
 ) -> tuple[list[StandardPriceVersion], int | None]:
     if session.get(StandardItem, standard_item_id) is None:
         raise PricingNotFound("standard item not found")
@@ -736,8 +737,10 @@ def standard_price_versions(
         .where(StandardPriceVersion.standard_item_id == standard_item_id)
         .order_by(StandardPriceVersion.id)
         .limit(limit + 1)
-        .options(
-            joinedload(StandardPriceVersion.standard_item_version),
+        .options(joinedload(StandardPriceVersion.standard_item_version))
+    )
+    if include_observations:
+        statement = statement.options(
             selectinload(StandardPriceVersion.observations)
             .joinedload(StandardPriceObservation.clean_decision)
             .joinedload(CleanDecision.raw_item)
@@ -747,7 +750,6 @@ def standard_price_versions(
                 StandardPriceObservation.metadata_version
             ),
         )
-    )
     if after_id is not None:
         statement = statement.where(StandardPriceVersion.id > after_id)
     rows = list(session.scalars(statement))

@@ -308,7 +308,11 @@ def _observation_source(row: StandardPriceObservation) -> PriceSource:
     )
 
 
-def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
+def _version_payload(
+    version: StandardPriceVersion,
+    *,
+    include_observations: bool = True,
+) -> dict[str, object]:
     exclusions, context_valid, context_error = _safe_exclusion_context(
         version.exclusion_context_json
     )
@@ -350,7 +354,7 @@ def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
         "exclusion_context_error": context_error,
         "approved_by": version.approved_by,
         "approved_at": version.approved_at,
-        "observations": [
+        "observations": [] if not include_observations else [
             {
                 "raw_item_id": row.raw_item_id,
                 "clean_decision_id": row.clean_decision_id,
@@ -461,6 +465,7 @@ def get_price_versions(
     *,
     after_id: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    include_observations: bool = Query(True),
 ) -> dict[str, object]:
     try:
         versions, next_cursor = standard_price_versions(
@@ -468,11 +473,18 @@ def get_price_versions(
             standard_item_id,
             after_id=after_id,
             limit=limit,
+            include_observations=include_observations,
         )
         provenance = latest_build_provenance(session)
         return {
             "standard_item_id": standard_item_id,
-            "versions": [_version_payload(row) for row in versions],
+            "versions": [
+                _version_payload(
+                    row,
+                    include_observations=include_observations,
+                )
+                for row in versions
+            ],
             "next_cursor": next_cursor,
             "limit": limit,
             "latest_build": (
