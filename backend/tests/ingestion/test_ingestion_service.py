@@ -753,3 +753,84 @@ def test_pdf_allows_bounded_dct_image_that_text_extraction_skips(
     quote.write_bytes(b"fixture")
 
     assert read_quote(quote) == []
+
+
+def test_pdf_raw_preflight_rejects_escaped_runlength_before_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from pypdf import filters
+
+    from app.ingestion import readers
+
+    reader_called = False
+    decoder_called = False
+
+    def fail_reader(*args, **kwargs):
+        nonlocal reader_called
+        reader_called = True
+        raise AssertionError("PdfReader must not be constructed")
+
+    def fail_decoder(*args, **kwargs):
+        nonlocal decoder_called
+        decoder_called = True
+        raise AssertionError("RunLength decoder must not run")
+
+    monkeypatch.setattr(readers, "PdfReader", fail_reader)
+    monkeypatch.setattr(filters.RunLengthDecode, "decode", fail_decoder)
+    attack = tmp_path / "object-stream-attack.pdf"
+    attack.write_bytes(
+        b"%PDF-1.7\n"
+        b"1 0 obj\n"
+        b"<< /Type /ObjStm /N 1 /First 4 "
+        b"/Filter /Run#4cengthDecode /Length 7 >>\n"
+        b"stream\n\x80A\x80B\nendstream\nendobj\n%%EOF\n"
+    )
+
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(attack)
+
+    assert not reader_called
+    assert not decoder_called
+
+
+def test_pdf_raw_preflight_ignores_filter_text_in_comments_and_strings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    class FakePdf:
+        pages = []
+
+    monkeypatch.setattr(readers, "PdfReader", lambda _: FakePdf())
+    quote = tmp_path / "lexical-comments.pdf"
+    quote.write_bytes(
+        b"%PDF-1.7\n"
+        b"% /Filter /RunLengthDecode\n"
+        b"1 0 obj << /Note (/Filter /LZWDecode) "
+        b"/Filter /FlateDecode >> endobj\n%%EOF\n"
+    )
+
+    assert read_quote(quote) == []
+
+
+def test_pdf_raw_preflight_rejects_filter_chains_and_token_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    chain = tmp_path / "filter-chain.pdf"
+    chain.write_bytes(
+        b"%PDF-1.7\n"
+        b"1 0 obj << /Filter [/ASCII85Decode /FlateDecode] >> endobj\n"
+    )
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(chain)
+
+    monkeypatch.setattr(readers, "MAX_PDF_LEXICAL_TOKENS", 5)
+    overflow = tmp_path / "token-overflow.pdf"
+    overflow.write_bytes(b"%PDF-1.7\n1 2 3 4 5 6 7\n")
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(overflow)

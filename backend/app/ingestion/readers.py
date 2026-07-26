@@ -44,12 +44,19 @@ MAX_PDF_DECODED_CONTENT_BYTES = 32 * 1024 * 1024
 MAX_PDF_EXTRACTED_TEXT_CHARS = 5_000_000
 MAX_PDF_EXTRACTED_ROWS = 200_000
 MAX_PDF_TOTAL_FLATE_DECODED_BYTES = 32 * 1024 * 1024
-MAX_PDF_REACHABLE_OBJECTS = 20_000
+MAX_PDF_REACHABLE_OBJECTS = 50_000
 MAX_PDF_RESOURCE_DEPTH = 50
 MAX_PDF_IMAGE_COUNT = 1_000
 MAX_PDF_IMAGE_RAW_BYTES = 16 * 1024 * 1024
 MAX_PDF_IMAGE_PIXELS = 25_000_000
 MAX_PDF_TOTAL_IMAGE_PIXELS = 100_000_000
+MAX_PDF_RAW_BYTES = 25 * 1024 * 1024
+MAX_PDF_LEXICAL_TOKENS = 2_000_000
+MAX_PDF_LEXICAL_NAMES = 500_000
+MAX_PDF_LEXICAL_OBJECTS = 200_000
+MAX_PDF_LEXICAL_REFERENCES = 500_000
+MAX_PDF_LEXICAL_DEPTH = 100
+MAX_PDF_DIRECT_ARRAY_CHILDREN = 100_000
 _PDF_DECODE_PATCH_LOCK = threading.Lock()
 REQUIRED_XLSX_ARCHIVE_ENTRIES = frozenset(
     {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}
@@ -238,6 +245,7 @@ def _validate_xlsx_archive(path: Path) -> None:
 
 
 def read_pdf(path: Path) -> list[ParsedRow]:
+    _preflight_pdf_lexical(path)
     with _bounded_pypdf_flate_decoding():
         return _read_pdf(path)
 
@@ -342,6 +350,12 @@ def _inspect_pdf_object(
     elif isinstance(value, ArrayObject):
         for child in value:
             _inspect_pdf_object(child, budget, depth=depth + 1)
+    else:
+        budget.object_count += 1
+        if budget.object_count > MAX_PDF_REACHABLE_OBJECTS:
+            raise UnsafeQuoteFileError(
+                "pdf resource graph has too many primitive children"
+            )
 
 
 def _visit_pdf_marker(
@@ -423,6 +437,208 @@ def _pdf_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return parsed if parsed > 0 else None
+
+
+@dataclass(frozen=True)
+class _PdfLexicalToken:
+    kind: str
+    value: str
+
+
+def _preflight_pdf_lexical(path: Path) -> None:
+    data = path.read_bytes()
+    if len(data) > MAX_PDF_RAW_BYTES:
+        raise UnsafeQuoteFileError("pdf file exceeds safe raw byte limits")
+    tokens = _pdf_lexical_tokens(data)
+    name_count = sum(token.kind == "name" for token in tokens)
+    object_count = sum(
+        token.kind == "word" and token.value == "obj"
+        for token in tokens
+    )
+    reference_count = sum(
+        token.kind == "word" and token.value == "R"
+        for token in tokens
+    )
+    if name_count > MAX_PDF_LEXICAL_NAMES:
+        raise UnsafeQuoteFileError("pdf has too many lexical names")
+    if object_count > MAX_PDF_LEXICAL_OBJECTS:
+        raise UnsafeQuoteFileError("pdf has too many object declarations")
+    if reference_count > MAX_PDF_LEXICAL_REFERENCES:
+        raise UnsafeQuoteFileError("pdf has too many indirect references")
+
+    expansion_filters = {
+        "RunLengthDecode",
+        "RL",
+        "LZWDecode",
+        "LZW",
+    }
+    for token in tokens:
+        if token.kind == "name" and token.value in expansion_filters:
+            raise UnsafeQuoteFileError(
+                "pdf declares an unsafe expansion filter"
+            )
+    for index, token in enumerate(tokens):
+        if token.kind == "name" and token.value == "Filter":
+            _validate_lexical_filter(tokens, index + 1)
+
+
+def _validate_lexical_filter(
+    tokens: list[_PdfLexicalToken],
+    index: int,
+) -> None:
+    allowed = {"FlateDecode", "Fl", "DCTDecode", "JPXDecode"}
+    if index >= len(tokens):
+        raise UnsafeQuoteFileError("pdf filter declaration is incomplete")
+    value = tokens[index]
+    if value.kind == "name":
+        if value.value not in allowed:
+            raise UnsafeQuoteFileError(
+                "pdf declares an unsupported filter"
+            )
+        return
+    if value.kind != "punct" or value.value != "[":
+        raise UnsafeQuoteFileError(
+            "pdf filter declaration is indirect or malformed"
+        )
+    names: list[str] = []
+    cursor = index + 1
+    while cursor < len(tokens):
+        current = tokens[cursor]
+        if current.kind == "punct" and current.value == "]":
+            break
+        if current.kind != "name":
+            raise UnsafeQuoteFileError(
+                "pdf filter array is malformed"
+            )
+        names.append(current.value)
+        cursor += 1
+    if cursor >= len(tokens) or len(names) != 1 or names[0] not in allowed:
+        raise UnsafeQuoteFileError(
+            "pdf filter arrays and chains are unsafe"
+        )
+
+
+def _pdf_lexical_tokens(data: bytes) -> list[_PdfLexicalToken]:
+    tokens: list[_PdfLexicalToken] = []
+    array_children: list[int] = []
+    index = 0
+    while index < len(data):
+        byte = data[index]
+        if byte in b"\x00\t\n\x0c\r ":
+            index += 1
+            continue
+        if byte == ord("%"):
+            newline = data.find(b"\n", index + 1)
+            index = len(data) if newline < 0 else newline + 1
+            continue
+        if byte == ord("("):
+            index = _skip_pdf_literal_string(data, index + 1)
+            continue
+        if byte == ord("<") and not data.startswith(b"<<", index):
+            closing = data.find(b">", index + 1)
+            index = len(data) if closing < 0 else closing + 1
+            continue
+        if data.startswith(b"<<", index) or data.startswith(b">>", index):
+            token = data[index : index + 2].decode("ascii")
+            index += 2
+            _append_pdf_token(tokens, "punct", token, array_children)
+            continue
+        if byte in b"[]{}":
+            token = chr(byte)
+            index += 1
+            if token == "[":
+                if len(array_children) >= MAX_PDF_LEXICAL_DEPTH:
+                    raise UnsafeQuoteFileError(
+                        "pdf lexical nesting is too deep"
+                    )
+                if array_children:
+                    array_children[-1] += 1
+                array_children.append(0)
+            elif token == "]":
+                if array_children:
+                    array_children.pop()
+            _append_pdf_token(tokens, "punct", token, array_children)
+            continue
+        if byte == ord("/"):
+            end = _pdf_token_end(data, index + 1)
+            value = _decode_pdf_name(data[index + 1 : end])
+            index = end
+            _append_pdf_token(tokens, "name", value, array_children)
+            continue
+        end = _pdf_token_end(data, index)
+        if end == index:
+            index += 1
+            continue
+        value = data[index:end].decode("latin-1")
+        index = end
+        _append_pdf_token(tokens, "word", value, array_children)
+        if value == "stream":
+            closing = data.find(b"endstream", index)
+            index = len(data) if closing < 0 else closing + len(b"endstream")
+    return tokens
+
+
+def _append_pdf_token(
+    tokens: list[_PdfLexicalToken],
+    kind: str,
+    value: str,
+    array_children: list[int],
+) -> None:
+    tokens.append(_PdfLexicalToken(kind, value))
+    if len(tokens) > MAX_PDF_LEXICAL_TOKENS:
+        raise UnsafeQuoteFileError("pdf has too many lexical tokens")
+    if array_children and not (kind == "punct" and value in {"[", "]"}):
+        array_children[-1] += 1
+        if array_children[-1] > MAX_PDF_DIRECT_ARRAY_CHILDREN:
+            raise UnsafeQuoteFileError(
+                "pdf direct array has too many children"
+            )
+
+
+def _skip_pdf_literal_string(data: bytes, index: int) -> int:
+    depth = 1
+    while index < len(data) and depth:
+        byte = data[index]
+        if byte == ord("\\"):
+            index += 2
+            continue
+        if byte == ord("("):
+            depth += 1
+            if depth > MAX_PDF_LEXICAL_DEPTH:
+                raise UnsafeQuoteFileError(
+                    "pdf literal string nesting is too deep"
+                )
+        elif byte == ord(")"):
+            depth -= 1
+        index += 1
+    return index
+
+
+def _pdf_token_end(data: bytes, index: int) -> int:
+    delimiters = b"\x00\t\n\x0c\r ()<>[]{}/%"
+    while index < len(data) and data[index] not in delimiters:
+        index += 1
+    return index
+
+
+def _decode_pdf_name(value: bytes) -> str:
+    decoded = bytearray()
+    index = 0
+    while index < len(value):
+        if (
+            value[index] == ord("#")
+            and index + 2 < len(value)
+            and all(
+                character in b"0123456789abcdefABCDEF"
+                for character in value[index + 1 : index + 3]
+            )
+        ):
+            decoded.append(int(value[index + 1 : index + 3], 16))
+            index += 3
+        else:
+            decoded.append(value[index])
+            index += 1
+    return decoded.decode("latin-1")
 
 
 def _bounded_pdf_page_content(
