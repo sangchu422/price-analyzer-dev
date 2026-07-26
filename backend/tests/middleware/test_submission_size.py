@@ -5,6 +5,7 @@ import json
 
 from app.core.config import settings
 from app.middleware.submission_size import SubmissionBodyLimitMiddleware
+from app.middleware.submission_size import _RequestBodyTooLarge
 
 
 def _run_middleware(messages, monkeypatch, *, maximum: int):
@@ -72,3 +73,7 @@ def test_fragmented_body_without_content_length_aborts_at_limit(
     assert sent[0]["status"] == 413
     payload = json.loads(sent[1]["body"])
     assert payload["detail"]["error_code"] == "REQUEST_BODY_TOO_LARGE"
+
+
+def test_size_abort_uses_multipart_cleanup_compatible_oserror() -> None:
+    assert issubclass(_RequestBodyTooLarge, OSError)

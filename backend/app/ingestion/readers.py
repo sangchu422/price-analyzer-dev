@@ -7,7 +7,7 @@ import threading
 import zipfile
 import zlib
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,12 @@ import xlrd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
-from pypdf.generic import ArrayObject, StreamObject
+from pypdf.generic import (
+    ArrayObject,
+    DictionaryObject,
+    IndirectObject,
+    StreamObject,
+)
 
 
 SUPPORTED_QUOTE_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
@@ -35,10 +40,16 @@ MAX_XLS_SHEET_CELLS = 2_000_000
 MAX_XLS_TOTAL_CELLS = 5_000_000
 MAX_PDF_PAGES = 200
 MAX_PDF_COMPRESSED_CONTENT_BYTES = 25 * 1024 * 1024
-MAX_PDF_DECODED_CONTENT_BYTES = 16 * 1024 * 1024
+MAX_PDF_DECODED_CONTENT_BYTES = 32 * 1024 * 1024
 MAX_PDF_EXTRACTED_TEXT_CHARS = 5_000_000
 MAX_PDF_EXTRACTED_ROWS = 200_000
 MAX_PDF_TOTAL_FLATE_DECODED_BYTES = 32 * 1024 * 1024
+MAX_PDF_REACHABLE_OBJECTS = 20_000
+MAX_PDF_RESOURCE_DEPTH = 50
+MAX_PDF_IMAGE_COUNT = 1_000
+MAX_PDF_IMAGE_RAW_BYTES = 16 * 1024 * 1024
+MAX_PDF_IMAGE_PIXELS = 25_000_000
+MAX_PDF_TOTAL_IMAGE_PIXELS = 100_000_000
 _PDF_DECODE_PATCH_LOCK = threading.Lock()
 REQUIRED_XLSX_ARCHIVE_ENTRIES = frozenset(
     {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}
@@ -236,23 +247,11 @@ def _read_pdf(path: Path) -> list[ParsedRow]:
     if len(reader.pages) > MAX_PDF_PAGES:
         raise UnsafeQuoteFileError("pdf has too many pages")
     parsed: list[ParsedRow] = []
-    compressed_total = 0
-    decoded_total = 0
     text_total = 0
     row_total = 0
+    resource_budget = _PdfResourceBudget()
     for page_number, page in enumerate(reader.pages, start=1):
-        compressed, decoded = _bounded_pdf_page_content(
-            page,
-            decoded_remaining=(
-                MAX_PDF_DECODED_CONTENT_BYTES - decoded_total
-            ),
-        )
-        compressed_total += compressed
-        decoded_total += decoded
-        if compressed_total > MAX_PDF_COMPRESSED_CONTENT_BYTES:
-            raise UnsafeQuoteFileError(
-                "pdf compressed content exceeds safe limits"
-            )
+        _inspect_pdf_page_graph(page, resource_budget)
         text = page.extract_text() or ""
         text_total += len(text)
         if text_total > MAX_PDF_EXTRACTED_TEXT_CHARS:
@@ -282,50 +281,164 @@ def _read_pdf(path: Path) -> list[ParsedRow]:
     return parsed
 
 
+@dataclass
+class _PdfResourceBudget:
+    visited: set[tuple[object, ...]] = field(default_factory=set)
+    object_count: int = 0
+    raw_bytes: int = 0
+    decoded_bytes: int = 0
+    decoded_limit: int = MAX_PDF_DECODED_CONTENT_BYTES
+    image_count: int = 0
+    image_raw_bytes: int = 0
+    image_pixels: int = 0
+
+
+def _inspect_pdf_page_graph(
+    page: Any,
+    budget: _PdfResourceBudget,
+) -> None:
+    if not hasattr(page, "raw_get"):
+        return
+    for root_name in ("/Contents", "/Resources"):
+        try:
+            root = page.raw_get(root_name)
+        except KeyError:
+            continue
+        _inspect_pdf_object(root, budget, depth=0)
+
+
+def _inspect_pdf_object(
+    value: Any,
+    budget: _PdfResourceBudget,
+    *,
+    depth: int,
+) -> None:
+    if depth > MAX_PDF_RESOURCE_DEPTH:
+        raise UnsafeQuoteFileError("pdf resource graph is too deep")
+    if isinstance(value, IndirectObject):
+        marker = (
+            "indirect",
+            id(value.pdf),
+            value.idnum,
+            value.generation,
+        )
+        if marker in budget.visited:
+            return
+        _visit_pdf_marker(marker, budget)
+        _inspect_pdf_object(value.get_object(), budget, depth=depth + 1)
+        return
+    if isinstance(value, (DictionaryObject, ArrayObject)):
+        marker = ("direct", id(value))
+        if marker in budget.visited:
+            return
+        _visit_pdf_marker(marker, budget)
+    if isinstance(value, StreamObject):
+        _inspect_pdf_stream(value, budget)
+        for child in value.values():
+            _inspect_pdf_object(child, budget, depth=depth + 1)
+    elif isinstance(value, DictionaryObject):
+        for child in value.values():
+            _inspect_pdf_object(child, budget, depth=depth + 1)
+    elif isinstance(value, ArrayObject):
+        for child in value:
+            _inspect_pdf_object(child, budget, depth=depth + 1)
+
+
+def _visit_pdf_marker(
+    marker: tuple[object, ...],
+    budget: _PdfResourceBudget,
+) -> None:
+    budget.visited.add(marker)
+    budget.object_count += 1
+    if budget.object_count > MAX_PDF_REACHABLE_OBJECTS:
+        raise UnsafeQuoteFileError(
+            "pdf resource graph has too many objects"
+        )
+
+
+def _inspect_pdf_stream(
+    stream: StreamObject,
+    budget: _PdfResourceBudget,
+) -> None:
+    raw = stream._data
+    budget.raw_bytes += len(raw)
+    if budget.raw_bytes > MAX_PDF_COMPRESSED_CONTENT_BYTES:
+        raise UnsafeQuoteFileError(
+            "pdf reachable stream bytes exceed safe limits"
+        )
+    filters = _pdf_filter_names(stream)
+    if str(stream.get("/Subtype", "")) == "/Image":
+        _inspect_pdf_image(stream, filters, raw, budget)
+        # PageObject._extract_text explicitly skips image XObjects.
+        if filters in (("/DCTDecode",), ("/JPXDecode",)):
+            return
+    remaining = budget.decoded_limit - budget.decoded_bytes
+    if not filters:
+        decoded_size = len(raw)
+    elif filters in (("/FlateDecode",), ("/Fl",)):
+        decoded_size = _bounded_flate_size(raw, remaining)
+    else:
+        raise UnsafeQuoteFileError(
+            "pdf resource uses an unbounded compressed filter"
+        )
+    budget.decoded_bytes += decoded_size
+    if budget.decoded_bytes > budget.decoded_limit:
+        raise UnsafeQuoteFileError(
+            "pdf decoded resource bytes exceed safe limits"
+        )
+
+
+def _inspect_pdf_image(
+    stream: StreamObject,
+    filters: tuple[str, ...],
+    raw: bytes,
+    budget: _PdfResourceBudget,
+) -> None:
+    width = _pdf_positive_int(stream.get("/Width"))
+    height = _pdf_positive_int(stream.get("/Height"))
+    if width is None or height is None:
+        raise UnsafeQuoteFileError(
+            "pdf image dimensions are missing or invalid"
+        )
+    pixels = width * height
+    budget.image_count += 1
+    budget.image_raw_bytes += len(raw)
+    budget.image_pixels += pixels
+    if (
+        budget.image_count > MAX_PDF_IMAGE_COUNT
+        or budget.image_raw_bytes > MAX_PDF_IMAGE_RAW_BYTES
+        or pixels > MAX_PDF_IMAGE_PIXELS
+        or budget.image_pixels > MAX_PDF_TOTAL_IMAGE_PIXELS
+    ):
+        raise UnsafeQuoteFileError("pdf image resources exceed safe limits")
+    if filters in (("/DCTDecode",), ("/JPXDecode",)):
+        return
+
+
+def _pdf_positive_int(value: Any) -> int | None:
+    if hasattr(value, "get_object"):
+        value = value.get_object()
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _bounded_pdf_page_content(
     page: Any,
     *,
     decoded_remaining: int,
 ) -> tuple[int, int]:
+    budget = _PdfResourceBudget(decoded_limit=decoded_remaining)
     if not hasattr(page, "raw_get"):
         return 0, 0
     try:
         contents = page.raw_get("/Contents")
     except KeyError:
         return 0, 0
-    resolved = contents.get_object()
-    streams = (
-        [item.get_object() for item in resolved]
-        if isinstance(resolved, ArrayObject)
-        else [resolved]
-    )
-    compressed_total = 0
-    decoded_total = 0
-    for stream in streams:
-        if not isinstance(stream, StreamObject):
-            raise UnsafeQuoteFileError("pdf page content is not a stream")
-        raw = stream._data
-        compressed_total += len(raw)
-        remaining = decoded_remaining - decoded_total
-        if remaining < 0:
-            raise UnsafeQuoteFileError(
-                "pdf decoded content exceeds safe limits"
-            )
-        filters = _pdf_filter_names(stream)
-        if not filters:
-            decoded_size = len(raw)
-        elif filters in (("/FlateDecode",), ("/Fl",)):
-            decoded_size = _bounded_flate_size(raw, remaining)
-        else:
-            raise UnsafeQuoteFileError(
-                "pdf content uses an unbounded compressed filter"
-            )
-        decoded_total += decoded_size
-        if decoded_total > decoded_remaining:
-            raise UnsafeQuoteFileError(
-                "pdf decoded content exceeds safe limits"
-            )
-    return compressed_total, decoded_total
+    _inspect_pdf_object(contents, budget, depth=0)
+    return budget.raw_bytes, budget.decoded_bytes
 
 
 def _pdf_filter_names(stream: StreamObject) -> tuple[str, ...]:

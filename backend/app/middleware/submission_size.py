@@ -62,7 +62,7 @@ class SubmissionBodyLimitMiddleware:
             await _send_too_large(send, maximum)
 
 
-class _RequestBodyTooLarge(Exception):
+class _RequestBodyTooLarge(OSError):
     pass
 
 

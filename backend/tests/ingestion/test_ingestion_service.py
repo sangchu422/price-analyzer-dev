@@ -655,3 +655,101 @@ def test_pdf_flate_decode_is_bounded_and_other_filters_are_rejected() -> None:
             FakePage(),
             decoded_remaining=100,
         )
+
+
+def test_pdf_rejects_runlength_tounicode_before_decoder_is_invoked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from pypdf.generic import (
+        DictionaryObject,
+        EncodedStreamObject,
+        NameObject,
+    )
+
+    from app.ingestion import readers
+
+    to_unicode = EncodedStreamObject()
+    to_unicode._data = b"\x80A\x80B\x80C"
+    to_unicode[NameObject("/Filter")] = NameObject("/RunLengthDecode")
+    font = DictionaryObject(
+        {NameObject("/ToUnicode"): to_unicode}
+    )
+    resources = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): font}
+            )
+        }
+    )
+    decoder_called = False
+
+    class FakePage:
+        def raw_get(self, name):
+            if name == "/Resources":
+                return resources
+            raise KeyError(name)
+
+        def extract_text(self) -> str:
+            nonlocal decoder_called
+            decoder_called = True
+            to_unicode.get_data()
+            return ""
+
+    class FakePdf:
+        pages = [FakePage()]
+
+    monkeypatch.setattr(readers, "PdfReader", lambda _: FakePdf())
+    quote = tmp_path / "resource-bomb.pdf"
+    quote.write_bytes(b"fixture")
+
+    with pytest.raises(UnsafeQuoteFileError):
+        read_quote(quote)
+
+    assert not decoder_called
+
+
+def test_pdf_allows_bounded_dct_image_that_text_extraction_skips(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from pypdf.generic import (
+        DictionaryObject,
+        EncodedStreamObject,
+        NameObject,
+        NumberObject,
+    )
+
+    from app.ingestion import readers
+
+    image = EncodedStreamObject()
+    image._data = b"bounded-jpeg"
+    image[NameObject("/Subtype")] = NameObject("/Image")
+    image[NameObject("/Filter")] = NameObject("/DCTDecode")
+    image[NameObject("/Width")] = NumberObject(100)
+    image[NameObject("/Height")] = NumberObject(80)
+    resources = DictionaryObject(
+        {
+            NameObject("/XObject"): DictionaryObject(
+                {NameObject("/Im1"): image}
+            )
+        }
+    )
+
+    class FakePage:
+        def raw_get(self, name):
+            if name == "/Resources":
+                return resources
+            raise KeyError(name)
+
+        def extract_text(self) -> str:
+            return ""
+
+    class FakePdf:
+        pages = [FakePage()]
+
+    monkeypatch.setattr(readers, "PdfReader", lambda _: FakePdf())
+    quote = tmp_path / "bounded-image.pdf"
+    quote.write_bytes(b"fixture")
+
+    assert read_quote(quote) == []
