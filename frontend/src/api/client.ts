@@ -81,12 +81,32 @@ export interface StandardItemSummary {
   id: number;
   current_version: StandardItemVersion;
   member_count: number;
+  observation_count: number;
+  evidence_quality: EvidenceQuality | null;
+  current_price: PriceStatistics | null;
+  supplier_summary: string[];
+  maker_summary: string[];
+  quote_date_start: string | null;
+  quote_date_end: string | null;
+  provenance: StandardBuildProvenance | null;
 }
 
 export interface StandardItemListResponse {
   items: StandardItemSummary[];
   next_cursor: number | null;
   limit: number;
+  latest_build: StandardBuildProvenance | null;
+}
+
+export type EvidenceQuality =
+  | "SINGLE_OBSERVATION"
+  | "MULTI_OBSERVATION";
+
+export interface StandardBuildProvenance {
+  build_run_id: number;
+  status: "SUCCEEDED";
+  built_at: string;
+  rule_version: string;
 }
 
 export interface UnmatchedItem {
@@ -215,6 +235,7 @@ export interface PriceVersion {
   standard_item_id: number;
   version_number: number;
   observation_count: number;
+  evidence_quality: EvidenceQuality;
   supplier_count: number;
   latest_quote_date: string | null;
   prices: PriceStatistics;
@@ -248,6 +269,25 @@ export interface PriceVersion {
 export interface PriceHistory {
   standard_item_id: number;
   versions: PriceVersion[];
+  next_cursor: number | null;
+  limit: number;
+  latest_build: StandardBuildProvenance | null;
+}
+
+export interface StandardEvidence {
+  standard_item_id: number;
+  standard_price_version_id: number;
+  observation_count: number;
+  evidence_quality: EvidenceQuality;
+  provenance: StandardBuildProvenance | null;
+  observations: Array<{
+    raw_item_id: number;
+    unit_price: string;
+    supplier_name: string | null;
+    maker: string | null;
+    quote_date: string | null;
+    source: PriceSource & { cells: string | null };
+  }>;
   next_cursor: number | null;
   limit: number;
 }
@@ -508,15 +548,38 @@ export function saveDocumentMetadata(
 
 export function getStandardItems({
   afterId,
+  search,
+  evidenceQuality,
   signal,
 }: {
   afterId?: number;
+  search?: string;
+  evidenceQuality?: EvidenceQuality;
   signal?: AbortSignal;
 } = {}) {
   const params = new URLSearchParams({ limit: "50" });
   if (afterId !== undefined) params.set("after_id", String(afterId));
+  if (search) params.set("search", search);
+  if (evidenceQuality) params.set("evidence_quality", evidenceQuality);
   return requestJson<StandardItemListResponse>(
     `/api/catalog/standard-items?${params.toString()}`,
+    { signal },
+  );
+}
+
+export function getStandardEvidence({
+  standardItemId,
+  afterId,
+  signal,
+}: {
+  standardItemId: number;
+  afterId?: number;
+  signal?: AbortSignal;
+}) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (afterId !== undefined) params.set("after_id", String(afterId));
+  return requestJson<StandardEvidence>(
+    `/api/catalog/standard-items/${standardItemId}/evidence?${params.toString()}`,
     { signal },
   );
 }

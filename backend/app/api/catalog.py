@@ -34,7 +34,6 @@ from app.catalog.service import (
     build_candidate_embedding_runtime,
     candidate_matches,
     create_standard_item,
-    list_standard_items,
     standard_item_members,
     unmatched_included,
 )
@@ -43,6 +42,14 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.standard_database.read_service import (
+    EvidenceQuality,
+    StandardBuildProvenance,
+    StandardExplorerNotFound,
+    StandardExplorerSummary,
+    list_standard_explorer_items,
+    standard_item_evidence,
+)
 
 
 router = APIRouter()
@@ -185,10 +192,64 @@ class StandardItemResponse(BaseModel):
 
 class StandardItemSummaryResponse(StandardItemResponse):
     member_count: int
+    observation_count: int
+    evidence_quality: EvidenceQuality | None
+    current_price: "ExplorerPriceResponse | None"
+    supplier_summary: list[str]
+    maker_summary: list[str]
+    quote_date_start: date | None
+    quote_date_end: date | None
+    provenance: "BuildProvenanceResponse | None"
+
+
+class ExplorerPriceResponse(BaseModel):
+    minimum: str
+    median: str
+    average: str
+    maximum: str
+
+
+class BuildProvenanceResponse(BaseModel):
+    build_run_id: int
+    status: str
+    built_at: datetime
+    rule_version: str
 
 
 class StandardItemListResponse(BaseModel):
     items: list[StandardItemSummaryResponse]
+    next_cursor: int | None
+    limit: int
+    latest_build: BuildProvenanceResponse | None
+
+
+class StandardEvidenceSourceResponse(BaseModel):
+    document_id: int
+    logical_name: str
+    variant_id: int
+    path: str
+    sheet: str | None
+    page: int | None
+    row: int | None
+    cells: str | None
+
+
+class StandardEvidenceRowResponse(BaseModel):
+    raw_item_id: int
+    unit_price: str
+    supplier_name: str | None
+    maker: str | None
+    quote_date: date | None
+    source: StandardEvidenceSourceResponse
+
+
+class StandardEvidenceResponse(BaseModel):
+    standard_item_id: int
+    standard_price_version_id: int
+    observation_count: int
+    evidence_quality: EvidenceQuality
+    provenance: BuildProvenanceResponse | None
+    observations: list[StandardEvidenceRowResponse]
     next_cursor: int | None
     limit: int
 
@@ -483,6 +544,57 @@ def _membership_payload(
     }
 
 
+def _build_provenance_payload(
+    provenance: StandardBuildProvenance | None,
+) -> dict[str, object] | None:
+    if provenance is None:
+        return None
+    return {
+        "build_run_id": provenance.build_run_id,
+        "status": provenance.status.value,
+        "built_at": provenance.built_at,
+        "rule_version": provenance.rule_version,
+    }
+
+
+def _explorer_price_payload(
+    summary: StandardExplorerSummary,
+) -> dict[str, str] | None:
+    price = summary.current_price
+    if price is None:
+        return None
+    return {
+        "minimum": format(price.minimum_price, "f"),
+        "median": format(price.median_price, "f"),
+        "average": format(price.average_price, "f"),
+        "maximum": format(price.maximum_price, "f"),
+    }
+
+
+def _explorer_summary_payload(
+    summary: StandardExplorerSummary,
+) -> dict[str, object]:
+    price = summary.current_price
+    observation_count = 0 if price is None else price.observation_count
+    return {
+        "id": summary.current_version.standard_item_id,
+        "current_version": _version_payload(summary.current_version),
+        "member_count": observation_count,
+        "observation_count": observation_count,
+        "evidence_quality": (
+            None
+            if summary.evidence_quality is None
+            else summary.evidence_quality.value
+        ),
+        "current_price": _explorer_price_payload(summary),
+        "supplier_summary": list(summary.supplier_summary),
+        "maker_summary": list(summary.maker_summary),
+        "quote_date_start": summary.quote_date_start,
+        "quote_date_end": summary.quote_date_end,
+        "provenance": _build_provenance_payload(summary.provenance),
+    }
+
+
 @router.get(
     "/standard-items",
     response_model=StandardItemListResponse,
@@ -492,20 +604,75 @@ def get_standard_items(
     *,
     after_id: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    search: str | None = Query(None, max_length=200),
+    evidence_quality: EvidenceQuality | None = Query(None),
 ) -> dict[str, object]:
-    rows, next_cursor = list_standard_items(
+    rows, next_cursor, latest_build = list_standard_explorer_items(
         session,
         after_id=after_id,
         limit=limit,
+        search=search,
+        quality=evidence_quality,
     )
     return {
-        "items": [
+        "items": [_explorer_summary_payload(row) for row in rows],
+        "next_cursor": next_cursor,
+        "limit": limit,
+        "latest_build": _build_provenance_payload(latest_build),
+    }
+
+
+@router.get(
+    "/standard-items/{standard_item_id}/evidence",
+    response_model=StandardEvidenceResponse,
+)
+def get_standard_item_evidence(
+    standard_item_id: int,
+    session: Session = Depends(get_session),
+    *,
+    after_id: int | None = Query(None, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+) -> dict[str, object]:
+    try:
+        price, observations, next_cursor, provenance = (
+            standard_item_evidence(
+                session,
+                standard_item_id,
+                after_id=after_id,
+                limit=limit,
+            )
+        )
+    except StandardExplorerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "standard_item_id": standard_item_id,
+        "standard_price_version_id": price.id,
+        "observation_count": price.observation_count,
+        "evidence_quality": (
+            EvidenceQuality.SINGLE_OBSERVATION.value
+            if price.observation_count == 1
+            else EvidenceQuality.MULTI_OBSERVATION.value
+        ),
+        "provenance": _build_provenance_payload(provenance),
+        "observations": [
             {
-                "id": row.current_version.standard_item_id,
-                "current_version": _version_payload(row.current_version),
-                "member_count": row.member_count,
+                "raw_item_id": row.raw_item_id,
+                "unit_price": format(row.unit_price, "f"),
+                "supplier_name": row.supplier_name,
+                "maker": row.maker,
+                "quote_date": row.quote_date,
+                "source": {
+                    "document_id": row.document_id,
+                    "logical_name": row.logical_name,
+                    "variant_id": row.variant_id,
+                    "path": row.path,
+                    "sheet": row.sheet,
+                    "page": row.page,
+                    "row": row.row,
+                    "cells": row.cells,
+                },
             }
-            for row in rows
+            for row in observations
         ],
         "next_cursor": next_cursor,
         "limit": limit,

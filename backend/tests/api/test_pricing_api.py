@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -18,6 +18,10 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 from app.api.pricing import _safe_exclusion_context
+from app.standard_database.models import (
+    StandardBuildStatus,
+    StandardDatabaseBuildRun,
+)
 
 
 def _seed(session: Session) -> StandardItem:
@@ -110,6 +114,7 @@ def test_pricing_api_draft_approval_and_history(
     )
     assert approved.status_code == 201
     assert approved.json()["version_number"] == 1
+    assert approved.json()["evidence_quality"] == "MULTI_OBSERVATION"
     assert approved.json()["draft_fingerprint"] == draft["fingerprint"]
     assert approved.json()["audit_status"] == "CAPTURED"
     assert approved.json()["standard_item_version"] == {
@@ -149,11 +154,23 @@ def test_pricing_api_draft_approval_and_history(
         )
     )
     api_session.commit()
+    build = StandardDatabaseBuildRun(
+        input_fingerprint="a" * 64,
+        rule_version="STANDARD_DB_EXACT_V2",
+        status=StandardBuildStatus.SUCCEEDED,
+        finished_at=datetime(2026, 7, 20, 12, 0),
+    )
+    api_session.add(build)
+    api_session.commit()
     history = client.get(
         f"/api/pricing/standard-items/{item.id}/versions"
     )
     assert history.status_code == 200
     assert len(history.json()["versions"]) == 1
+    assert history.json()["latest_build"]["build_run_id"] == build.id
+    assert history.json()["versions"][0]["evidence_quality"] == (
+        "MULTI_OBSERVATION"
+    )
     assert len(history.json()["versions"][0]["observations"]) == 2
     assert history.json()["versions"][0]["draft_fingerprint"] == (
         draft["fingerprint"]

@@ -33,6 +33,11 @@ from app.pricing.service import (
     current_standard_price_version,
     standard_price_versions,
 )
+from app.standard_database.read_service import (
+    EvidenceQuality,
+    evidence_quality,
+    latest_build_provenance,
+)
 
 
 router = APIRouter()
@@ -101,6 +106,7 @@ class PriceDraftResponse(BaseModel):
     current_standard_price_version_id: int | None
     canonical_unit: str | None
     observation_count: int
+    evidence_quality: EvidenceQuality
     supplier_count: int
     latest_quote_date: date | None
     prices: PriceStatisticsResponse
@@ -151,6 +157,7 @@ class PriceVersionResponse(BaseModel):
     standard_item_id: int
     version_number: int
     observation_count: int
+    evidence_quality: EvidenceQuality
     supplier_count: int
     latest_quote_date: date | None
     prices: PriceStatisticsResponse
@@ -173,6 +180,14 @@ class PriceVersionHistoryResponse(BaseModel):
     versions: list[PriceVersionResponse]
     next_cursor: int | None
     limit: int
+    latest_build: "PriceBuildProvenanceResponse | None"
+
+
+class PriceBuildProvenanceResponse(BaseModel):
+    build_run_id: int
+    status: str
+    built_at: datetime
+    rule_version: str
 
 
 def _decimal(value: object) -> str:
@@ -224,6 +239,9 @@ def _draft_payload(
         ),
         "canonical_unit": draft.canonical_unit,
         "observation_count": draft.observation_count,
+        "evidence_quality": evidence_quality(
+            draft.observation_count
+        ).value,
         "supplier_count": draft.supplier_count,
         "latest_quote_date": draft.latest_quote_date,
         "prices": {
@@ -300,6 +318,9 @@ def _version_payload(version: StandardPriceVersion) -> dict[str, object]:
         "standard_item_id": version.standard_item_id,
         "version_number": version.version_number,
         "observation_count": version.observation_count,
+        "evidence_quality": evidence_quality(
+            version.observation_count
+        ).value,
         "supplier_count": version.supplier_count,
         "latest_quote_date": version.latest_quote_date,
         "prices": {
@@ -448,11 +469,22 @@ def get_price_versions(
             after_id=after_id,
             limit=limit,
         )
+        provenance = latest_build_provenance(session)
         return {
             "standard_item_id": standard_item_id,
             "versions": [_version_payload(row) for row in versions],
             "next_cursor": next_cursor,
             "limit": limit,
+            "latest_build": (
+                None
+                if provenance is None
+                else {
+                    "build_run_id": provenance.build_run_id,
+                    "status": provenance.status.value,
+                    "built_at": provenance.built_at,
+                    "rule_version": provenance.rule_version,
+                }
+            ),
         }
     except Exception as exc:
         _raise_pricing_error(session, exc)

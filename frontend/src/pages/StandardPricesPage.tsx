@@ -1,454 +1,197 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  useInfiniteQuery,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 
 import {
-  ApiError,
-  approvePrice,
-  getPriceDraft,
-  getStandardPriceVersions,
+  getStandardEvidence,
   getStandardItems,
+  getStandardPriceVersions,
+  type EvidenceQuality,
   type PriceVersion,
+  type StandardItemSummary,
 } from "../api/client";
+import { EvidenceBadge } from "../components/EvidenceBadge";
+import { MetricStrip } from "../components/MetricStrip";
 
 export function StandardPricesPage() {
-  const queryClient = useQueryClient();
-  const linkedItemId = positiveIntegerParam("item_id");
-  const linkedVersionId = positiveIntegerParam("version_id");
-  const [requestedItemId, setRequestedItemId] = useState<number | null>(
-    linkedItemId,
-  );
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [quality, setQuality] = useState<EvidenceQuality | "">("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [actor, setActor] = useState("");
-  const versionLinkRefs = useRef(new Map<number, HTMLAnchorElement>());
-  const focusedLinkedVersionId = useRef<number | null>(null);
-  const attemptedCatalogCursors = useRef(new Set<number>());
-  const attemptedHistoryCursors = useRef(new Set<string>());
-  const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    document.title = "표준 DB · Price Analyzer";
+    return () => {
+      document.title = "Price Analyzer";
+    };
+  }, []);
+
   const catalog = useInfiniteQuery({
-    queryKey: ["standard-items"],
+    queryKey: ["standard-db", search, quality],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
-      getStandardItems({ afterId: pageParam, signal }),
+      getStandardItems({
+        afterId: pageParam,
+        search: search || undefined,
+        evidenceQuality: quality || undefined,
+        signal,
+      }),
     getNextPageParam: safeNextCursor,
     retry: false,
   });
-  const catalogItems = uniqueById(
+  const items = uniqueById(
     catalog.data?.pages.flatMap((page) => page.items) ?? [],
   );
-  const {
-    fetchNextPage,
-    hasNextPage,
-    isFetchNextPageError,
-    isFetchingNextPage,
-  } = catalog;
-  const linkedItem = catalogItems.find((item) => item.id === requestedItemId);
-  const effectiveId =
-    linkedItem?.id ??
-    (requestedItemId !== null
-      ? null
-      : catalogItems.some((item) => item.id === selectedId)
-      ? selectedId
-      : catalogItems[0]?.id ?? null);
   const selected =
-    catalogItems.find((item) => item.id === effectiveId) ?? null;
-  const activeLinkedVersionId =
-    requestedItemId !== null && linkedItem ? linkedVersionId : null;
-  const catalogCursor =
-    catalog.data?.pages.at(-1)?.next_cursor ?? null;
-  const linkedItemMissing =
-    requestedItemId !== null &&
-    !linkedItem &&
-    catalog.data !== undefined &&
-    !hasNextPage &&
-    !isFetchingNextPage &&
-    !isFetchNextPageError;
+    items.find((item) => item.id === selectedId) ?? items[0] ?? null;
+  const latestBuild = catalog.data?.pages[0]?.latest_build ?? null;
 
-  useEffect(() => {
-    if (
-      requestedItemId === null ||
-      linkedItem ||
-      !hasNextPage ||
-      isFetchingNextPage ||
-      isFetchNextPageError ||
-      catalogCursor === null ||
-      attemptedCatalogCursors.current.has(catalogCursor)
-    ) {
-      return;
-    }
-    attemptedCatalogCursors.current.add(catalogCursor);
-    void fetchNextPage();
-  }, [
-    requestedItemId,
-    linkedItem,
-    hasNextPage,
-    isFetchingNextPage,
-    isFetchNextPageError,
-    catalogCursor,
-    fetchNextPage,
-  ]);
-  const draft = useQuery({
-    queryKey: ["price-draft", effectiveId],
-    queryFn: ({ signal }) => getPriceDraft(effectiveId!, signal),
-    enabled: effectiveId !== null,
-    retry: false,
-  });
-  const history = useInfiniteQuery({
-    queryKey: ["price-history", effectiveId],
+  const evidence = useInfiniteQuery({
+    queryKey: ["standard-db-evidence", selected?.id],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
-      getStandardPriceVersions({
-        standardItemId: effectiveId!,
+      getStandardEvidence({
+        standardItemId: selected!.id,
         afterId: pageParam,
         signal,
       }),
     getNextPageParam: safeNextCursor,
-    enabled: effectiveId !== null,
+    enabled: selected !== null,
     retry: false,
   });
-  const historyVersions = uniqueById(
+  const observations =
+    evidence.data?.pages.flatMap((page) => page.observations) ?? [];
+
+  const history = useInfiniteQuery({
+    queryKey: ["standard-db-history", selected?.id],
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      getStandardPriceVersions({
+        standardItemId: selected!.id,
+        afterId: pageParam,
+        signal,
+      }),
+    getNextPageParam: safeNextCursor,
+    enabled: selected !== null,
+    retry: false,
+  });
+  const versions = uniqueById(
     history.data?.pages.flatMap((page) => page.versions) ?? [],
   );
-  const {
-    fetchNextPage: fetchNextHistoryPage,
-    hasNextPage: hasNextHistoryPage,
-    isFetchNextPageError: isFetchNextHistoryPageError,
-    isFetchingNextPage: isFetchingNextHistoryPage,
-  } = history;
-  const linkedVersion = historyVersions.find(
-    (version) => version.id === activeLinkedVersionId,
-  );
-  const historyCursor = history.data?.pages.at(-1)?.next_cursor ?? null;
-  const historyCursorKey =
-    effectiveId !== null && historyCursor !== null
-      ? `${effectiveId}:${historyCursor}`
-      : null;
-  const linkedVersionMissing =
-    activeLinkedVersionId !== null &&
-    !linkedVersion &&
-    history.data !== undefined &&
-    !hasNextHistoryPage &&
-    !isFetchingNextHistoryPage &&
-    !isFetchNextHistoryPageError;
-
-  useEffect(() => {
-    if (
-      activeLinkedVersionId === null ||
-      linkedVersion ||
-      !hasNextHistoryPage ||
-      isFetchingNextHistoryPage ||
-      isFetchNextHistoryPageError ||
-      historyCursorKey === null ||
-      attemptedHistoryCursors.current.has(historyCursorKey)
-    ) {
-      return;
-    }
-    attemptedHistoryCursors.current.add(historyCursorKey);
-    void fetchNextHistoryPage();
-  }, [
-    activeLinkedVersionId,
-    linkedVersion,
-    hasNextHistoryPage,
-    isFetchingNextHistoryPage,
-    isFetchNextHistoryPageError,
-    historyCursorKey,
-    fetchNextHistoryPage,
-  ]);
-
-  useEffect(() => {
-    if (
-      activeLinkedVersionId === null ||
-      !linkedVersion ||
-      focusedLinkedVersionId.current === activeLinkedVersionId
-    ) {
-      return;
-    }
-    const link = versionLinkRefs.current.get(activeLinkedVersionId);
-    if (!link) return;
-    link.focus();
-    focusedLinkedVersionId.current = activeLinkedVersionId;
-  }, [activeLinkedVersionId, linkedVersion]);
-
-  const approval = useMutation({
-    mutationFn: () =>
-      approvePrice(effectiveId!, {
-        expected_fingerprint: draft.data!.fingerprint,
-        expected_current_version_id:
-          draft.data!.current_standard_price_version_id,
-        approved_by: actor.trim(),
-      }),
-    onSuccess: (version) => {
-      setNotice({
-        kind: "success",
-        text: `표준단가 v${version.version_number}를 승인했습니다.`,
-      });
-      setActor("");
-      void queryClient.invalidateQueries({
-        queryKey: ["price-history", effectiveId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["price-draft", effectiveId],
-      });
-    },
-    onError: (error) => {
-      setNotice({
-        kind: "error",
-        text:
-          error instanceof ApiError && error.status === 409
-            ? "계산 근거나 승인 이력이 변경되었습니다. 최신 초안을 다시 확인해 주세요."
-            : "표준단가 버전을 승인하지 못했습니다.",
-      });
-      void queryClient.invalidateQueries({ queryKey: ["price-history", effectiveId] });
-      void queryClient.invalidateQueries({ queryKey: ["price-draft", effectiveId] });
-    },
-  });
 
   return (
-    <main className="workspace-page standard-price-page">
-      <header className="page-heading">
-        <div><p className="section-kicker">Standard price database</p><h1>표준 DB</h1></div>
-        <p>과거 견적의 현재 유효 행만 계산하고, 승인 시점의 근거를 변경 불가능한 버전으로 남깁니다.</p>
-      </header>
-      {notice && (
-        <div className={`workspace-notice is-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
-          {notice.text}
+    <main className="workspace-page standard-db-page">
+      <header className="standard-db-heading">
+        <div>
+          <p className="section-kicker">Historical quote reference</p>
+          <h1>표준 DB</h1>
+          <p>과거 견적의 정제 완료 품목과 단가 근거를 읽기 전용으로 확인합니다.</p>
         </div>
-      )}
-      <div className="split-workspace price-workspace">
-        <section className="work-list" aria-label="표준품목 목록">
-          <header><strong>표준품목</strong><span>{catalogItems.length}건</span></header>
-          {catalog.isPending && <p className="inline-state">불러오는 중…</p>}
-          {catalog.isError && <p className="inline-state is-error">표준품목을 불러오지 못했습니다.</p>}
+        <div className="build-status" aria-label="마지막 구축 상태">
+          <span>마지막 구축</span>
+          <strong>
+            {latestBuild ? formatDateTime(latestBuild.built_at) : "구축 기록 없음"}
+          </strong>
+          <small>{latestBuild?.rule_version ?? "—"}</small>
+        </div>
+      </header>
+
+      <form
+        className="standard-db-toolbar"
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setSelectedId(null);
+          setSearch(searchInput.trim());
+        }}
+      >
+        <label>
+          <span>표준 품목 검색</span>
+          <input
+            aria-label="표준 품목 검색"
+            type="search"
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            placeholder="품명, 사양 또는 단위"
+          />
+        </label>
+        <label>
+          <span>근거 품질</span>
+          <select
+            value={quality}
+            onChange={(event) => {
+              setSelectedId(null);
+              setQuality(event.target.value as EvidenceQuality | "");
+            }}
+          >
+            <option value="">전체</option>
+            <option value="SINGLE_OBSERVATION">근거 1건</option>
+            <option value="MULTI_OBSERVATION">근거 2건 이상</option>
+          </select>
+        </label>
+        <button type="submit">검색</button>
+      </form>
+
+      <div className="standard-db-workspace">
+        <section className="standard-db-list" aria-label="표준 품목 목록">
+          <header>
+            <strong>표준 품목</strong>
+            <span>{items.length.toLocaleString("ko-KR")}건 표시</span>
+          </header>
+          {catalog.isPending && <p className="inline-state">목록을 불러오는 중…</p>}
+          {catalog.isError && (
+            <div className="inline-state is-error" role="alert">
+              <p>표준 품목을 불러오지 못했습니다.</p>
+              <button type="button" onClick={() => void catalog.refetch()}>
+                다시 시도
+              </button>
+            </div>
+          )}
+          {!catalog.isPending && !catalog.isError && items.length === 0 && (
+            <p className="inline-state">검색 결과가 없습니다.</p>
+          )}
           <ul>
-            {catalogItems.map((item, index) => (
-              <li key={item.id} style={{ "--row-index": index } as React.CSSProperties}>
-                <button
-                  type="button"
-                  className={effectiveId === item.id ? "work-row is-selected" : "work-row"}
-                  onClick={() => {
-                    setRequestedItemId(null);
-                    setSelectedId(item.id);
-                    setNotice(null);
-                    setActor("");
-                  }}
-                >
-                  <strong>{item.current_version.canonical_name}</strong>
-                  <span>{item.current_version.canonical_spec ?? "사양 없음"}</span>
-                  <small>멤버 {item.member_count}개 · 카탈로그 v{item.current_version.version_number}</small>
-                </button>
-              </li>
+            {items.map((item, index) => (
+              <StandardItemRow
+                item={item}
+                selected={selected?.id === item.id}
+                index={index}
+                key={item.id}
+                onSelect={() => setSelectedId(item.id)}
+              />
             ))}
           </ul>
-          {hasNextPage && (
+          {catalog.hasNextPage && (
             <button
               className="load-more-button"
               type="button"
-              disabled={isFetchingNextPage}
-              onClick={() => void fetchNextPage()}
+              disabled={catalog.isFetchingNextPage}
+              onClick={() => void catalog.fetchNextPage()}
             >
-              {isFetchingNextPage
-                ? "다음 표준품목 불러오는 중…"
-                : "다음 표준품목 불러오기"}
+              {catalog.isFetchingNextPage ? "불러오는 중…" : "품목 더 보기"}
             </button>
           )}
         </section>
-        <section className="work-detail" aria-label="표준단가 상세">
-          {requestedItemId !== null && !linkedItem && (
-            <div
-              className={`empty-detail ${
-                catalog.isError || linkedItemMissing || isFetchNextPageError
-                  ? "is-error"
-                  : ""
-              }`}
-              role={
-                catalog.isError || linkedItemMissing || isFetchNextPageError
-                  ? "alert"
-                  : "status"
-              }
-            >
-              {catalog.isError && !isFetchNextPageError ? (
-                <>
-                  <p>표준품목 목록을 불러오지 못했습니다.</p>
-                  <button type="button" onClick={() => void catalog.refetch()}>
-                    표준품목 목록 다시 시도
-                  </button>
-                </>
-              ) : isFetchNextPageError ? (
-                <>
-                  <p>표준품목을 찾는 중 다음 목록을 불러오지 못했습니다.</p>
-                  <button type="button" onClick={() => void fetchNextPage()}>
-                    딥링크 품목 다시 찾기
-                  </button>
-                </>
-              ) : linkedItemMissing ? (
-                <>
-                  <p>요청한 표준품목 근거를 찾을 수 없음</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRequestedItemId(null);
-                      setSelectedId(catalogItems[0]?.id ?? null);
-                    }}
-                  >
-                    목록 돌아가기
-                  </button>
-                </>
-              ) : (
-                <p>딥링크의 표준품목을 찾는 중…</p>
-              )}
+
+        <section className="standard-db-detail" aria-label="선택한 표준 품목">
+          {!selected ? (
+            <div className="empty-detail">
+              <p>왼쪽 목록에서 표준 품목을 선택하세요.</p>
             </div>
-          )}
-          {requestedItemId === null && !selected && (
-            <div className="empty-detail"><p>표준품목을 선택하세요.</p></div>
-          )}
-          {selected && (
-            <div className="detail-content">
-              <header className="record-heading">
-                <div>
-                  <p className="section-kicker">Standard item #{selected.id}</p>
-                  <h1>{selected.current_version.canonical_name}</h1>
-                  <p>{selected.current_version.canonical_spec ?? "사양 없음"} · {selected.current_version.canonical_unit ?? "단위 없음"}</p>
-                </div>
-                <span className="status-tag">멤버 {selected.member_count}개</span>
-              </header>
-
-              {draft.isPending && <p className="inline-state">단가 초안을 계산하는 중…</p>}
-              {draft.isError && (
-                <div className="inline-state is-error" role="alert">
-                  <p>{priceDraftError(draft.error)}</p>
-                  <button type="button" onClick={() => void draft.refetch()}>다시 계산</button>
-                </div>
-              )}
-              {draft.data && (
-                <>
-                  <section className="price-draft-section">
-                    <div className="section-heading">
-                      <div><p className="section-kicker">Current draft</p><h2>승인 대기 초안</h2></div>
-                      <span>{draft.data.observation_count}개 관측값</span>
-                    </div>
-                    <dl className="price-metrics">
-                      <PriceMetric label="최저" value={draft.data.prices.minimum} />
-                      <PriceMetric label="중앙값" value={draft.data.prices.median} featured />
-                      <PriceMetric label="평균" value={draft.data.prices.average} />
-                      <PriceMetric label="최고" value={draft.data.prices.maximum} />
-                    </dl>
-                    <div className="draft-context">
-                      <span>공급사 {draft.data.supplier_count}곳</span>
-                      <span>최근 견적 {draft.data.latest_quote_date ?? "날짜 없음"}</span>
-                      <span>계산식 {draft.data.calculation_version}</span>
-                    </div>
-                    <div className="approval-line">
-                      <label><span>승인자</span><input value={actor} onChange={(event) => setActor(event.target.value)} /></label>
-                      <button
-                        type="button"
-                        disabled={
-                          !actor.trim() ||
-                          approval.isPending
-                        }
-                        onClick={() => approval.mutate()}
-                      >
-                        {approval.isPending ? "승인 중…" : "표준단가 버전 승인"}
-                      </button>
-                    </div>
-                  </section>
-
-                  <section className="source-table-section">
-                    <div className="section-heading">
-                      <div><p className="section-kicker">Contributing evidence</p><h2>계산 근거</h2></div>
-                      <span>현재 정제·그룹핑 결정</span>
-                    </div>
-                    <div className="table-scroll">
-                      <table className="data-table">
-                        <thead><tr><th>공급사</th><th>단가</th><th>견적일</th><th>원본</th><th>행</th></tr></thead>
-                        <tbody>
-                          {draft.data.observations.map((row) => (
-                            <tr key={row.raw_item_id}>
-                              <td>{row.supplier_name ?? "미등록"}</td>
-                              <td className="numeric">{row.unit_price}</td>
-                              <td>{row.quote_date ?? "—"}</td>
-                              <td>
-                                <a
-                                  href={`/grouping?raw_item_id=${row.raw_item_id}`}
-                                  aria-label={`원천행 ${row.raw_item_id} 감사 보기`}
-                                >
-                                  {row.source.path}
-                                </a>
-                              </td>
-                              <td>{row.source.row ?? row.source.page ?? "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-                </>
-              )}
-
-              <section className="history-section">
-                <div className="section-heading">
-                  <div><p className="section-kicker">Immutable ledger</p><h2>승인 이력</h2></div>
-                  <span>{historyVersions.length}개 버전</span>
-                </div>
-                {history.isPending && <p className="inline-state">이력을 불러오는 중…</p>}
-                {isFetchNextHistoryPageError && activeLinkedVersionId !== null && (
-                  <div className="inline-state is-error" role="alert">
-                    <p>요청한 버전을 찾는 중 다음 이력을 불러오지 못했습니다.</p>
-                    <button
-                      type="button"
-                      onClick={() => void fetchNextHistoryPage()}
-                    >
-                      딥링크 버전 다시 찾기
-                    </button>
-                  </div>
-                )}
-                {history.isError && !isFetchNextHistoryPageError && (
-                  <div className="inline-state is-error" role="alert">
-                    <p>승인 이력을 불러오지 못했습니다.</p>
-                    <button type="button" onClick={() => void history.refetch()}>
-                      이력 다시 시도
-                    </button>
-                  </div>
-                )}
-                {linkedVersionMissing && (
-                  <div className="inline-state is-error" role="alert">
-                    <p>요청한 표준단가 버전 근거를 찾을 수 없음</p>
-                    <a href={`/standard-prices?item_id=${selected.id}`}>
-                      목록 돌아가기
-                    </a>
-                  </div>
-                )}
-                <ol className="version-ledger">
-                  {historyVersions.map((version) => (
-                    <VersionRow
-                      key={version.id}
-                      version={version}
-                      standardItemId={selected.id}
-                      linkedVersionId={activeLinkedVersionId}
-                      auditLinkRef={(element) => {
-                        if (element) versionLinkRefs.current.set(version.id, element);
-                        else versionLinkRefs.current.delete(version.id);
-                      }}
-                    />
-                  ))}
-                </ol>
-                {hasNextHistoryPage && (
-                  <button
-                    className="load-more-button"
-                    type="button"
-                    disabled={isFetchingNextHistoryPage}
-                    onClick={() => void fetchNextHistoryPage()}
-                  >
-                    {isFetchingNextHistoryPage
-                      ? "다음 승인 이력 불러오는 중…"
-                      : "다음 승인 이력 불러오기"}
-                  </button>
-                )}
-              </section>
-            </div>
+          ) : (
+            <StandardItemDetail
+              item={selected}
+              observations={observations}
+              evidencePending={evidence.isPending}
+              evidenceError={evidence.isError}
+              retryEvidence={() => void evidence.refetch()}
+              hasMoreEvidence={Boolean(evidence.hasNextPage)}
+              loadMoreEvidence={() => void evidence.fetchNextPage()}
+              evidenceLoadingMore={evidence.isFetchingNextPage}
+              versions={versions}
+              historyPending={history.isPending}
+              historyError={history.isError}
+              retryHistory={() => void history.refetch()}
+            />
           )}
         </section>
       </div>
@@ -456,78 +199,265 @@ export function StandardPricesPage() {
   );
 }
 
-function PriceMetric({ label, value, featured = false }: { label: string; value: string; featured?: boolean }) {
-  return <div className={featured ? "is-featured" : undefined}><dt>{label}</dt><dd>{value}</dd></div>;
-}
-
-function VersionRow({
-  version,
-  standardItemId,
-  linkedVersionId,
-  auditLinkRef,
+function StandardItemRow({
+  item,
+  selected,
+  index,
+  onSelect,
 }: {
-  version: PriceVersion;
-  standardItemId: number;
-  linkedVersionId: number | null;
-  auditLinkRef: (element: HTMLAnchorElement | null) => void;
+  item: StandardItemSummary;
+  selected: boolean;
+  index: number;
+  onSelect: () => void;
 }) {
   return (
-    <li>
-      <div>
-        <strong>
-          <a
-            ref={auditLinkRef}
-            href={`/standard-prices?item_id=${standardItemId}&version_id=${version.id}`}
-            aria-label={`표준단가 v${version.version_number} 감사 링크`}
-          >
-            v{version.version_number} · {version.approved_by}
-          </a>
-        </strong>
-        <span>{formatDateTime(version.approved_at)} · 관측값 {version.observation_count}개</span>
-      </div>
-      <div className="version-price"><span>중앙값</span><strong>{version.prices.median}</strong></div>
-      <details
-        aria-label={`표준단가 v${version.version_number} 버전 근거`}
-        {...(linkedVersionId === version.id ? { open: true } : {})}
+    <li style={{ "--row-index": index } as React.CSSProperties}>
+      <button
+        type="button"
+        className={`standard-db-row ${selected ? "is-selected" : ""}`}
+        onClick={onSelect}
       >
-        <summary>버전 근거</summary>
-        <p>최저 {version.prices.minimum} · 평균 {version.prices.average} · 최고 {version.prices.maximum}</p>
-        <p>표준품목 버전 {version.standard_item_version?.version_number ?? "레거시"} · 제외 {version.excluded_count}건 · 재검토 {version.review_required_count}건</p>
-      </details>
+        <span>
+          <strong>{item.current_version.canonical_name}</strong>
+          <small>
+            {item.current_version.canonical_spec ?? "사양 없음"} ·{" "}
+            {item.current_version.canonical_unit ?? "단위 없음"}
+          </small>
+        </span>
+        <span className="standard-db-row-meta">
+          <EvidenceBadge
+            quality={item.evidence_quality}
+            count={item.observation_count}
+          />
+          <strong>{formatWon(item.current_price?.median ?? null)}</strong>
+        </span>
+      </button>
     </li>
   );
 }
 
-function priceDraftError(error: unknown) {
-  if (error instanceof ApiError && error.errorCode === "NO_ELIGIBLE_PRICE_OBSERVATIONS") {
-    return "현재 계산에 사용할 수 있는 견적 행이 없습니다.";
-  }
-  return "표준단가 초안을 계산하지 못했습니다.";
+function StandardItemDetail({
+  item,
+  observations,
+  evidencePending,
+  evidenceError,
+  retryEvidence,
+  hasMoreEvidence,
+  loadMoreEvidence,
+  evidenceLoadingMore,
+  versions,
+  historyPending,
+  historyError,
+  retryHistory,
+}: {
+  item: StandardItemSummary;
+  observations: Array<{
+    raw_item_id: number;
+    unit_price: string;
+    supplier_name: string | null;
+    maker: string | null;
+    quote_date: string | null;
+    source: {
+      logical_name: string;
+      path: string;
+      sheet: string | null;
+      page: number | null;
+      row: number | null;
+      cells: string | null;
+    };
+  }>;
+  evidencePending: boolean;
+  evidenceError: boolean;
+  retryEvidence: () => void;
+  hasMoreEvidence: boolean;
+  loadMoreEvidence: () => void;
+  evidenceLoadingMore: boolean;
+  versions: PriceVersion[];
+  historyPending: boolean;
+  historyError: boolean;
+  retryHistory: () => void;
+}) {
+  const price = item.current_price;
+  return (
+    <div className="standard-db-detail-content">
+      <header className="standard-record-heading">
+        <div>
+          <p className="section-kicker">Standard item #{item.id}</p>
+          <h2>{item.current_version.canonical_name}</h2>
+          <p>
+            {item.current_version.canonical_spec ?? "사양 없음"} ·{" "}
+            {item.current_version.canonical_unit ?? "단위 없음"}
+          </p>
+        </div>
+        <EvidenceBadge
+          quality={item.evidence_quality}
+          count={item.observation_count}
+        />
+      </header>
+
+      <MetricStrip
+        items={[
+          { label: "최저", value: formatWon(price?.minimum ?? null) },
+          { label: "중앙값", value: formatWon(price?.median ?? null), emphasis: true },
+          { label: "평균", value: formatWon(price?.average ?? null) },
+          { label: "최고", value: formatWon(price?.maximum ?? null) },
+        ]}
+      />
+
+      <dl className="standard-context-strip">
+        <div><dt>공급사</dt><dd>{item.supplier_summary.join(", ") || "미등록"}</dd></div>
+        <div><dt>제조사</dt><dd>{item.maker_summary.join(", ") || "미등록"}</dd></div>
+        <div>
+          <dt>견적일 범위</dt>
+          <dd>{formatDateRange(item.quote_date_start, item.quote_date_end)}</dd>
+        </div>
+      </dl>
+
+      <section className="standard-evidence-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Traceable observations</p>
+            <h2>가격 근거</h2>
+          </div>
+          <span>{item.observation_count}건</span>
+        </div>
+        {evidencePending && <p className="inline-state">근거를 불러오는 중…</p>}
+        {evidenceError && (
+          <div className="inline-state is-error" role="alert">
+            <p>가격 근거를 불러오지 못했습니다.</p>
+            <button type="button" onClick={retryEvidence}>다시 시도</button>
+          </div>
+        )}
+        {!evidencePending && !evidenceError && observations.length === 0 && (
+          <p className="inline-state">표시할 원본 근거가 없습니다.</p>
+        )}
+        {observations.length > 0 && (
+          <div className="table-scroll">
+            <table className="data-table standard-evidence-table">
+              <thead>
+                <tr>
+                  <th>공급사</th>
+                  <th>제조사</th>
+                  <th>단가</th>
+                  <th>견적일</th>
+                  <th>원본 위치</th>
+                </tr>
+              </thead>
+              <tbody>
+                {observations.map((row) => (
+                  <tr key={row.raw_item_id}>
+                    <td>{row.supplier_name ?? "미등록"}</td>
+                    <td>{row.maker ?? "미등록"}</td>
+                    <td className="numeric">{formatWon(row.unit_price)}</td>
+                    <td>{row.quote_date ?? "—"}</td>
+                    <td>
+                      <a href={`/grouping?raw_item_id=${row.raw_item_id}`}>
+                        원본 견적 근거
+                      </a>
+                      <small>
+                        {sourceLocation(row.source)}
+                      </small>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {hasMoreEvidence && (
+          <button
+            className="load-more-button"
+            type="button"
+            disabled={evidenceLoadingMore}
+            onClick={loadMoreEvidence}
+          >
+            {evidenceLoadingMore ? "불러오는 중…" : "근거 더 보기"}
+          </button>
+        )}
+      </section>
+
+      <section className="standard-history-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Immutable ledger</p>
+            <h2>가격 버전 이력</h2>
+          </div>
+          <span>{versions.length}개 버전</span>
+        </div>
+        {historyPending && <p className="inline-state">이력을 불러오는 중…</p>}
+        {historyError && (
+          <div className="inline-state is-error" role="alert">
+            <p>가격 버전 이력을 불러오지 못했습니다.</p>
+            <button type="button" onClick={retryHistory}>다시 시도</button>
+          </div>
+        )}
+        {!historyPending && !historyError && versions.length === 0 && (
+          <p className="inline-state">저장된 가격 버전이 없습니다.</p>
+        )}
+        <ol className="standard-version-ledger">
+          {versions.map((version) => (
+            <li key={version.id}>
+              <div>
+                <strong>v{version.version_number}</strong>
+                <span>{formatDateTime(version.approved_at)}</span>
+              </div>
+              <EvidenceBadge
+                quality={version.evidence_quality}
+                count={version.observation_count}
+              />
+              <dl>
+                <div><dt>중앙값</dt><dd>{formatWon(version.prices.median)}</dd></div>
+                <div><dt>범위</dt><dd>{formatWon(version.prices.minimum)}–{formatWon(version.prices.maximum)}</dd></div>
+              </dl>
+            </li>
+          ))}
+        </ol>
+      </section>
+    </div>
+  );
+}
+
+function formatWon(value: string | null) {
+  if (value === null) return "—";
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 }).format(amount)}원`
+    : "—";
 }
 
 function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  return new Intl.DateTimeFormat("ko-KR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
-function positiveIntegerParam(name: string) {
-  const value = Number(new URLSearchParams(window.location.search).get(name));
-  return Number.isInteger(value) && value > 0 ? value : null;
+function formatDateRange(start: string | null, end: string | null) {
+  if (!start && !end) return "미등록";
+  if (start === end || !end) return start ?? end ?? "미등록";
+  return `${start} – ${end}`;
+}
+
+function sourceLocation(source: {
+  logical_name: string;
+  sheet: string | null;
+  page: number | null;
+  row: number | null;
+  cells: string | null;
+}) {
+  const location = [
+    source.sheet,
+    source.page === null ? null : `${source.page}쪽`,
+    source.row === null ? null : `${source.row}행`,
+    source.cells,
+  ].filter(Boolean);
+  return `${source.logical_name}${location.length ? ` · ${location.join(" · ")}` : ""}`;
 }
 
 function safeNextCursor<T extends { next_cursor: number | null }>(
   lastPage: T,
-  allPages: T[],
-  lastPageParam: number | undefined,
 ) {
-  const next = lastPage.next_cursor;
-  if (
-    next === null ||
-    next === lastPageParam ||
-    allPages.slice(0, -1).some((page) => page.next_cursor === next)
-  ) {
-    return undefined;
-  }
-  return next;
+  return lastPage.next_cursor ?? undefined;
 }
 
 function uniqueById<T extends { id: number }>(items: T[]) {
