@@ -8,25 +8,25 @@
 
 백엔드를 먼저 `127.0.0.1:8000`에서 실행한 뒤:
 
-```powershell
+```bat
 cd frontend
-npm install
-npm run dev
+call npm.cmd install
+call npm.cmd run dev
 ```
 
 Vite 개발 서버는 `/api` 요청을 기본적으로
 `http://127.0.0.1:8000`에 전달합니다. 백엔드 주소가 다르면 실행 전에
 `VITE_API_PROXY_TARGET`을 지정합니다.
 
-```powershell
-$env:VITE_API_PROXY_TARGET = "http://127.0.0.1:9000"
-npm run dev
+```bat
+set "VITE_API_PROXY_TARGET=http://127.0.0.1:9000"
+call npm.cmd run dev
 ```
 
 ## 검증
 
-```powershell
-npm test -- --run
-npm run build
-npm run lint
+```bat
+call npm.cmd test -- --run
+call npm.cmd run build
+call npm.cmd run lint
 ```

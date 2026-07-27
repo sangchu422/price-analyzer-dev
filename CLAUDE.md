@@ -23,7 +23,10 @@
 - Alembic: `backend/alembic`
 - 단일 로컬 DB:
   `backend/.local/standard-item-migration-v2.sqlite3`
-- 실행기: `scripts/start-local.ps1` 또는 `앱실행.bat`
+- 실행기: `scripts\start-local.bat` 또는 `앱실행.bat`
+
+사내 정책상 PowerShell과 `.ps1`은 사용하지 않는다. 모든 Windows 명령은
+`cmd.exe`에서 실행한다.
 
 루트의 과거 Streamlit·Excel 프로토타입은
 `archive/legacy-excel-prototype/`에 역사 자료로만 보관한다. 그 코드를
@@ -31,27 +34,19 @@
 
 ## 개발 명령
 
-```powershell
-$repo = (Resolve-Path '.').Path
-$db = Join-Path $repo 'backend\.local\standard-item-migration-v2.sqlite3'
-$env:DATABASE_FILE = $db
+```bat
+set "DATABASE_FILE=%CD%\backend\.local\standard-item-migration-v2.sqlite3"
 
-Push-Location backend
-try {
-  ..\.venv\Scripts\python -m alembic upgrade head
-  ..\.venv\Scripts\python -m pytest -q
-} finally {
-  Pop-Location
-}
+cd backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe -m pytest -q
+cd ..
 
-Push-Location frontend
-try {
-  npm test -- --run
-  npm run lint
-  npm run build
-} finally {
-  Pop-Location
-}
+cd frontend
+call npm.cmd test -- --run
+call npm.cmd run lint
+call npm.cmd run build
+cd ..
 ```
 
 서버 설치, hChat 실연결, DeviceMart·Mouser 시장가 수집은 후속 단계다.

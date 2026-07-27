@@ -1,14 +1,12 @@
 @echo off
 chcp 65001 > nul
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-local.ps1"
+call "%~dp0scripts\start-local.bat" %*
 if errorlevel 1 (
   echo.
-  echo 실행에 실패했습니다. 위 오류를 확인하세요.
+  echo Price Analyzer failed to start. Check the message above.
   pause
   exit /b 1
 )
-echo.
-echo 브라우저에서 http://127.0.0.1:4173/ 을 확인하세요.
 endlocal

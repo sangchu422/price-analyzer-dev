@@ -7,8 +7,8 @@
 
 저장소 루트에서 다음 중 하나를 실행한다.
 
-```powershell
-.\scripts\start-local.ps1
+```bat
+scripts\start-local.bat
 ```
 
 또는 `앱실행.bat`를 실행한다. 백엔드는 `127.0.0.1:8000`, 프런트엔드는
@@ -26,23 +26,15 @@ DB가 없으면 실행기가 Alembic으로 빈 스키마를 만든다. 빈 DB에
 
 ## 과거 견적 적재와 표준 DB 구축
 
-```powershell
-$repo = (Resolve-Path '.').Path
-$db = Join-Path $repo 'backend\.local\standard-item-migration-v2.sqlite3'
-$quotes = Join-Path $repo '견적서'
-$env:DATABASE_FILE = $db
+```bat
+set "REPO_ROOT=%CD%"
+set "DATABASE_FILE=%REPO_ROOT%\backend\.local\standard-item-migration-v2.sqlite3"
 
-Push-Location backend
-try {
-  ..\.venv\Scripts\python -m alembic upgrade head
-  ..\.venv\Scripts\python -m app.cli ingest `
-    --quote-root $quotes `
-    --database-file $db
-  ..\.venv\Scripts\python -m app.cli standard-db-build `
-    --database-file $db
-} finally {
-  Pop-Location
-}
+cd backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe -m app.cli ingest --quote-root "%REPO_ROOT%\견적서" --database-file "%DATABASE_FILE%"
+..\.venv\Scripts\python.exe -m app.cli standard-db-build --database-file "%DATABASE_FILE%"
+cd ..
 ```
 
 `ingest`는 구성된 과거 견적 코퍼스를 `HISTORICAL_REFERENCE`로 등록한다.
@@ -52,30 +44,21 @@ try {
 
 ## 직접 개발 실행
 
-```powershell
-$repo = (Resolve-Path '.').Path
-$db = Join-Path $repo 'backend\.local\standard-item-migration-v2.sqlite3'
-$env:DATABASE_FILE = $db
-$env:SUBMISSION_FOLDER = Join-Path $repo 'backend\.local\submissions'
+```bat
+set "REPO_ROOT=%CD%"
+set "DATABASE_FILE=%REPO_ROOT%\backend\.local\standard-item-migration-v2.sqlite3"
+set "SUBMISSION_FOLDER=%REPO_ROOT%\backend\.local\submissions"
 
-Push-Location backend
-try {
-  ..\.venv\Scripts\python -m alembic upgrade head
-  ..\.venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
-} finally {
-  Pop-Location
-}
+cd backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
 별도 터미널:
 
-```powershell
-Push-Location frontend
-try {
-  npm run dev -- --host 127.0.0.1 --port 4173 --strictPort
-} finally {
-  Pop-Location
-}
+```bat
+cd frontend
+call npm.cmd run dev -- --host 127.0.0.1 --port 4173 --strictPort
 ```
 
 ## 레거시 자료
