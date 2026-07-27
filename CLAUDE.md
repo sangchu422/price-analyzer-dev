@@ -26,7 +26,8 @@
 - 실행기: `scripts\start-local.bat` 또는 `앱실행.bat`
 
 사내 정책상 PowerShell과 `.ps1`은 사용하지 않는다. 모든 Windows 명령은
-`cmd.exe`에서 실행한다.
+`cmd.exe`에서 실행한다. 로컬 DB가 비어 있으면 실행기가 추적 중인 `견적서`
+원본으로 과거 견적 적재와 표준 DB 구축을 한 번 자동 수행한다.
 
 루트의 과거 Streamlit·Excel 프로토타입은
 `archive/legacy-excel-prototype/`에 역사 자료로만 보관한다. 그 코드를

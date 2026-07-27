@@ -22,9 +22,16 @@ backend\.local\standard-item-migration-v2.sqlite3
 ```
 
 DB가 없으면 실행기가 Alembic으로 빈 스키마를 만든다. 빈 DB에는 과거 견적과
-표준가격이 없으므로 아래 초기 적재·구축을 한 번 수행해야 한다.
+표준가격이 없으므로 첫 실행 시 추적 중인 `견적서` 원본을 적재하고 표준 DB를
+자동 구축한다. 데이터 구축만 먼저 실행하려면 다음 명령을 사용한다.
+
+```bat
+scripts\start-local.bat --initialize-only
+```
 
 ## 과거 견적 적재와 표준 DB 구축
+
+아래 명령은 자동 초기화 대신 각 단계를 직접 확인해야 할 때만 사용한다.
 
 ```bat
 set "REPO_ROOT=%CD%"
