@@ -50,4 +50,5 @@ call npm.cmd run build
 cd ..
 ```
 
-서버 설치, hChat 실연결, DeviceMart·Mouser 시장가 수집은 후속 단계다.
+hChat 임베딩은 구현 완료. 루트 `.env`의 `HCHAT_EMBEDDING_*` 항목으로 활성화.
+서버 설치, DeviceMart·Mouser 시장가 수집은 후속 단계다.
