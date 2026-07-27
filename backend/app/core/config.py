@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     hchat_embedding_model: str | None = None
     hchat_embedding_api_style: Literal["openai", "custom"] = "custom"
     hchat_embedding_timeout_seconds: float = 10.0
+    hchat_project_id: str | None = None
     embedding_index_file: Path = Path(
         "backend/.local/standard-items.npz"
     )

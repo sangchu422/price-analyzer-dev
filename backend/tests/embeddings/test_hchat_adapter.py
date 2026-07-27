@@ -39,24 +39,128 @@ def test_enabled_hchat_requires_every_setting_before_http_is_possible() -> None:
     assert requests == []
 
 
-def test_custom_codec_is_a_safe_office_side_extension_point() -> None:
+def test_azure_custom_codec_uses_api_key_header_not_bearer() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
     client = HChatEmbeddingClient(
         endpoint="https://intranet.invalid/embeddings",
         api_key=SecretStr("office-key"),
         model="office-model",
         api_style="custom",
-        transport=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _: pytest.fail("custom codec must not issue HTTP")
-            )
-        ),
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    with pytest.raises(
-        EmbeddingContractNotConfiguredError,
-        match="_build_payload.*_parse_response",
-    ):
-        client.embed(["BEARING"])
+    client.embed(["BEARING"])
+
+    assert "api-key" in requests[0].headers
+    assert requests[0].headers["api-key"] == "office-key"
+    assert "Authorization" not in requests[0].headers
+
+
+def test_azure_custom_codec_sends_input_only_payload_without_model() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}, {"index": 1, "embedding": [0.0, 1.0]}]},
+        )
+
+    client = HChatEmbeddingClient(
+        endpoint="https://intranet.invalid/embeddings",
+        api_key=SecretStr("office-key"),
+        model="office-model",
+        api_style="custom",
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    client.embed(["BEARING", "MOTOR"])
+
+    payload = json.loads(requests[0].content)
+    assert payload == {"input": ["BEARING", "MOTOR"]}
+    assert "model" not in payload
+
+
+def test_azure_custom_codec_parses_azure_response_and_preserves_order() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 1, "embedding": [1.0, 0.0]},
+                    {"index": 0, "embedding": [0.0, 1.0]},
+                ]
+            },
+        )
+
+    client = HChatEmbeddingClient(
+        endpoint="https://intranet.invalid/embeddings",
+        api_key=SecretStr("office-key"),
+        model="office-model",
+        api_style="custom",
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    batch = client.embed(["BEARING", "MOTOR"])
+
+    assert batch.vectors.tolist() == [[0.0, 1.0], [1.0, 0.0]]
+    assert batch.model == "office-model"
+    assert batch.dimension == 2
+
+
+def test_azure_custom_codec_sends_project_id_header_when_configured() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    client = HChatEmbeddingClient(
+        endpoint="https://intranet.invalid/embeddings",
+        api_key=SecretStr("office-key"),
+        model="office-model",
+        api_style="custom",
+        project_id="my-project-id",
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    client.embed(["BEARING"])
+
+    assert requests[0].headers.get("X-Project-Id") == "my-project-id"
+
+
+def test_azure_custom_codec_omits_project_id_header_when_not_configured() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    client = HChatEmbeddingClient(
+        endpoint="https://intranet.invalid/embeddings",
+        api_key=SecretStr("office-key"),
+        model="office-model",
+        api_style="custom",
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    client.embed(["BEARING"])
+
+    assert "X-Project-Id" not in requests[0].headers
 
 
 def test_openai_compatible_codec_uses_configured_key_and_restores_order() -> None:

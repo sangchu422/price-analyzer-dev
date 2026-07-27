@@ -33,6 +33,7 @@ class HChatEmbeddingClient:
     model: str
     api_style: Literal["openai", "custom"] = "custom"
     timeout_seconds: float = 10.0
+    project_id: str | None = None
     transport: httpx.Client | None = None
     _client: httpx.Client = field(init=False, repr=False)
 
@@ -56,19 +57,19 @@ class HChatEmbeddingClient:
                 dimension=0,
             )
         if self.api_style == "custom":
-            raise EmbeddingContractNotConfiguredError(
-                "The custom hChat contract is not configured. After receiving "
-                "the office sample, update only _build_payload and "
-                "_parse_response."
-            )
+            headers: dict[str, str] = {
+                "api-key": self.api_key.get_secret_value()
+            }
+            if self.project_id:
+                headers["X-Project-Id"] = self.project_id
+        else:
+            headers = {
+                "Authorization": f"Bearer {self.api_key.get_secret_value()}"
+            }
         try:
             response = self._client.post(
                 self.endpoint,
-                headers={
-                    "Authorization": (
-                        f"Bearer {self.api_key.get_secret_value()}"
-                    )
-                },
+                headers=headers,
                 json=self._build_payload(values),
             )
             response.raise_for_status()
@@ -92,11 +93,8 @@ class HChatEmbeddingClient:
             ) from exc
 
     def _build_payload(self, texts: list[str]) -> dict[str, Any]:
-        if self.api_style != "openai":
-            raise EmbeddingContractNotConfiguredError(
-                "Update only _build_payload and _parse_response for custom "
-                "hChat"
-            )
+        if self.api_style == "custom":
+            return {"input": texts}
         return {"input": texts, "model": self.model}
 
     def _parse_response(
@@ -104,11 +102,6 @@ class HChatEmbeddingClient:
         payload: Any,
         expected_count: int,
     ) -> EmbeddingBatch:
-        if self.api_style != "openai":
-            raise EmbeddingContractNotConfiguredError(
-                "Update only _build_payload and _parse_response for custom "
-                "hChat"
-            )
         try:
             if not isinstance(payload, dict):
                 raise TypeError("embedding response must be an object")
@@ -185,5 +178,6 @@ def build_embedding_client(
         model=settings.hchat_embedding_model,
         api_style=settings.hchat_embedding_api_style,
         timeout_seconds=settings.hchat_embedding_timeout_seconds,
+        project_id=settings.hchat_project_id,
         transport=transport,
     )
