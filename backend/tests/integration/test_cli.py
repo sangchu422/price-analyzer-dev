@@ -75,7 +75,7 @@ def test_ingest_initializes_migrated_database_and_writes_report(
     with engine.connect() as connection:
         assert connection.scalar(select(text("version_num")).select_from(
             text("alembic_version")
-        )) == "0008"
+        )) == "0009"
     engine.dispose()
 
 

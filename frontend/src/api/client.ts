@@ -381,6 +381,58 @@ export interface AnalysisLine {
   };
 }
 
+export type MarketAssessment =
+  | "LOW"
+  | "WITHIN_RANGE"
+  | "HIGH"
+  | "REVIEW_REQUIRED";
+
+export interface MarketProductResult {
+  observation_id: number;
+  source: "DEVICEMART" | "MOUSER";
+  title: string;
+  manufacturer: string | null;
+  model_number: string | null;
+  product_url: string;
+  image_url: string | null;
+  currency: string;
+  applicable_unit_price: string;
+  stock_quantity: number | null;
+  stock_text: string | null;
+  moq: number | null;
+  vat_note: string | null;
+  shipping_note: string | null;
+  collected_at: string;
+  expires_at: string;
+  is_stale: boolean;
+  tiers: Array<{
+    minimum_quantity: number;
+    unit_price: string;
+    currency: string;
+  }>;
+  image_evidence_url: string | null;
+  raw_evidence_url: string;
+  screenshot_evidence_url: string | null;
+}
+
+export interface MarketLookupResult {
+  raw_item_id: number;
+  query: string;
+  quote_unit_price: string | null;
+  quantity: string | null;
+  cache_state: "CACHE" | "LIVE" | "PARTIAL" | "UNAVAILABLE";
+  assessment: MarketAssessment;
+  minimum_price: string | null;
+  median_price: string | null;
+  maximum_price: string | null;
+  variance_percent: string | null;
+  products: MarketProductResult[];
+  source_failures: Array<{
+    source: "DEVICEMART" | "MOUSER";
+    detail: string;
+  }>;
+}
+
 export interface DocumentAnalysis {
   document: {
     id: number;
@@ -721,6 +773,20 @@ export function submitIncomingBid(
     body,
     signal,
   });
+}
+
+export function lookupMarketPrice(
+  rawItemId: number,
+  forceRefresh = false,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    force_refresh: String(forceRefresh),
+  });
+  return requestJson<MarketLookupResult>(
+    `/api/market/lookup/${rawItemId}?${params.toString()}`,
+    { method: "POST", signal },
+  );
 }
 
 export async function getCompleteDocumentAnalysis(

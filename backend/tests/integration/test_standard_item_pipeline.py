@@ -324,6 +324,7 @@ def test_catalog_cli_disabled_embedding_never_creates_an_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, local = _local_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "hchat_embedding_enabled", False)
     database = local / "catalog.sqlite3"
     index_path = local / "disabled.npz"
 

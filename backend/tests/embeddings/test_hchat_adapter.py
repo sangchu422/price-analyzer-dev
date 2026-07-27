@@ -30,7 +30,7 @@ def test_enabled_hchat_requires_every_setting_before_http_is_possible() -> None:
         return httpx.Response(500)
 
     client = build_embedding_client(
-        Settings(hchat_embedding_enabled=True),
+        Settings(hchat_embedding_enabled=True, _env_file=None),
         transport=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 

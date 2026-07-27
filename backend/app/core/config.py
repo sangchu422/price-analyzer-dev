@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     )
     price_variance_review_percent: Decimal = Decimal("10")
     price_variance_high_percent: Decimal = Decimal("20")
+    market_price_ttl_hours: int = 7 * 24
+    market_evidence_folder: Path = Path("backend/.local/evidence/market")
+    market_request_timeout_seconds: float = 15.0
+    mouser_api_key: SecretStr | None = None
+    mouser_api_base_url: str = "https://api.mouser.com/api/v1"
+    devicemart_enabled: bool = True
+    devicemart_base_url: str = "https://www.devicemart.co.kr"
+    devicemart_request_delay_seconds: float = 1.0
 
     @property
     def quote_path(self) -> Path:
@@ -53,6 +61,10 @@ class Settings(BaseSettings):
     @property
     def submission_path(self) -> Path:
         return self._resolve_from_project_root(self.submission_folder)
+
+    @property
+    def market_evidence_path(self) -> Path:
+        return self._resolve_from_project_root(self.market_evidence_folder)
 
     def _resolve_from_project_root(self, path: Path) -> Path:
         return path if path.is_absolute() else self.project_root / path

@@ -11,6 +11,12 @@ from app.catalog.models import (
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.market.models import (
+    MarketCollectionRun,
+    MarketPriceObservation,
+    MarketPriceTier,
+    MarketProduct,
+)
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -24,6 +30,10 @@ __all__ = [
     "DocumentMetadataVersion",
     "ItemMembershipDecision",
     "MembershipStatus",
+    "MarketCollectionRun",
+    "MarketPriceObservation",
+    "MarketPriceTier",
+    "MarketProduct",
     "PriceAuditStatus",
     "QuoteDocumentPurpose",
     "QuoteDocumentRole",

@@ -158,7 +158,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(screen.getByText("적정 5건")).toBeVisible();
   expect(screen.getByText("가격 검토 1건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 1건")).toBeVisible();
-  expect(screen.getByText("DeviceMart·Mouser DB/실시간 조회 연동 예정")).toBeVisible();
+  expect(screen.getByText("DeviceMart·Mouser 캐시 우선 조회")).toBeVisible();
   const servo = screen.getByRole("row", { name: /SERVO MOTOR/ });
   expect(within(servo).getByText("시장가 확인 필요")).toBeVisible();
   expect(within(servo).getByText("판정대기")).toBeVisible();
@@ -259,7 +259,7 @@ it("renders comparison basis, signed variance, and every operational status dist
   expect(within(noPrice).queryByRole("link")).not.toBeInTheDocument();
   const noMatch = screen.getByRole("row", { name: /NO MATCH ITEM/ });
   expect(within(noMatch).getByText("매칭 없음")).toBeVisible();
-  expect(within(noMatch).getByText("시장가 연동 예정")).toBeVisible();
+  expect(within(noMatch).getByRole("button", { name: "시장가 조회" })).toBeVisible();
   expect(within(noMatch).queryByText(/조회 완료/)).not.toBeInTheDocument();
   expect(
     within(screen.getByRole("row", { name: /CANDIDATE ITEM/ }))
@@ -273,6 +273,56 @@ it("renders comparison basis, signed variance, and every operational status dist
     within(screen.getByRole("row", { name: /CLEAN REVIEW ITEM/ }))
       .getByText("정제 판정대기"),
   ).toBeVisible();
+});
+
+it("applies a collected market assessment to the row and overall summary", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/submissions") {
+        return jsonResponse(successfulSubmission(), { status: 201 });
+      }
+      if (url.includes("/api/analysis/documents/91")) {
+        return jsonResponse(analysis);
+      }
+      if (url.includes("/api/market/lookup/8")) {
+        return jsonResponse({
+          raw_item_id: 8,
+          query: "SERVO MOTOR SGMAH-04AAA61",
+          quote_unit_price: "130",
+          quantity: "2",
+          cache_state: "LIVE",
+          assessment: "HIGH",
+          minimum_price: "90",
+          median_price: "100",
+          maximum_price: "110",
+          variance_percent: "30",
+          products: [],
+          source_failures: [],
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  renderApp("/analysis");
+
+  await userEvent.upload(
+    screen.getByLabelText("신규 견적서"),
+    new File(["quote"], "신규견적.xlsx"),
+  );
+  await userEvent.type(screen.getByLabelText("접수자"), "설비구매팀");
+  await userEvent.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+  await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  const row = screen.getByRole("row", { name: /SERVO MOTOR/ });
+  await userEvent.click(
+    within(row).getByRole("button", { name: "시장가 조회" }),
+  );
+
+  expect(await within(row).findByText("시장가 대비 고가")).toBeVisible();
+  expect(within(row).getAllByText("100원")).toHaveLength(2);
+  expect(screen.getByText("고가 3건")).toBeVisible();
+  expect(screen.getByText("시장가 확인 필요 0건")).toBeVisible();
 });
 
 it("validates required inputs before making a request", async () => {

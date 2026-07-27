@@ -5,6 +5,7 @@ from app.api import (
     catalog,
     cleansing,
     documents,
+    market,
     pricing,
     submissions,
 )
@@ -43,6 +44,11 @@ app.include_router(
     submissions.router,
     prefix="/api/submissions",
     tags=["submissions"],
+)
+app.include_router(
+    market.router,
+    prefix="/api/market",
+    tags=["market"],
 )
 
 

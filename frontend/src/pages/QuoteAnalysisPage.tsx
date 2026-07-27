@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
   getCompleteDocumentAnalysis,
+  lookupMarketPrice,
   submitIncomingBid,
   type AnalysisAssessment,
   type AnalysisLine,
   type DocumentAnalysis,
+  type MarketLookupResult,
   type SubmissionResponse,
 } from "../api/client";
 
@@ -35,6 +37,9 @@ export function QuoteAnalysisPage() {
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [resultFilter, setResultFilter] = useState<ResultFilter>("ALL");
+  const [marketResults, setMarketResults] = useState<
+    Record<number, MarketLookupResult>
+  >({});
   const [validationError, setValidationError] = useState("");
   const uploadController = useRef<AbortController | null>(null);
   const analysisController = useRef<AbortController | null>(null);
@@ -58,6 +63,7 @@ export function QuoteAnalysisPage() {
     setValidationError("");
     setError(null);
     setAnalysis(null);
+    setMarketResults({});
     uploadController.current?.abort();
     analysisController.current?.abort();
     if (!retryAccepted || submission === null) {
@@ -102,12 +108,22 @@ export function QuoteAnalysisPage() {
   };
 
   const metrics = useMemo(
-    () => summarize(analysis?.lines ?? [], submission?.raw_item_count ?? 0),
-    [analysis, submission],
+    () => summarize(
+      analysis?.lines ?? [],
+      submission?.raw_item_count ?? 0,
+      marketResults,
+    ),
+    [analysis, submission, marketResults],
   );
   const visibleLines = useMemo(
-    () => (analysis?.lines ?? []).filter((line) => lineMatches(line, resultFilter)),
-    [analysis, resultFilter],
+    () => (analysis?.lines ?? []).filter(
+      (line) => lineMatches(
+        line,
+        resultFilter,
+        marketResults[line.raw_item_id],
+      ),
+    ),
+    [analysis, resultFilter, marketResults],
   );
 
   return (
@@ -144,6 +160,7 @@ export function QuoteAnalysisPage() {
               setFile(event.target.files?.[0] ?? null);
               setSubmission(null);
               setAnalysis(null);
+              setMarketResults({});
               setError(null);
               setStage("IDLE");
             }}
@@ -213,6 +230,11 @@ export function QuoteAnalysisPage() {
           lines={visibleLines}
           filter={resultFilter}
           onFilter={setResultFilter}
+          marketResults={marketResults}
+          onMarketResult={(result) => setMarketResults((current) => ({
+            ...current,
+            [result.raw_item_id]: result,
+          }))}
         />
       )}
     </main>
@@ -249,6 +271,8 @@ function AnalysisResults({
   lines,
   filter,
   onFilter,
+  marketResults,
+  onMarketResult,
 }: {
   analysis: DocumentAnalysis;
   submission: SubmissionResponse;
@@ -256,6 +280,8 @@ function AnalysisResults({
   lines: AnalysisLine[];
   filter: ResultFilter;
   onFilter: (filter: ResultFilter) => void;
+  marketResults: Record<number, MarketLookupResult>;
+  onMarketResult: (result: MarketLookupResult) => void;
 }) {
   return (
     <section className="analysis-results">
@@ -309,8 +335,8 @@ function AnalysisResults({
 
       <div className="market-roadmap">
         <strong>{`시장가 확인 필요 ${metrics.market}건`}</strong>
-        <span>DeviceMart·Mouser DB/실시간 조회 연동 예정</span>
-        <p>현재는 조회한 가격처럼 표시하지 않으며, 설비구매팀의 판정대기 검토 대상으로 유지합니다.</p>
+        <span>DeviceMart·Mouser 캐시 우선 조회</span>
+        <p>캐시가 없거나 만료된 품목만 실시간 조회하며, 실패하면 가격을 만들지 않고 판정대기로 유지합니다.</p>
       </div>
 
       <div className="result-toolbar">
@@ -350,7 +376,14 @@ function AnalysisResults({
             </tr>
           </thead>
           <tbody>
-            {lines.map((line) => <AnalysisRow key={line.raw_item_id} line={line} />)}
+            {lines.map((line) => (
+              <AnalysisRow
+                key={line.raw_item_id}
+                line={line}
+                market={marketResults[line.raw_item_id] ?? null}
+                onMarketResult={onMarketResult}
+              />
+            ))}
           </tbody>
         </table>
         {lines.length === 0 && <p className="inline-state">선택한 조건에 맞는 품목이 없습니다.</p>}
@@ -359,12 +392,45 @@ function AnalysisResults({
   );
 }
 
-function AnalysisRow({ line }: { line: AnalysisLine }) {
+function AnalysisRow({
+  line,
+  market,
+  onMarketResult,
+}: {
+  line: AnalysisLine;
+  market: MarketLookupResult | null;
+  onMarketResult: (result: MarketLookupResult) => void;
+}) {
+  const [marketError, setMarketError] = useState("");
+  const [marketLoading, setMarketLoading] = useState(false);
   const hasPriceEvidence =
     line.match_status === "MATCHED" &&
     line.standard_item_id !== null &&
     line.standard_price_version_id !== null;
+
+  const requestMarket = async (forceRefresh = false) => {
+    setMarketLoading(true);
+    setMarketError("");
+    try {
+      onMarketResult(await lookupMarketPrice(line.raw_item_id, forceRefresh));
+    } catch (error) {
+      setMarketError(error instanceof Error ? error.message : "시장가 조회에 실패했습니다.");
+    } finally {
+      setMarketLoading(false);
+    }
+  };
+  const referencePrice = market?.median_price ?? line.reference_price;
+  const minimumPrice = market?.minimum_price ?? line.minimum_price;
+  const middlePrice = market?.median_price ?? line.average_price;
+  const maximumPrice = market?.maximum_price ?? line.maximum_price;
+  const varianceAmount =
+    market?.median_price && line.quote_unit_price
+      ? String(Number(line.quote_unit_price) - Number(market.median_price))
+      : line.variance_amount;
+  const rowAssessment = market?.assessment ?? line.assessment;
+
   return (
+    <Fragment>
     <tr>
       <td>
         <strong>{line.item_name ?? "품명 없음"}</strong>
@@ -373,18 +439,20 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
       <td className="numeric">{line.unit ?? "—"} · {formatNumber(line.quantity)}</td>
       <td className="numeric">{formatMoney(line.quote_unit_price)}</td>
       <td className="numeric">{formatMoney(line.quote_amount)}</td>
-      <td className="numeric reference-basis">{formatMoney(line.reference_price)}</td>
+      <td className="numeric reference-basis">{formatMoney(referencePrice)}</td>
       <td className="reference-range">
-        {line.match_status === "MATCHED" ? (
+        {line.match_status === "MATCHED" || market ? (
           <>
-            <strong>{formatMoney(line.minimum_price)}</strong>
-            <span>{formatMoney(line.average_price)}</span>
-            <strong>{formatMoney(line.maximum_price)}</strong>
+            <strong>{formatMoney(minimumPrice)}</strong>
+            <span>{formatMoney(middlePrice)}</span>
+            <strong>{formatMoney(maximumPrice)}</strong>
           </>
         ) : "—"}
       </td>
-      <td className="numeric">{formatSignedMoney(line.variance_amount)}</td>
-      <td className="numeric">{formatSignedPercent(line.variance_percent)}</td>
+      <td className="numeric">{formatSignedMoney(varianceAmount)}</td>
+      <td className="numeric">
+        {formatSignedPercent(market?.variance_percent ?? line.variance_percent)}
+      </td>
       <td>
         <div className="line-evidence">
           <span className={`match-badge is-${line.match_status.toLowerCase()}`}>
@@ -401,7 +469,14 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
           {line.market_price_lookup_status === "FUTURE_MARKET_LOOKUP" && (
             <>
               <small className="market-required">시장가 확인 필요</small>
-              <small className="market-queued">시장가 연동 예정</small>
+              <button
+                className="market-lookup-button"
+                type="button"
+                disabled={marketLoading}
+                onClick={() => void requestMarket(false)}
+              >
+                {marketLoading ? "조회 중…" : market ? "캐시 다시 보기" : "시장가 조회"}
+              </button>
             </>
           )}
           <small>
@@ -411,23 +486,184 @@ function AnalysisRow({ line }: { line: AnalysisLine }) {
       </td>
       <td>
         <div className="row-status">
-          <span className={`assessment is-${line.assessment.toLowerCase()}`}>
-            {assessmentLabels[line.assessment]}
+          <span className={`assessment is-${rowAssessment.toLowerCase()}`}>
+            {market
+              ? marketAssessmentLabel(market.assessment)
+              : assessmentLabels[line.assessment]}
           </span>
         </div>
       </td>
     </tr>
+    {(market || marketError) && (
+      <tr className="market-detail-row">
+        <td colSpan={10}>
+          {marketError ? (
+            <div className="market-error">
+              <span>{marketError}</span>
+              <button type="button" onClick={() => void requestMarket(true)}>
+                실시간 재조회
+              </button>
+            </div>
+          ) : market ? (
+            <MarketResultPanel
+              result={market}
+              onRefresh={() => void requestMarket(true)}
+              loading={marketLoading}
+            />
+          ) : null}
+        </td>
+      </tr>
+    )}
+    </Fragment>
   );
 }
 
-function summarize(lines: AnalysisLine[], rawCount: number) {
-  const count = (assessment: AnalysisAssessment) =>
-    lines.filter((line) => line.assessment === assessment).length;
+function MarketResultPanel({
+  result,
+  onRefresh,
+  loading,
+}: {
+  result: MarketLookupResult;
+  onRefresh: () => void;
+  loading: boolean;
+}) {
+  return (
+    <section className="market-result-panel" aria-label="시장가 비교 결과">
+      <header>
+        <div>
+          <span className={`market-state is-${result.cache_state.toLowerCase()}`}>
+            {marketStateLabel(result.cache_state)}
+          </span>
+          <strong>{result.query}</strong>
+        </div>
+        <div className="market-summary">
+          <span>시장가 범위</span>
+          <strong>
+            {formatMoney(result.minimum_price)} – {formatMoney(result.maximum_price)}
+          </strong>
+          <span className={`assessment is-${result.assessment.toLowerCase()}`}>
+            {marketAssessmentLabel(result.assessment)}
+          </span>
+          <button type="button" disabled={loading} onClick={onRefresh}>
+            실시간 갱신
+          </button>
+        </div>
+      </header>
+      {result.products.length > 0 ? (
+        <div className="market-product-grid">
+          {result.products.map((product) => (
+            <article key={product.observation_id} className="market-product-card">
+              <div className="market-product-image">
+                {product.image_evidence_url || product.image_url ? (
+                  <img
+                    src={product.image_evidence_url ?? product.image_url ?? ""}
+                    alt={`${product.title} 상품 이미지`}
+                    loading="lazy"
+                  />
+                ) : (
+                  <span>NO IMAGE</span>
+                )}
+              </div>
+              <div className="market-product-copy">
+                <span className={`source-badge is-${product.source.toLowerCase()}`}>
+                  {product.source === "DEVICEMART" ? "DeviceMart" : "Mouser"}
+                </span>
+                <strong>{product.title}</strong>
+                <small>
+                  {[product.manufacturer, product.model_number].filter(Boolean).join(" · ") || "제조사·모델 정보 없음"}
+                </small>
+                <div className="market-product-price">
+                  {formatMoney(product.applicable_unit_price)}
+                </div>
+                <small>
+                  재고 {product.stock_quantity ?? product.stock_text ?? "미표시"} · MOQ {product.moq ?? "미표시"}
+                </small>
+                <small>수집 {formatCollectedAt(product.collected_at)}</small>
+                <div className="market-evidence-links">
+                  <a href={product.product_url} target="_blank" rel="noreferrer">
+                    원본 상품 보기
+                  </a>
+                  <a href={product.raw_evidence_url} target="_blank" rel="noreferrer">
+                    수집 증빙 보기
+                  </a>
+                  {product.screenshot_evidence_url && (
+                    <a href={product.screenshot_evidence_url} target="_blank" rel="noreferrer">
+                      화면 증빙
+                    </a>
+                  )}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="market-empty">현재 사용 가능한 KRW 시장가가 없어 판정대기로 유지합니다.</p>
+      )}
+      {result.source_failures.length > 0 && (
+        <ul className="market-source-failures">
+          {result.source_failures.map((failure) => (
+            <li key={failure.source}>
+              {failure.source}: {failure.detail}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function marketStateLabel(state: MarketLookupResult["cache_state"]) {
+  return {
+    CACHE: "저장된 시장가",
+    LIVE: "실시간 수집",
+    PARTIAL: "일부 출처 수집",
+    UNAVAILABLE: "조회 불가",
+  }[state];
+}
+
+function marketAssessmentLabel(assessment: MarketLookupResult["assessment"]) {
+  return {
+    LOW: "시장가 대비 저가",
+    WITHIN_RANGE: "시장가 범위 적정",
+    HIGH: "시장가 대비 고가",
+    REVIEW_REQUIRED: "판정대기",
+  }[assessment];
+}
+
+function formatCollectedAt(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat("ko-KR", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
+}
+
+function summarize(
+  lines: AnalysisLine[],
+  rawCount: number,
+  marketResults: Record<number, MarketLookupResult>,
+) {
+  const effectiveAssessment = (line: AnalysisLine) =>
+    marketResults[line.raw_item_id]?.assessment ?? line.assessment;
+  const count = (assessment: string) =>
+    lines.filter((line) => effectiveAssessment(line) === assessment).length;
   const matched = lines.filter((line) => line.match_status === "MATCHED").length;
-  const market = lines.filter((line) => line.market_price_lookup_required).length;
-  const pending = lines.filter((line) => line.assessment === "REVIEW_REQUIRED").length;
+  const market = lines.filter((line) =>
+    line.market_price_lookup_required
+    && (!marketResults[line.raw_item_id]
+      || marketResults[line.raw_item_id].assessment === "REVIEW_REQUIRED")
+  ).length;
+  const pending = count("REVIEW_REQUIRED");
   const assessedAmount = lines.reduce(
-    (sum, line) => sum + (line.match_status === "MATCHED" ? numericAmount(line) : 0),
+    (sum, line) => sum + (
+      line.match_status === "MATCHED"
+      || (marketResults[line.raw_item_id]
+        && marketResults[line.raw_item_id].assessment !== "REVIEW_REQUIRED")
+        ? numericAmount(line)
+        : 0
+    ),
     0,
   );
   const totalAmount = lines.reduce((sum, line) => sum + numericAmount(line), 0);
@@ -456,12 +692,17 @@ function numericAmount(line: AnalysisLine) {
   return Number.isFinite(quantity) && Number.isFinite(price) ? quantity * price : 0;
 }
 
-function lineMatches(line: AnalysisLine, filter: ResultFilter) {
+function lineMatches(
+  line: AnalysisLine,
+  filter: ResultFilter,
+  market?: MarketLookupResult,
+) {
+  const assessment = market?.assessment ?? line.assessment;
   if (filter === "ALL") return true;
   if (filter === "MATCHED") return line.match_status === "MATCHED";
   if (filter === "MARKET") return line.market_price_lookup_required;
-  if (filter === "PENDING") return line.assessment === "REVIEW_REQUIRED";
-  return line.assessment === filter;
+  if (filter === "PENDING") return assessment === "REVIEW_REQUIRED";
+  return assessment === filter;
 }
 
 function formatMoney(value: string | null) {

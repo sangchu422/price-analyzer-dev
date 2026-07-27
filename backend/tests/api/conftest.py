@@ -42,6 +42,7 @@ def client(
     quote_root = tmp_path / "quotes"
     quote_root.mkdir()
     monkeypatch.setattr(settings, "quote_folder", quote_root)
+    monkeypatch.setattr(settings, "hchat_embedding_enabled", False)
 
     def override_session() -> Iterator[Session]:
         try:

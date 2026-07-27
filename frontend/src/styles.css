@@ -1528,6 +1528,185 @@
   color: var(--analysis-accent) !important;
 }
 
+.market-lookup-button,
+.market-result-panel button,
+.market-error button {
+  width: fit-content;
+  border: 1px solid #b9c2d0;
+  border-radius: 7px;
+  padding: 6px 9px;
+  color: #344054;
+  background: #fff;
+  font: 700 9px/1 "Pretendard", sans-serif;
+  cursor: pointer;
+}
+
+.market-lookup-button:hover,
+.market-result-panel button:hover,
+.market-error button:hover {
+  border-color: var(--analysis-accent);
+  color: var(--analysis-accent);
+}
+
+.market-detail-row > td {
+  padding: 0 12px 16px !important;
+  background: #f7f9fc;
+}
+
+.market-result-panel {
+  overflow: hidden;
+  border: 1px solid #d8dee8;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgb(16 24 40 / 6%);
+}
+
+.market-result-panel > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e9edf3;
+}
+
+.market-result-panel > header > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.market-state,
+.source-badge {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.market-state.is-live {
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.market-state.is-partial,
+.market-state.is-unavailable {
+  background: #fffaeb;
+  color: #b54708;
+}
+
+.market-summary {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.market-summary > span:first-child {
+  color: var(--analysis-muted);
+  font-size: 9px;
+}
+
+.market-product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.market-product-card {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 13px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e4e8ef;
+  border-radius: 10px;
+}
+
+.market-product-image {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 96px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #f4f6f8;
+  color: #98a2b3;
+  font: 700 9px/1 "IBM Plex Mono", monospace;
+}
+
+.market-product-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.market-product-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.market-product-copy > strong {
+  line-height: 1.35;
+}
+
+.market-product-copy small {
+  color: var(--analysis-muted);
+}
+
+.source-badge.is-devicemart {
+  background: #fff4ed;
+  color: #b93815;
+}
+
+.source-badge.is-mouser {
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.market-product-price {
+  color: #101828;
+  font: 800 15px/1.2 "IBM Plex Mono", monospace;
+}
+
+.market-evidence-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.market-evidence-links a {
+  color: var(--analysis-accent);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.market-empty,
+.market-source-failures {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--analysis-muted);
+  font-size: 10px;
+}
+
+.market-source-failures {
+  border-top: 1px dashed #e4e7ec;
+  list-style: none;
+}
+
+.market-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  color: #b42318;
+}
+
 .line-evidence small {
   color: var(--analysis-muted);
   font: 9px/1.4 "IBM Plex Mono", monospace;
