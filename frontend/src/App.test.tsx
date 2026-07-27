@@ -1,7 +1,13 @@
-import { screen } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
 
 import { jsonResponse, renderApp } from "./test/renderApp";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 it("keeps the cleansing review page and URL available", async () => {
   vi.stubGlobal(
@@ -108,4 +114,32 @@ it("presents the three primary workflow destinations with Korean product labels"
   expect(navigation).not.toHaveTextContent("품목 그룹핑");
   expect(navigation).not.toHaveTextContent("표준단가");
   expect(navigation).not.toHaveTextContent("견적 비교");
+});
+
+it("changes primary pages without overlapping scroll and focus movement", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      jsonResponse({
+        items: [],
+        next_cursor: null,
+        limit: 50,
+        latest_build: null,
+      }),
+    ),
+  );
+  const scrollTo = vi.fn();
+  vi.stubGlobal("scrollTo", scrollTo);
+  const focus = vi.spyOn(HTMLElement.prototype, "focus");
+  renderApp("/analysis");
+
+  await userEvent.click(screen.getByRole("link", { name: "표준 DB" }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/standard-prices"));
+  expect(scrollTo).toHaveBeenCalledWith({
+    top: 0,
+    left: 0,
+    behavior: "auto",
+  });
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
 });

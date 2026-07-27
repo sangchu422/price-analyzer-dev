@@ -24,7 +24,7 @@ export function App() {
       const heading = document.querySelector<HTMLElement>("main h1");
       if (!heading) return false;
       heading.tabIndex = -1;
-      heading.focus();
+      heading.focus({ preventScroll: true });
       return true;
     };
     if (focusHeading()) return;
@@ -39,7 +39,7 @@ export function App() {
     if (nextPath === path) return;
     window.history.pushState({}, "", nextPath);
     setPath(nextPath);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   };
 
   let page: React.ReactNode;
