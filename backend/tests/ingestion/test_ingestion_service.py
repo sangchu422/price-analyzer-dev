@@ -958,6 +958,35 @@ def test_pdf_raw_preflight_caps_combined_dictionary_and_array_depth(
         read_quote(attack)
 
 
+def test_rows_without_item_name_are_skipped_even_when_other_fields_present(
+    tmp_path: Path,
+) -> None:
+    """
+    금액만 있고 품명이 빈칸인 행(예: 미기입 템플릿 행, 소계 행)은
+    파싱 결과에 포함되지 않아야 한다.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["구분", "", "품  명", "규격", "단위", "수량", "단가(원)", "금액(원)", "원MAKER"])
+    ws.append(["자재비", "철자재", "BASE FRAME", "S45C", "KG", "100", "2200", "220000", ""])
+    ws.append(["", "", "", "", "", "", "", "0", ""])  # 품명 없음, 금액=0
+    ws.append(["", "", "", "", "", "", "", "500000", ""])  # 품명 없음, 금액 있음
+    ws.append(["", "", "SAFETY COVER", "SS400", "EA", "2", "15000", "30000", ""])
+
+    quote = tmp_path / "template_with_empty_rows.xlsx"
+    wb.save(quote)
+
+    rows = read_quote(quote)
+    item_names = [r.item_name for r in rows]
+
+    assert all(name for name in item_names), (
+        f"품명 없는 행이 파싱됨: {item_names}"
+    )
+    assert "BASE FRAME" in item_names
+    assert "SAFETY COVER" in item_names
+    assert len(rows) == 2, f"품명 있는 행만 2개여야 함, got {len(rows)}: {item_names}"
+
+
 def test_품목내역_header_is_recognized_and_subheader_exchange_rate_column_ignored(
     tmp_path: Path,
 ) -> None:

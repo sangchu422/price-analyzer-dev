@@ -899,6 +899,8 @@ def _parse_tabular_rows(
         }
         if not any(fields.values()):
             continue
+        if not fields.get("item_name"):
+            continue
 
         source_row = row_index + 1 if row_numbers else None
         source_cells = None
