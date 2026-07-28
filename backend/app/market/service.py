@@ -12,6 +12,7 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import Settings
 from app.market.adapters.base import CollectedProduct, MarketAdapter
 from app.market.evidence import EvidenceStore
+from app.market.screenshot import PageScreenshotter
 from app.market.models import (
     MarketCollectionRun,
     MarketPriceObservation,
@@ -37,6 +38,7 @@ class MarketLookupService:
         session: Session,
         settings: Settings,
         adapters: list[MarketAdapter],
+        screenshotter: PageScreenshotter | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -46,6 +48,7 @@ class MarketLookupService:
             EvidenceStore(
                 settings.market_evidence_path,
                 timeout=settings.market_request_timeout_seconds,
+                screenshotter=screenshotter,
             ),
         )
 

@@ -119,3 +119,40 @@ def test_market_lookup_collects_then_reuses_fresh_cache(tmp_path) -> None:
             is not None
             for product in first.products
         )
+
+
+def test_market_service_calls_screenshotter_for_each_collected_product(
+    tmp_path,
+) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        project_root=tmp_path,
+        market_evidence_folder="evidence",
+    )
+
+    class _Screenshotter:
+        captured: list[str] = []
+
+        def capture(self, url: str) -> bytes | None:
+            self.captured.append(url)
+            return b"\x89PNG\r\nfake"
+
+    screenshotter = _Screenshotter()
+    device = FakeAdapter(MarketSource.DEVICEMART, "100")
+
+    with Session(engine, expire_on_commit=False) as session:
+        raw = _raw_item(session)
+        MarketLookupService(
+            session,
+            settings,
+            [device],
+            screenshotter=screenshotter,
+        ).lookup_raw_item(raw.id)
+
+    assert len(screenshotter.captured) == 1
+    assert screenshotter.captured[0] == "https://example.test/product"
+    evidence_dir = tmp_path / "evidence"
+    screenshots = list(evidence_dir.rglob("page.png"))
+    assert len(screenshots) == 1
+    assert screenshots[0].read_bytes() == b"\x89PNG\r\nfake"

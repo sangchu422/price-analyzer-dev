@@ -11,6 +11,7 @@ from app.db.session import get_session
 from app.market.adapters import DeviceMartAdapter, MouserAdapter
 from app.market.evidence import EvidenceStore
 from app.market.models import MarketPriceObservation
+from app.market.screenshot import PlaywrightScreenshotter
 from app.market.schemas import (
     MarketLookupResponse,
     MarketPrecollectRequest,
@@ -45,7 +46,7 @@ def _service(session: Session) -> MarketLookupService:
                 timeout=settings.market_request_timeout_seconds,
             )
         )
-    return MarketLookupService(session, settings, adapters)
+    return MarketLookupService(session, settings, adapters, PlaywrightScreenshotter())
 
 
 @router.post(
