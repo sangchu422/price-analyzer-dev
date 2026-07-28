@@ -3,10 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
 from app.market.adapters.base import CollectedProduct
+
+if TYPE_CHECKING:
+    from app.market.screenshot import PageScreenshotter
 
 
 @dataclass(frozen=True)
@@ -20,9 +24,16 @@ class SavedEvidence:
 
 
 class EvidenceStore:
-    def __init__(self, root: Path, *, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        timeout: float = 15.0,
+        screenshotter: "PageScreenshotter | None" = None,
+    ) -> None:
         self.root = root.resolve()
         self.timeout = timeout
+        self.screenshotter = screenshotter
 
     def save(self, run_key: str, product: CollectedProduct) -> SavedEvidence:
         product_dir = self.root / run_key / _safe_name(product.source_product_id)
@@ -54,11 +65,14 @@ class EvidenceStore:
                 product_dir / f"product{image_extension or '.bin'}",
                 image_bytes,
             )
+        screenshot_bytes = product.screenshot_bytes
+        if screenshot_bytes is None and self.screenshotter and product.product_url:
+            screenshot_bytes = self.screenshotter.capture(product.product_url)
         screenshot_path = screenshot_hash = None
-        if product.screenshot_bytes:
+        if screenshot_bytes:
             screenshot_path, screenshot_hash = self._write(
                 product_dir / "page.png",
-                product.screenshot_bytes,
+                screenshot_bytes,
             )
         return SavedEvidence(
             raw_path,
