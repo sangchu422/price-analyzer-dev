@@ -956,3 +956,42 @@ def test_pdf_raw_preflight_caps_combined_dictionary_and_array_depth(
 
     with pytest.raises(UnsafeQuoteFileError, match="nesting is too deep"):
         read_quote(attack)
+
+
+def test_품목내역_header_is_recognized_and_subheader_exchange_rate_column_ignored(
+    tmp_path: Path,
+) -> None:
+    """
+    파일에 '품목내역' 헤더가 있고 아래 서브헤더 행에 '환율/역률'이 있을 때,
+    item_name 이 환율 수치가 아닌 실제 품목명 컬럼으로 매핑되어야 한다.
+    """
+    wb = Workbook()
+    ws = wb.active
+
+    # 헤더 행: B=번호, C=품목내역, I=합  계
+    ws.append([])  # row 1: empty
+    ws.append(["", "번호", "품목내역", "", "단가금액(천원)", "", "", "", "합  계"])
+    # 서브헤더 행: G=환율/역률, H=합  계
+    ws.append(["", "", "", "", "원가분", "환율이분", "환율/역률\n(환율환산)", "합  계"])
+    # 데이터 행
+    ws.append(["", "1", "SERVO MOTOR", "", 68745.81, 198500.0, 101.614, 83788.57])
+    ws.append(["", "2", "BEARING", "", 12000.0, 34000.0, 17.755, 14300.0])
+
+    quote = tmp_path / "품목내역_layout.xlsx"
+    wb.save(quote)
+
+    rows = read_quote(quote)
+    named_rows = [r for r in rows if r.item_name is not None]
+
+    assert len(named_rows) >= 2, f"expected ≥2 named rows, got {len(named_rows)}: {named_rows}"
+    item_names = [r.item_name for r in named_rows]
+    assert "SERVO MOTOR" in item_names, f"expected 'SERVO MOTOR' in {item_names}"
+    assert "BEARING" in item_names, f"expected 'BEARING' in {item_names}"
+    for r in named_rows:
+        try:
+            float(r.item_name)
+            raise AssertionError(
+                f"item_name '{r.item_name}' is a float — exchange rate column misidentified"
+            )
+        except ValueError:
+            pass  # non-numeric name is correct
