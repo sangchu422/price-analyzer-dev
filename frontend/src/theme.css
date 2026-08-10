@@ -418,6 +418,7 @@ textarea::placeholder {
 .source-badge {
   border: 1px solid var(--line);
   border-radius: 999px;
+  color: var(--ink);
   background: var(--surface-strong);
 }
 
@@ -455,6 +456,11 @@ textarea::placeholder {
   border-color: rgba(138, 185, 241, .28);
   color: var(--info);
   background: rgba(138, 185, 241, .08);
+}
+
+.match-badge.is-no_match,
+.match-badge.is-excluded {
+  color: var(--muted);
 }
 
 .reason-section,
@@ -535,6 +541,10 @@ textarea::placeholder {
 .metric-strip .is-emphasis dd,
 .decision-summary .is-within strong {
   color: var(--accent);
+}
+
+.metric-strip .is-emphasis {
+  background: var(--accent-soft);
 }
 
 .decision-summary .is-high strong {
@@ -651,6 +661,15 @@ textarea::placeholder {
   background: rgba(113, 230, 193, .035);
 }
 
+.analysis-result-table tbody tr {
+  background: var(--paper);
+}
+
+.result-toolbar select {
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+
 .analysis-page {
   --analysis-accent: var(--accent);
   --analysis-ink: var(--ink);
@@ -737,11 +756,20 @@ textarea::placeholder {
   color: var(--ink);
 }
 
+.market-required {
+  color: var(--warning) !important;
+}
+
 .market-roadmap span,
 .market-roadmap p,
 .market-product-copy small,
 .market-empty {
   color: var(--muted);
+}
+
+.market-roadmap span {
+  color: var(--warning);
+  background: rgba(243, 201, 105, .08);
 }
 
 .market-product-grid {
