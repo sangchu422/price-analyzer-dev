@@ -408,6 +408,7 @@ def test_initial_migration_creates_source_and_cleansing_tables(
         "status": False,
         "reason_code": False,
         "reason_detail": True,
+        "reason_evidence_json": False,
         "item_name_norm": True,
         "spec_norm": True,
         "unit_norm": True,

@@ -11,8 +11,12 @@ from app.db.base import Base
 from app.db import models as _models
 from app.documents.models import SourceDocument, SourceVariant
 from app.market.adapters.base import CollectedProduct, CollectedTier
-from app.market.models import MarketCollectionRun, MarketSource
-from app.market.service import MarketLookupService
+from app.market.models import (
+    MarketCollectionRun,
+    MarketPriceObservation,
+    MarketSource,
+)
+from app.market.service import MarketLookupService, _relevant_products
 from app.quotes.models import RawQuoteItem
 
 
@@ -156,3 +160,80 @@ def test_market_service_calls_screenshotter_for_each_collected_product(
     screenshots = list(evidence_dir.rglob("page.png"))
     assert len(screenshots) == 1
     assert screenshots[0].read_bytes() == b"\x89PNG\r\nfake"
+
+
+def test_missing_evidence_invalidates_a_fresh_cache(tmp_path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        project_root=tmp_path,
+        market_evidence_folder="evidence",
+    )
+    device = FakeAdapter(MarketSource.DEVICEMART, "100")
+
+    with Session(engine, expire_on_commit=False) as session:
+        raw = _raw_item(session)
+        MarketLookupService(session, settings, [device]).lookup_raw_item(raw.id)
+        observation = session.scalar(select(MarketPriceObservation))
+        assert observation is not None
+        (settings.market_evidence_path / observation.raw_evidence_path).unlink()
+
+        refreshed = MarketLookupService(
+            session,
+            settings,
+            [device],
+        ).lookup_raw_item(raw.id)
+
+        assert refreshed.cache_state == "PARTIAL"
+        assert device.calls == 2
+
+
+def test_model_similarity_accepts_near_part_number_but_not_measurement_only() -> None:
+    candidate = CollectedProduct(
+        source=MarketSource.DEVICEMART,
+        source_product_id="1",
+        title="OMRON E3ZG-D61 photo sensor",
+        product_url="https://example.test/1",
+        currency="KRW",
+        unit_price=Decimal("100"),
+        raw_payload=b"{}",
+        raw_extension=".json",
+    )
+    measurement_only = CollectedProduct(
+        source=MarketSource.DEVICEMART,
+        source_product_id="2",
+        title="SO200W-40 connector",
+        product_url="https://example.test/2",
+        currency="KRW",
+        unit_price=Decimal("100"),
+        raw_payload=b"{}",
+        raw_extension=".json",
+    )
+
+    assert _relevant_products("OMRON E3Z-D61", [candidate]) == [candidate]
+    assert _relevant_products(
+        "SERVO MOTOR 200W",
+        [measurement_only],
+    ) == []
+
+
+def test_generic_family_search_remains_review_required(tmp_path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        project_root=tmp_path,
+        market_evidence_folder="evidence",
+    )
+    device = FakeAdapter(MarketSource.DEVICEMART, "100")
+
+    with Session(engine, expire_on_commit=False) as session:
+        result = MarketLookupService(
+            session,
+            settings,
+            [device],
+        ).lookup("PLC MELSEC Q", quote_unit_price=Decimal("500"))
+
+    assert result.products
+    assert result.median_price == Decimal("100")
+    assert result.variance_percent is None
+    assert result.assessment == "REVIEW_REQUIRED"

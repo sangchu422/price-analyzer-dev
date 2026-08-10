@@ -5,12 +5,18 @@ from decimal import Decimal
 import re
 from statistics import median
 
+from rapidfuzz import fuzz
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import Settings
-from app.market.adapters.base import CollectedProduct, MarketAdapter
+from app.market.adapters.base import (
+    CollectedProduct,
+    MarketAdapter,
+    market_meaningful_tokens,
+    market_model_tokens,
+)
 from app.market.evidence import EvidenceStore
 from app.market.screenshot import PageScreenshotter
 from app.market.models import (
@@ -118,12 +124,19 @@ class MarketLookupService:
                 continue
             try:
                 products = _relevant_products(query, adapter.search(query))
+                expires_in = (
+                    ttl
+                    if products
+                    else timedelta(
+                        hours=self.settings.market_empty_result_ttl_hours
+                    )
+                )
                 run = self.repository.save_success(
                     source=source,
                     query=query,
                     products=products,
                     collected_at=now,
-                    expires_at=now + ttl,
+                    expires_at=now + expires_in,
                 )
                 runs.append(run)
                 live_count += 1
@@ -151,7 +164,12 @@ class MarketLookupService:
         middle = Decimal(str(median(prices))) if prices else None
         variance = None
         assessment = "REVIEW_REQUIRED"
-        if quote_unit_price is not None and middle and middle > 0:
+        if (
+            market_model_tokens(query)
+            and quote_unit_price is not None
+            and middle
+            and middle > 0
+        ):
             variance = (
                 (quote_unit_price - middle) / middle * Decimal("100")
             )
@@ -271,15 +289,8 @@ def _relevant_products(
     products: list[CollectedProduct],
 ) -> list[CollectedProduct]:
     normalized_query = normalize_query(query)
-    tokens = re.findall(r"[0-9A-Z가-힣][0-9A-Z가-힣._/-]+", normalized_query)
-    model_tokens = [
-        token
-        for token in tokens
-        if len(token) >= 4
-        and any(character.isalpha() for character in token)
-        and any(character.isdigit() for character in token)
-    ]
-    meaningful = [token for token in tokens if len(token) >= 2]
+    model_tokens = market_model_tokens(normalized_query)
+    meaningful = market_meaningful_tokens(normalized_query)
     accepted: list[CollectedProduct] = []
     for product in products:
         haystack = normalize_query(
@@ -294,8 +305,18 @@ def _relevant_products(
             )
         )
         if model_tokens:
-            if any(token in haystack for token in model_tokens):
+            product_tokens = re.findall(
+                r"[0-9A-Z가-힣][0-9A-Z가-힣._/-]+",
+                haystack,
+            )
+            if any(
+                token in haystack
+                or any(fuzz.ratio(token, candidate) >= 85 for candidate in product_tokens)
+                for token in model_tokens
+            ):
                 accepted.append(product)
-        elif any(token in haystack for token in meaningful):
+        elif meaningful and sum(token in haystack for token in meaningful) >= min(
+            2, len(meaningful)
+        ):
             accepted.append(product)
     return accepted

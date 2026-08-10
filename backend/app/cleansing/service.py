@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from decimal import Decimal
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +31,26 @@ def apply_rules(session: Session, raw_item: RawQuoteItem) -> CleanDecision:
     idempotent. A newer manual decision is never silently superseded.
     """
     result = evaluate(raw_item)
+    if _requires_ocr_review(raw_item):
+        result = replace(
+            result,
+            status=CleanStatus.REVIEW_REQUIRED,
+            reason_code="OCR_SOURCE_REVIEW_REQUIRED",
+            reason_detail=(
+                "OCR extraction is a candidate and requires source "
+                "review before inclusion"
+            ),
+        )
+    elif _requires_parser_review(raw_item):
+        result = replace(
+            result,
+            status=CleanStatus.REVIEW_REQUIRED,
+            reason_code="PARSER_SOURCE_REVIEW_REQUIRED",
+            reason_detail=(
+                "layout-derived extraction requires source review before "
+                "inclusion"
+            ),
+        )
     latest = current_decision(session, raw_item.id)
     if latest is not None and latest.decided_by != "SYSTEM":
         return latest
@@ -41,6 +63,26 @@ def apply_rules(session: Session, raw_item: RawQuoteItem) -> CleanDecision:
         session.add(decision)
         session.flush()
     return decision
+
+
+def _requires_ocr_review(raw_item: RawQuoteItem) -> bool:
+    try:
+        warnings = json.loads(raw_item.parse_warnings_json)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(warnings, list) and bool(
+        {"OCR_SOURCE", "OCR_REVIEW_REQUIRED"}.intersection(warnings)
+    )
+
+
+def _requires_parser_review(raw_item: RawQuoteItem) -> bool:
+    try:
+        warnings = json.loads(raw_item.parse_warnings_json)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(warnings, list) and (
+        "PARSER_SOURCE_REVIEW_REQUIRED" in warnings
+    )
 
 
 def current_decision(
@@ -142,6 +184,13 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
                     median=median,
                     mad=mad,
                 )
+                reason_evidence_json = _outlier_reason_evidence(
+                    baseline=baseline,
+                    rows=rows,
+                    baselines=eligible_baselines,
+                    median=median,
+                    mad=mad,
+                )
                 if (
                     latest.status is CleanStatus.REVIEW_REQUIRED
                     and latest.reason_code == "UNIT_PRICE_MAD_OUTLIER"
@@ -154,6 +203,7 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
                     status=CleanStatus.REVIEW_REQUIRED,
                     reason_code="UNIT_PRICE_MAD_OUTLIER",
                     reason_detail=reason_detail,
+                    reason_evidence_json=reason_evidence_json,
                 )
             elif (
                 latest.decided_by == "SYSTEM"
@@ -183,12 +233,14 @@ def _outlier_decision(
     status: CleanStatus,
     reason_code: str,
     reason_detail: str,
+    reason_evidence_json: str = "{}",
 ) -> CleanDecision:
     return CleanDecision(
         raw_item_id=baseline.raw_item_id,
         status=status,
         reason_code=reason_code,
         reason_detail=reason_detail,
+        reason_evidence_json=reason_evidence_json,
         item_name_norm=baseline.item_name_norm,
         spec_norm=baseline.spec_norm,
         unit_norm=baseline.unit_norm,
@@ -198,6 +250,39 @@ def _outlier_decision(
         amount=baseline.amount,
         rule_version=OUTLIER_RULE_VERSION,
     )
+
+
+def _outlier_reason_evidence(
+    *,
+    baseline: CleanDecision,
+    rows: list[tuple[int, Decimal]],
+    baselines: dict[int, CleanDecision],
+    median: Decimal,
+    mad: Decimal,
+) -> str:
+    current_price = baseline.unit_price
+    variance = (
+        None
+        if current_price is None or median == 0
+        else ((current_price - median) / median * Decimal("100"))
+    )
+    payload = {
+        "kind": "UNIT_PRICE_DISTRIBUTION",
+        "current_unit_price": None if current_price is None else str(current_price),
+        "median_unit_price": str(median),
+        "variance_percent": None if variance is None else str(variance.quantize(Decimal("0.1"))),
+        "observation_count": len(rows),
+        "mad": str(mad),
+        "observations": [
+            {
+                "raw_item_id": raw_item_id,
+                "clean_decision_id": baselines[raw_item_id].id,
+                "unit_price": str(unit_price),
+            }
+            for raw_item_id, unit_price in rows
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _outlier_reason_detail(

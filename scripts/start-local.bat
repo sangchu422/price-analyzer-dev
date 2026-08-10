@@ -21,7 +21,9 @@ if defined PRICE_ANALYZER_BUILD_REPORT (
 ) else (
   set "BUILD_REPORT=%BACKEND_ROOT%\.local\reports\standard-db-build-latest.json"
 )
+set "METADATA_AUDIT_REPORT=%BACKEND_ROOT%\.local\reports\third-training-metadata-audit.csv"
 set "SUBMISSION_FOLDER=%BACKEND_ROOT%\.local\submissions"
+set "BACKUP_FOLDER=%BACKEND_ROOT%\.local\backups"
 if defined PRICE_ANALYZER_BACKEND_PORT (
   set "BACKEND_PORT=%PRICE_ANALYZER_BACKEND_PORT%"
 ) else (
@@ -36,6 +38,7 @@ set "HEALTH_URL=http://127.0.0.1:%BACKEND_PORT%/api/health"
 set "FRONTEND_URL=http://127.0.0.1:%FRONTEND_PORT%/"
 set "VALIDATE_ONLY=0"
 set "INITIALIZE_ONLY=0"
+set "REFRESH_DATA=0"
 set "NO_BROWSER=0"
 
 :parse_args
@@ -47,6 +50,13 @@ if /I "%~1"=="--validate-only" (
 )
 if /I "%~1"=="--initialize-only" (
   set "INITIALIZE_ONLY=1"
+  set "REFRESH_DATA=1"
+  shift
+  goto parse_args
+)
+if /I "%~1"=="--refresh-data" (
+  set "INITIALIZE_ONLY=1"
+  set "REFRESH_DATA=1"
   shift
   goto parse_args
 )
@@ -56,7 +66,7 @@ if /I "%~1"=="--no-browser" (
   goto parse_args
 )
 echo Unknown option: %~1
-echo Usage: scripts\start-local.bat [--validate-only] [--initialize-only] [--no-browser]
+echo Usage: scripts\start-local.bat [--validate-only] [--initialize-only] [--refresh-data] [--no-browser]
 exit /b 2
 
 :validate_files
@@ -81,6 +91,14 @@ if not defined NPM (
   exit /b 1
 )
 
+if "%VALIDATE_ONLY%"=="1" (
+  echo Launcher configuration is valid.
+  echo Database: %DATABASE_FILE%
+  echo Backend:  %HEALTH_URL%
+  echo Frontend: %FRONTEND_URL%
+  exit /b 0
+)
+
 netstat -ano -p tcp | findstr /R /C:":%BACKEND_PORT% .*LISTENING" >nul
 if not errorlevel 1 (
   echo Port %BACKEND_PORT% is already in use. No process was stopped.
@@ -90,14 +108,6 @@ netstat -ano -p tcp | findstr /R /C:":%FRONTEND_PORT% .*LISTENING" >nul
 if not errorlevel 1 (
   echo Port %FRONTEND_PORT% is already in use. No process was stopped.
   exit /b 1
-)
-
-if "%VALIDATE_ONLY%"=="1" (
-  echo Launcher configuration is valid.
-  echo Database: %DATABASE_FILE%
-  echo Backend:  %HEALTH_URL%
-  echo Frontend: %FRONTEND_URL%
-  exit /b 0
 )
 
 call :ensure_local_data
@@ -143,6 +153,14 @@ if not "%MIGRATION_EXIT%"=="0" (
 "%PYTHON%" -c "import sqlite3,sys; connection=sqlite3.connect(sys.argv[1]); item_count=connection.execute('SELECT COUNT(*) FROM standard_item').fetchone()[0]; price_count=connection.execute('SELECT COUNT(*) FROM standard_price_version').fetchone()[0]; connection.close(); raise SystemExit(0 if item_count and price_count else 1)" "%DATABASE_FILE%" >nul 2>&1
 if not errorlevel 1 (
   echo Standard database already contains data.
+  if "%REFRESH_DATA%"=="1" (
+    call :backup_database
+    if errorlevel 1 exit /b 1
+    call :refresh_historical_data
+    if errorlevel 1 exit /b 1
+  )
+  call :run_metadata_audit
+  if errorlevel 1 exit /b 1
   exit /b 0
 )
 
@@ -152,6 +170,30 @@ if not exist "%QUOTE_ROOT%\" (
 )
 
 echo Standard database is empty. Building it from tracked quote files...
+call :refresh_historical_data
+if errorlevel 1 exit /b 1
+
+call :run_metadata_audit
+if errorlevel 1 exit /b 1
+
+"%PYTHON%" -c "import sqlite3,sys; connection=sqlite3.connect(sys.argv[1]); count=connection.execute('SELECT COUNT(*) FROM standard_item').fetchone()[0]; connection.close(); print('Standard items created: '+str(count)); raise SystemExit(0 if count else 1)" "%DATABASE_FILE%"
+if errorlevel 1 (
+  echo Standard database build completed without usable items.
+  exit /b 1
+)
+exit /b 0
+
+:backup_database
+if not exist "%DATABASE_FILE%" exit /b 0
+if not exist "%BACKUP_FOLDER%" mkdir "%BACKUP_FOLDER%"
+"%PYTHON%" -c "import datetime,pathlib,sqlite3,sys; source=pathlib.Path(sys.argv[1]); folder=pathlib.Path(sys.argv[2]); target=folder/(source.stem+'.before-refresh-'+datetime.datetime.now().strftime('%%Y%%m%%d-%%H%%M%%S')+source.suffix); src=sqlite3.connect(source); dst=sqlite3.connect(target); src.backup(dst); dst.close(); src.close(); print('Database backup: '+str(target))" "%DATABASE_FILE%" "%BACKUP_FOLDER%"
+if errorlevel 1 (
+  echo Database backup failed. Refresh was not started.
+  exit /b 1
+)
+exit /b 0
+
+:refresh_historical_data
 pushd "%BACKEND_ROOT%"
 "%PYTHON%" -m app.cli ingest --quote-root "%QUOTE_ROOT%" --database-file "%DATABASE_FILE%"
 set "INGEST_EXIT=%errorlevel%"
@@ -168,10 +210,15 @@ if not "%BUILD_EXIT%"=="0" (
   echo Standard database build failed with exit code %BUILD_EXIT%.
   exit /b 1
 )
+exit /b 0
 
-"%PYTHON%" -c "import sqlite3,sys; connection=sqlite3.connect(sys.argv[1]); count=connection.execute('SELECT COUNT(*) FROM standard_item').fetchone()[0]; connection.close(); print('Standard items created: '+str(count)); raise SystemExit(0 if count else 1)" "%DATABASE_FILE%"
-if errorlevel 1 (
-  echo Standard database build completed without usable items.
+:run_metadata_audit
+pushd "%BACKEND_ROOT%"
+"%PYTHON%" -m app.metadata_audit.cli --quote-root "%QUOTE_ROOT%" --database-file "%DATABASE_FILE%" --report "%METADATA_AUDIT_REPORT%"
+set "AUDIT_EXIT=%errorlevel%"
+popd
+if not "%AUDIT_EXIT%"=="0" (
+  echo Metadata audit failed with exit code %AUDIT_EXIT%.
   exit /b 1
 )
 exit /b 0

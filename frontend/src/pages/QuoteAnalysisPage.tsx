@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   ApiError,
   getCompleteDocumentAnalysis,
+  getStandardEvidence,
   lookupMarketPrice,
   submitIncomingBid,
   type AnalysisAssessment,
@@ -22,10 +24,10 @@ type ResultFilter =
 
 const assessmentLabels: Record<AnalysisAssessment, string> = {
   NOT_APPLICABLE: "판정 제외",
-  REVIEW_REQUIRED: "판정대기",
+  REVIEW_REQUIRED: "판정 대기",
   LOW: "저가",
   WITHIN_RANGE: "적정",
-  REVIEW: "가격 검토",
+  REVIEW: "주의",
   HIGH: "고가",
 };
 
@@ -178,7 +180,7 @@ export function QuoteAnalysisPage() {
           />
         </label>
         <button
-          className="primary-action"
+          className="primary-action stable-action"
           type="button"
           disabled={busy}
           onClick={() => void startAnalysis()}
@@ -287,11 +289,9 @@ function AnalysisResults({
     <section className="analysis-results">
       <header className="result-heading">
         <div>
-          <p className="section-kicker">Document #{analysis.document.id}</p>
-          <h2>{analysis.document.logical_name}</h2>
+          <p className="section-kicker">접수 견적 #{analysis.document.id}</p>
+          <h2>{analysis.document.display_name}</h2>
           <p>
-            <span>{`${submission.parser_name} ${submission.parser_version}`}</span>
-            {" · "}
             <strong>{`총 ${submission.raw_item_count}개 품목`}</strong>
           </p>
         </div>
@@ -312,7 +312,7 @@ function AnalysisResults({
           <strong>{`${metrics.market}건`}</strong>
         </div>
         <div>
-          <span>판정대기</span>
+          <span>판정 대기</span>
           <strong>{metrics.pending}건</strong>
         </div>
         <div className="is-high">
@@ -325,13 +325,19 @@ function AnalysisResults({
         </div>
         <div className="is-review">
           <span>가격 판정</span>
-          <strong>{`가격 검토 ${metrics.review}건`}</strong>
+          <strong>{`주의 ${metrics.review}건`}</strong>
         </div>
         <div>
           <span>가격 판정</span>
           <strong>저가 {metrics.low}건</strong>
         </div>
       </div>
+
+      <p className="price-policy-note">
+        {analysis.price_policy?.description ??
+          "표준 대비 ±10% 이내 적정, ±10% 초과~±20% 주의, ±20% 초과 고가·저가"}
+        . 판정 대기는 정제 미완료 또는 기준가가 없어 가격을 판단하지 못한 품목입니다.
+      </p>
 
       <div className="market-roadmap">
         <strong>{`시장가 확인 필요 ${metrics.market}건`}</strong>
@@ -350,10 +356,10 @@ function AnalysisResults({
             <option value="ALL">전체 품목</option>
             <option value="MATCHED">표준 DB 매칭</option>
             <option value="MARKET">시장가 확인 필요</option>
-            <option value="PENDING">판정대기</option>
+            <option value="PENDING">판정 대기</option>
             <option value="HIGH">고가</option>
             <option value="WITHIN_RANGE">적정</option>
-            <option value="REVIEW">가격 검토</option>
+            <option value="REVIEW">주의</option>
             <option value="LOW">저가</option>
           </select>
         </label>
@@ -407,6 +413,21 @@ function AnalysisRow({
     line.match_status === "MATCHED" &&
     line.standard_item_id !== null &&
     line.standard_price_version_id !== null;
+  const standardEvidence = useQuery({
+    queryKey: [
+      "analysis-standard-evidence",
+      line.standard_item_id,
+      line.standard_price_version_id,
+    ],
+    queryFn: ({ signal }) =>
+      getStandardEvidence({
+        standardItemId: line.standard_item_id!,
+        priceVersionId: line.standard_price_version_id!,
+        signal,
+      }),
+    enabled: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const requestMarket = async (forceRefresh = false) => {
     setMarketLoading(true);
@@ -434,20 +455,53 @@ function AnalysisRow({
     <tr>
       <td>
         <strong>{line.item_name ?? "품명 없음"}</strong>
-        <span>{line.spec ?? "사양 없음"}</span>
+        <span>{line.spec ?? analysisSpecLabel(line.spec_source_status)}</span>
       </td>
       <td className="numeric">{line.unit ?? "—"} · {formatNumber(line.quantity)}</td>
       <td className="numeric">{formatMoney(line.quote_unit_price)}</td>
       <td className="numeric">{formatMoney(line.quote_amount)}</td>
       <td className="numeric reference-basis">{formatMoney(referencePrice)}</td>
-      <td className="reference-range">
+      <td
+        className="reference-range reference-evidence-trigger"
+        tabIndex={hasPriceEvidence ? 0 : undefined}
+        onMouseEnter={() => {
+          if (hasPriceEvidence && !standardEvidence.data) void standardEvidence.refetch();
+        }}
+        onFocus={() => {
+          if (hasPriceEvidence && !standardEvidence.data) void standardEvidence.refetch();
+        }}
+      >
         {line.match_status === "MATCHED" || market ? (
           <>
             <strong>{formatMoney(minimumPrice)}</strong>
             <span>{formatMoney(middlePrice)}</span>
             <strong>{formatMoney(maximumPrice)}</strong>
+            {hasPriceEvidence && (
+              <span className="reference-evidence-count">
+                근거 {line.standard_observation_count ?? 0}건
+                {line.evidence_quality === "SINGLE_OBSERVATION" ? " · 신뢰도 낮음" : ""}
+              </span>
+            )}
           </>
         ) : "—"}
+        {hasPriceEvidence && (
+          <div className="reference-evidence-popover" role="tooltip">
+            <strong>표준단가 원본 근거</strong>
+            {standardEvidence.isFetching && <span>불러오는 중…</span>}
+            {standardEvidence.data?.observations.slice(0, 4).map((row) => (
+              <a
+                href={`/api/documents/variants/${row.source.variant_id}/file${row.source.page ? `#page=${row.source.page}` : ""}`}
+                target="_blank"
+                rel="noreferrer"
+                key={row.raw_item_id}
+              >
+                <span>{row.source.logical_name.split(/[\\/]/).at(-1)}</span>
+                <strong>{formatMoney(row.unit_price)}</strong>
+              </a>
+            ))}
+            {standardEvidence.isError && <span>근거를 불러오지 못했습니다.</span>}
+          </div>
+        )}
       </td>
       <td className="numeric">{formatSignedMoney(varianceAmount)}</td>
       <td className="numeric">
@@ -459,20 +513,24 @@ function AnalysisRow({
             {matchStatusLabel(line.match_status)}
           </span>
           {hasPriceEvidence ? (
-            <a
-              href={`/standard-prices?item_id=${line.standard_item_id}&version_id=${line.standard_price_version_id}`}
-              aria-label="표준 가격 근거 보기"
-            >
-              표준 DB #{line.standard_item_id} · v{line.standard_price_version_id}
-            </a>
+            <>
+              <a
+                href={`/standard-prices?item_id=${line.standard_item_id}&version_id=${line.standard_price_version_id}`}
+                aria-label="표준 가격 근거 보기"
+              >
+                표준 DB #{line.standard_item_id} · v{line.standard_price_version_id}
+              </a>
+              <small>내부 표준가격 적용 · 시장가 조회 생략</small>
+            </>
           ) : null}
           {line.market_price_lookup_status === "FUTURE_MARKET_LOOKUP" && (
             <>
               <small className="market-required">시장가 확인 필요</small>
               <button
-                className="market-lookup-button"
+                className="market-lookup-button stable-action"
                 type="button"
                 disabled={marketLoading}
+                aria-busy={marketLoading}
                 onClick={() => void requestMarket(false)}
               >
                 {marketLoading ? "조회 중…" : market ? "캐시 다시 보기" : "시장가 조회"}
@@ -516,6 +574,12 @@ function AnalysisRow({
     )}
     </Fragment>
   );
+}
+
+function analysisSpecLabel(status: AnalysisLine["spec_source_status"]) {
+  if (status === "SOURCE_BLANK") return "원문에 규격 없음";
+  if (status === "PARSER_UNMAPPED") return "견적서에서 규격 위치 확인 필요";
+  return "원본에서 규격을 확인하지 못함";
 }
 
 function MarketResultPanel({
@@ -626,7 +690,7 @@ function marketAssessmentLabel(assessment: MarketLookupResult["assessment"]) {
     LOW: "시장가 대비 저가",
     WITHIN_RANGE: "시장가 범위 적정",
     HIGH: "시장가 대비 고가",
-    REVIEW_REQUIRED: "판정대기",
+    REVIEW_REQUIRED: "판정 대기",
   }[assessment];
 }
 
@@ -679,7 +743,7 @@ function summarize(
     low: count("LOW"),
     review,
     coverage: totalAmount > 0 ? assessedAmount / totalAmount : 0,
-    overall: high > 0 ? "고가 품목 검토 필요" : review > 0 || pending > 0 ? "판정대기 포함" : "적정 범위",
+    overall: high > 0 ? "고가 품목 검토 필요" : review > 0 || pending > 0 ? "주의·판정 대기 포함" : "적정 범위",
     overallTone: high > 0 ? "high" : review > 0 || pending > 0 ? "pending" : "within",
   };
 }

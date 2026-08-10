@@ -26,6 +26,8 @@ from app.ingestion.service import (
     sha256,
 )
 from app.ingestion.readers import (
+    OcrReviewRequiredError,
+    OcrUnavailableError,
     SUPPORTED_QUOTE_EXTENSIONS,
     UnsafeQuoteFileError,
 )
@@ -121,6 +123,7 @@ class IngestReport:
     raw_items_total: int
     latest_status_counts: dict[str, int]
     failures: tuple[CorpusIssue, ...]
+    review_required: tuple[CorpusIssue, ...] = ()
 
     @property
     def documents_ingested(self) -> int:
@@ -134,12 +137,19 @@ class IngestReport:
     def documents_failed(self) -> int:
         return sum(item.status == "FAILED" for item in self.documents)
 
+    @property
+    def documents_review_required(self) -> int:
+        return sum(
+            item.status == "REVIEW_REQUIRED" for item in self.documents
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "preflight": self.preflight.to_dict(),
             "documents_ingested": self.documents_ingested,
             "documents_unchanged": self.documents_unchanged,
             "documents_failed": self.documents_failed,
+            "documents_review_required": self.documents_review_required,
             "variants_created": self.variants_created,
             "raw_items_created": self.raw_items_created,
             "base_decisions_created": self.base_decisions_created,
@@ -149,6 +159,9 @@ class IngestReport:
             "latest_status_counts": self.latest_status_counts,
             "documents": [asdict(item) for item in self.documents],
             "failures": [issue.to_dict() for issue in self.failures],
+            "review_required": [
+                issue.to_dict() for issue in self.review_required
+            ],
         }
 
 
@@ -273,6 +286,7 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
         for issue in preflight_issues
     ]
     failures = list(preflight_issues)
+    review_issues: list[CorpusIssue] = []
 
     for group in groups:
         before_variants = _count(session, SourceVariant.id)
@@ -312,11 +326,18 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
         except EXPECTED_INGESTION_ERRORS as exc:
             session.rollback()
             issue = ingestion_issue(group, exc, root=root)
-            failures.append(issue)
+            needs_review = isinstance(
+                exc,
+                (OcrUnavailableError, OcrReviewRequiredError),
+            )
+            if not needs_review:
+                failures.append(issue)
+            else:
+                review_issues.append(issue)
             results.append(
                 DocumentIngestResult(
                     logical_name=group.logical_name,
-                    status="FAILED",
+                    status=("REVIEW_REQUIRED" if needs_review else "FAILED"),
                     variants_created=0,
                     raw_items_created=0,
                     base_decisions_created=0,
@@ -369,6 +390,15 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
         failures=tuple(
             sorted(
                 failures,
+                key=lambda item: (
+                    ntpath.normcase(item.logical_name),
+                    item.logical_name,
+                ),
+            )
+        ),
+        review_required=tuple(
+            sorted(
+                review_issues,
                 key=lambda item: (
                     ntpath.normcase(item.logical_name),
                     item.logical_name,
@@ -434,6 +464,8 @@ def prepare_source_groups(
 EXPECTED_INGESTION_ERRORS = (
     UnsupportedQuoteLayoutError,
     UnsafeQuoteFileError,
+    OcrUnavailableError,
+    OcrReviewRequiredError,
     SourceFileChangedError,
     SourceEvidenceConflictError,
     BadZipFile,
@@ -454,6 +486,12 @@ def ingestion_issue(
     if isinstance(exc, UnsafeQuoteFileError):
         code = "UNSAFE_SOURCE"
         detail = "source exceeds bounded parsing safety limits"
+    elif isinstance(exc, OcrUnavailableError):
+        code = "OCR_UNAVAILABLE"
+        detail = "local OCR runtime or required language data is unavailable"
+    elif isinstance(exc, OcrReviewRequiredError):
+        code = "REVIEW_REQUIRED"
+        detail = "OCR could not confirm a supported quote table"
     elif isinstance(exc, UnsupportedQuoteLayoutError):
         code = "UNSUPPORTED_LAYOUT"
         detail = "source layout is not currently supported"

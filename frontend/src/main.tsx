@@ -6,6 +6,9 @@ import { App } from "./App";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
 import "./theme.css";
+import { applyTheme, getStoredTheme } from "./theme";
+
+applyTheme(getStoredTheme());
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -22,6 +22,7 @@ from app.ingestion.corpus import (
     prepare_source_groups,
     scan_supported_files,
 )
+from app.ingestion.readers import OcrUnavailableError
 from app.ingestion.service import ingest_path
 from app.quotes.models import RawQuoteItem
 
@@ -170,6 +171,35 @@ def test_failed_document_does_not_abort_good_documents_and_is_accounted(
     assert "\\" not in failure.logical_name
     assert str(tmp_path) not in json.dumps(report.to_dict(), ensure_ascii=False)
     assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
+
+
+def test_missing_ocr_runtime_is_reported_for_review_not_as_failure(
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "quotes"
+    root.mkdir()
+    (root / "image-quote.jpg").write_bytes(b"fixture")
+
+    from app.ingestion import service as ingestion_service
+
+    monkeypatch.setattr(
+        ingestion_service,
+        "read_quote",
+        lambda _: (_ for _ in ()).throw(
+            OcrUnavailableError("OCR_UNAVAILABLE")
+        ),
+    )
+
+    report = ingest_corpus(session, root)
+
+    assert report.documents_failed == 0
+    assert report.documents_review_required == 1
+    assert report.failures == ()
+    assert report.documents[0].status == "REVIEW_REQUIRED"
+    assert report.documents[0].error_code == "OCR_UNAVAILABLE"
+    assert report.review_required[0].error_code == "OCR_UNAVAILABLE"
 
 
 def test_broken_xls_unicode_does_not_abort_remaining_documents(

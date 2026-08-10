@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import re
+import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import zipfile
 import zlib
@@ -10,11 +14,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import xlrd
 import pdfplumber
+from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
@@ -26,7 +31,9 @@ from pypdf.generic import (
 )
 
 
-SUPPORTED_QUOTE_EXTENSIONS = frozenset({".xlsx", ".xls", ".pdf"})
+SUPPORTED_QUOTE_EXTENSIONS = frozenset(
+    {".xlsx", ".xls", ".pdf", ".jpg", ".jpeg", ".zip"}
+)
 MAX_XLSX_ARCHIVE_ENTRIES = 5_000
 MAX_XLSX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_XLSX_COMPRESSION_RATIO = 200
@@ -62,6 +69,17 @@ MAX_PDF_LEXICAL_OBJECTS = 200_000
 MAX_PDF_LEXICAL_REFERENCES = 500_000
 MAX_PDF_LEXICAL_DEPTH = 100
 MAX_PDF_DIRECT_ARRAY_CHILDREN = 100_000
+MAX_OCR_PAGES = 20
+MAX_OCR_DPI = 200
+MAX_OCR_PAGE_PIXELS = 12_000_000
+MAX_OCR_TOTAL_PIXELS = 80_000_000
+MAX_OCR_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_OCR_TEXT_CHARS = 2_000_000
+OCR_COMMAND_TIMEOUT_SECONDS = 45
+MAX_QUOTE_ARCHIVE_ENTRIES = 50
+MAX_QUOTE_ARCHIVE_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_QUOTE_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_QUOTE_ARCHIVE_COMPRESSION_RATIO = 200
 _PDF_DECODE_PATCH_LOCK = threading.Lock()
 REQUIRED_XLSX_ARCHIVE_ENTRIES = frozenset(
     {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}
@@ -70,6 +88,14 @@ REQUIRED_XLSX_ARCHIVE_ENTRIES = frozenset(
 
 class UnsafeQuoteFileError(ValueError):
     """A quote exceeds bounded local parsing resources."""
+
+
+class OcrUnavailableError(ValueError):
+    """OCR is needed but the required local executable is unavailable."""
+
+
+class OcrReviewRequiredError(ValueError):
+    """OCR ran safely, but no supported quote table could be confirmed."""
 
 
 @dataclass(frozen=True)
@@ -100,12 +126,56 @@ _FIELD_ALIASES = {
         "item",
         "itemname",
         "description",
+        "designation",
+        "bezeichnung",
+        "品名",
+        "品目",
+        "摘要",
     ),
-    "spec": ("규격", "사양", "spec", "specification", "model"),
-    "unit": ("단위", "unit"),
-    "quantity": ("수량", "qty", "quantity"),
-    "unit_price": ("단가", "unitprice", "price"),
-    "amount": ("금액", "합계", "amount", "total"),
+    "spec": (
+        "규격",
+        "사양",
+        "spec",
+        "specification",
+        "model",
+        "type",
+        "typ",
+        "規格",
+        "型式",
+        "形式",
+        "型号",
+    ),
+    "unit": ("단위", "unit", "einheit", "單位", "単位"),
+    "quantity": (
+        "수량",
+        "qty",
+        "quantity",
+        "menge",
+        "數量",
+        "数量",
+    ),
+    "unit_price": (
+        "단가",
+        "unitprice",
+        "price",
+        "priceperunit",
+        "einzelpreis",
+        "單價",
+        "単価",
+    ),
+    "amount": (
+        "금액",
+        "합계",
+        "amount",
+        "total",
+        "totalprice",
+        "gesamtpreis",
+        "金額",
+        "金額",
+        "金额",
+        "合計金額",
+        "合計金额",
+    ),
     "maker": ("메이커", "제조사", "브랜드", "maker", "manufacturer"),
 }
 _HEADER_SEPARATORS = re.compile(r"[\s_\-./()\[\]:]+")
@@ -126,6 +196,10 @@ def read_quote(path: Path) -> list[ParsedRow]:
         return read_xls(path)
     if extension == ".pdf":
         return read_pdf(path)
+    if extension in {".jpg", ".jpeg"}:
+        return read_image(path)
+    if extension == ".zip":
+        return read_zip(path)
     raise ValueError(f"unsupported quote extension: {path.suffix}")
 
 
@@ -210,6 +284,110 @@ def read_xls(path: Path) -> list[ParsedRow]:
             )
         )
     return parsed
+
+
+def read_zip(path: Path) -> list[ParsedRow]:
+    """Read bounded XLS/XLSX members while retaining archive provenance."""
+    parsed: list[ParsedRow] = []
+    total_uncompressed = 0
+    with zipfile.ZipFile(path) as archive:
+        entries = archive.infolist()
+        if len(entries) > MAX_QUOTE_ARCHIVE_ENTRIES:
+            raise UnsafeQuoteFileError("quote archive has too many entries")
+        with tempfile.TemporaryDirectory(prefix="price-archive-") as directory:
+            temporary_root = Path(directory)
+            for member_index, entry in enumerate(entries):
+                member_name = _safe_archive_member_name(entry.filename)
+                if entry.is_dir():
+                    continue
+                extension = PurePosixPath(member_name).suffix.lower()
+                if extension not in {".xls", ".xlsx"}:
+                    continue
+                if entry.flag_bits & 1:
+                    raise UnsafeQuoteFileError(
+                        "encrypted quote archive members are unsupported"
+                    )
+                if entry.file_size > MAX_QUOTE_ARCHIVE_MEMBER_BYTES:
+                    raise UnsafeQuoteFileError(
+                        "quote archive member exceeds safe byte limits"
+                    )
+                total_uncompressed += entry.file_size
+                if total_uncompressed > MAX_QUOTE_ARCHIVE_TOTAL_BYTES:
+                    raise UnsafeQuoteFileError(
+                        "quote archive expands beyond safe byte limits"
+                    )
+                if entry.file_size and not entry.compress_size:
+                    raise UnsafeQuoteFileError(
+                        "quote archive member has invalid compression metadata"
+                    )
+                if (
+                    entry.compress_size
+                    and entry.file_size / entry.compress_size
+                    > MAX_QUOTE_ARCHIVE_COMPRESSION_RATIO
+                ):
+                    raise UnsafeQuoteFileError(
+                        "quote archive member compression ratio is unsafe"
+                    )
+                payload = archive.read(entry)
+                if len(payload) != entry.file_size:
+                    raise UnsafeQuoteFileError(
+                        "quote archive member size changed while reading"
+                    )
+                member_path = temporary_root / f"member-{member_index}{extension}"
+                member_path.write_bytes(payload)
+                for row in read_quote(member_path):
+                    unit_price = row.unit_price
+                    archive_warnings = [
+                        "ARCHIVE_MEMBER",
+                        f"ARCHIVE_MEMBER:{member_name}",
+                        *row.warnings,
+                    ]
+                    if unit_price is None:
+                        unit_price = _derived_unit_price(
+                            row.amount,
+                            row.quantity,
+                        )
+                        if unit_price is not None:
+                            archive_warnings.extend(
+                                (
+                                    "DERIVED_UNIT_PRICE",
+                                    "PARSER_SOURCE_REVIEW_REQUIRED",
+                                )
+                            )
+                    parsed.append(
+                        ParsedRow(
+                            sheet=(
+                                f"{member_name}::{row.sheet}"
+                                if row.sheet
+                                else member_name
+                            ),
+                            page=row.page,
+                            row=row.row,
+                            cells=row.cells,
+                            item_name=row.item_name,
+                            spec=row.spec,
+                            unit=row.unit,
+                            quantity=row.quantity,
+                            unit_price=unit_price,
+                            amount=row.amount,
+                            maker=row.maker,
+                            warnings=tuple(dict.fromkeys(archive_warnings)),
+                        )
+                    )
+    return parsed
+
+
+def _safe_archive_member_name(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    member = PurePosixPath(normalized)
+    if (
+        not normalized
+        or member.is_absolute()
+        or ".." in member.parts
+        or (member.parts and ":" in member.parts[0])
+    ):
+        raise UnsafeQuoteFileError("quote archive member path is unsafe")
+    return member.as_posix()
 
 
 def _validate_xlsx_archive(path: Path) -> None:
@@ -306,7 +484,567 @@ def _read_pdf(path: Path) -> list[ParsedRow]:
         table_rows = _read_wia_pdf_tables(path, wia_units)
         if table_rows:
             return table_rows
+    if parsed:
+        return parsed
+    layout_rows = _read_pdf_layout_rows(path)
+    if layout_rows:
+        return layout_rows
+    if not reader.pages:
+        return []
+    return _read_pdf_with_ocr(path, reader)
+
+
+def _read_pdf_layout_rows(path: Path) -> list[ParsedRow]:
+    """Recover text PDFs whose visual table is lost by plain extraction."""
+    parsed: list[ParsedRow] = []
+    table_count = 0
+    row_count = 0
+    cell_count = 0
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page_number, page in enumerate(pdf.pages, start=1):
+                page_rows: list[ParsedRow] = []
+                for table in page.extract_tables():
+                    if not table:
+                        continue
+                    table_count += 1
+                    row_count += len(table)
+                    cell_count += sum(len(row or ()) for row in table)
+                    if (
+                        table_count > MAX_PDF_TABLES
+                        or row_count > MAX_PDF_TABLE_ROWS
+                        or cell_count > MAX_PDF_TABLE_CELLS
+                    ):
+                        raise UnsafeQuoteFileError(
+                            "pdf extracted table data exceeds safe limits"
+                        )
+                    matrix = [list(row or ()) for row in table]
+                    page_rows.extend(
+                        _parse_tabular_rows(
+                            matrix,
+                            sheet=None,
+                            page=page_number,
+                            row_numbers=False,
+                            cell_ranges=False,
+                            require_price=True,
+                            derive_unit_price=True,
+                            extra_warnings=("PDF_COORDINATE_TABLE",),
+                        )
+                    )
+                if page_rows:
+                    parsed.extend(page_rows)
+                    continue
+
+                text = page.extract_text(
+                    x_tolerance=2,
+                    y_tolerance=3,
+                    layout=True,
+                ) or ""
+                matrix = [
+                    [part for part in _PDF_COLUMNS.split(line.strip())]
+                    for line in text.splitlines()
+                    if line.strip()
+                ]
+                reconstructed = _parse_tabular_rows(
+                    matrix,
+                    sheet=None,
+                    page=page_number,
+                    row_numbers=False,
+                    cell_ranges=False,
+                    require_price=True,
+                    derive_unit_price=True,
+                    extra_warnings=("PDF_LAYOUT_TEXT",),
+                )
+                if reconstructed:
+                    parsed.extend(reconstructed)
+                else:
+                    parsed.extend(
+                        _parse_legacy_pdf_lines(text, page=page_number)
+                    )
+    except UnsafeQuoteFileError:
+        raise
+    except Exception:
+        return []
+    return _deduplicate_parsed_rows(parsed)
+
+
+_LEGACY_PDF_UNIT = re.compile(
+    r"(?<![A-Za-z])"
+    r"(?P<unit>EA|SET|LOT|PCS?|PC|UNIT|JOB|LS|KG|HR|DAY|M/D|M-D|"
+    r"식|개|대|건|명|일|시간)"
+    r"(?![A-Za-z])",
+    re.IGNORECASE,
+)
+_LEGACY_PDF_NUMBER = re.compile(
+    r"(?:[₩￦$\¥€] ?)?-?"
+    r"(?:\d{1,3}(?:\s*,\s*\d{3})+|\d{4,})(?:\.\d+)?"
+)
+
+
+def _parse_legacy_pdf_lines(text: str, *, page: int) -> list[ParsedRow]:
+    parsed: list[ParsedRow] = []
+    for line in text.splitlines():
+        normalized_line = " ".join(line.split())
+        unit_match = _LEGACY_PDF_UNIT.search(normalized_line)
+        if unit_match is None:
+            continue
+        before_unit = normalized_line[: unit_match.start()].rstrip()
+        quantity_match = re.search(r"(\d+(?:\.\d+)?)\s*$", before_unit)
+        if quantity_match is None:
+            continue
+        quantity = quantity_match.group(1)
+        description = before_unit[: quantity_match.start()].strip()
+        description = re.sub(
+            r"^\s*\d+(?:[.)_-]\d+)*(?:[.)_-])?\s+",
+            "",
+            description,
+        )
+        if _is_non_item_label(description):
+            continue
+        price_tokens = [
+            _normalized_money(match.group(0))
+            for match in _LEGACY_PDF_NUMBER.finditer(
+                normalized_line[unit_match.end() :]
+            )
+        ]
+        price_tokens = [value for value in price_tokens if value is not None]
+        if not price_tokens:
+            continue
+        amount = price_tokens[1] if len(price_tokens) >= 2 else price_tokens[0]
+        unit_price = price_tokens[0] if len(price_tokens) >= 2 else None
+        warnings = [
+            "PDF_LEGACY_LINE",
+            "SPEC_COLUMN_NOT_FOUND",
+            "PARSER_SOURCE_REVIEW_REQUIRED",
+        ]
+        if unit_price is None:
+            unit_price = _derived_unit_price(amount, quantity)
+            if unit_price is None:
+                continue
+            warnings.append("DERIVED_UNIT_PRICE")
+        parsed.append(
+            ParsedRow(
+                sheet=None,
+                page=page,
+                row=None,
+                cells=None,
+                item_name=description,
+                spec=None,
+                unit=unit_match.group("unit"),
+                quantity=quantity,
+                unit_price=unit_price,
+                amount=amount,
+                maker=None,
+                warnings=tuple(warnings),
+            )
+        )
     return parsed
+
+
+def _deduplicate_parsed_rows(rows: list[ParsedRow]) -> list[ParsedRow]:
+    result: list[ParsedRow] = []
+    seen: set[tuple[object, ...]] = set()
+    for row in rows:
+        key = (
+            row.page,
+            row.item_name,
+            row.spec,
+            row.unit,
+            row.quantity,
+            row.unit_price,
+            row.amount,
+        )
+        if key not in seen:
+            seen.add(key)
+            result.append(row)
+    return result
+
+
+def read_image(path: Path) -> list[ParsedRow]:
+    """Read a bounded image quote using the optional local OCR runtime."""
+    size = path.stat().st_size
+    if size > MAX_OCR_IMAGE_BYTES:
+        raise UnsafeQuoteFileError("image exceeds safe OCR byte limits")
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except (OSError, ValueError) as exc:
+        raise OcrReviewRequiredError(
+            "image could not be decoded for OCR review"
+        ) from exc
+    pixels = width * height
+    if pixels <= 0 or pixels > MAX_OCR_PAGE_PIXELS:
+        raise UnsafeQuoteFileError("image resolution exceeds safe OCR limits")
+    runtime = _resolve_ocr_runtime(require_renderer=False)
+    with _ocr_tessdata(runtime) as tessdata:
+        text = _run_tesseract(path, runtime, tessdata=tessdata)
+    rows = _parse_ocr_text(text, page=1)
+    if not rows:
+        raise OcrReviewRequiredError(
+            "OCR completed but no supported quote rows were confirmed"
+        )
+    return rows
+
+
+@dataclass(frozen=True)
+class _OcrRuntime:
+    tesseract: Path
+    renderer: Path | None
+    languages: tuple[str, ...]
+    tessdata_sources: tuple[Path, ...]
+
+
+def _read_pdf_with_ocr(
+    path: Path,
+    reader: PdfReader,
+) -> list[ParsedRow]:
+    page_count = len(reader.pages)
+    if page_count > MAX_OCR_PAGES:
+        raise UnsafeQuoteFileError("pdf exceeds safe OCR page limits")
+
+    page_pixels: list[int] = []
+    for page in reader.pages:
+        try:
+            width_points = float(page.mediabox.width)
+            height_points = float(page.mediabox.height)
+        except (TypeError, ValueError) as exc:
+            raise UnsafeQuoteFileError(
+                "pdf page dimensions are invalid for OCR"
+            ) from exc
+        width_pixels = round(width_points * MAX_OCR_DPI / 72)
+        height_pixels = round(height_points * MAX_OCR_DPI / 72)
+        pixels = width_pixels * height_pixels
+        if pixels <= 0 or pixels > MAX_OCR_PAGE_PIXELS:
+            raise UnsafeQuoteFileError(
+                "pdf page resolution exceeds safe OCR limits"
+            )
+        page_pixels.append(pixels)
+    if sum(page_pixels) > MAX_OCR_TOTAL_PIXELS:
+        raise UnsafeQuoteFileError(
+            "pdf total rendered resolution exceeds safe OCR limits"
+        )
+
+    runtime = _resolve_ocr_runtime(require_renderer=True)
+    assert runtime.renderer is not None
+    parsed: list[ParsedRow] = []
+    text_total = 0
+    with tempfile.TemporaryDirectory(prefix="price-ocr-") as directory:
+        temporary_root = Path(directory)
+        with _ocr_tessdata(runtime, temporary_root) as tessdata:
+            for page_number in range(1, page_count + 1):
+                image_prefix = temporary_root / f"page-{page_number}"
+                _run_command(
+                    [
+                        str(runtime.renderer),
+                        "-f",
+                        str(page_number),
+                        "-l",
+                        str(page_number),
+                        "-singlefile",
+                        "-r",
+                        str(MAX_OCR_DPI),
+                        "-png",
+                        str(path),
+                        str(image_prefix),
+                    ],
+                    error_message="PDF page rendering needs manual review",
+                )
+                image_path = image_prefix.with_suffix(".png")
+                if not image_path.is_file():
+                    raise OcrReviewRequiredError(
+                        "PDF renderer did not produce an OCR image"
+                    )
+                if image_path.stat().st_size > MAX_OCR_IMAGE_BYTES:
+                    raise UnsafeQuoteFileError(
+                        "rendered PDF page exceeds safe OCR byte limits"
+                    )
+                with Image.open(image_path) as image:
+                    if image.width * image.height > MAX_OCR_PAGE_PIXELS:
+                        raise UnsafeQuoteFileError(
+                            "rendered PDF page exceeds safe OCR resolution"
+                        )
+                text = _run_tesseract(
+                    image_path,
+                    runtime,
+                    tessdata=tessdata,
+                )
+                text_total += len(text)
+                if text_total > MAX_OCR_TEXT_CHARS:
+                    raise UnsafeQuoteFileError(
+                        "OCR text exceeds safe extraction limits"
+                    )
+                parsed.extend(_parse_ocr_text(text, page=page_number))
+    if not parsed:
+        raise OcrReviewRequiredError(
+            "OCR completed but no supported quote rows were confirmed"
+        )
+    return parsed
+
+
+def _parse_ocr_text(text: str, *, page: int) -> list[ParsedRow]:
+    matrix = [
+        [part for part in _PDF_COLUMNS.split(line.strip())]
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    parsed = _parse_tabular_rows(
+        matrix,
+        sheet=None,
+        page=page,
+        row_numbers=False,
+        cell_ranges=False,
+    )
+    return [
+        ParsedRow(
+            sheet=row.sheet,
+            page=row.page,
+            row=row.row,
+            cells=row.cells,
+            item_name=row.item_name,
+            spec=row.spec,
+            unit=row.unit,
+            quantity=row.quantity,
+            unit_price=row.unit_price,
+            amount=row.amount,
+            maker=row.maker,
+            warnings=(
+                *row.warnings,
+                "OCR_SOURCE",
+                "OCR_REVIEW_REQUIRED",
+            ),
+        )
+        for row in parsed
+    ]
+
+
+def _resolve_ocr_runtime(*, require_renderer: bool) -> _OcrRuntime:
+    backend_root = Path(__file__).resolve().parents[2]
+    tesseract = _find_executable(
+        "tesseract",
+        environment_name="TESSERACT_CMD",
+        candidates=(
+            Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+            / "Tesseract-OCR"
+            / "tesseract.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
+            / "Tesseract-OCR"
+            / "tesseract.exe",
+        ),
+    )
+    if tesseract is None:
+        raise OcrUnavailableError(
+            "OCR_UNAVAILABLE: tesseract executable was not found"
+        )
+
+    renderer = None
+    if require_renderer:
+        program_files = Path(
+            os.environ.get("ProgramFiles", "C:/Program Files")
+        )
+        program_files_x86 = Path(
+            os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
+        )
+        renderer = _find_executable(
+            "pdftoppm",
+            environment_name="PDFTOPPM_CMD",
+            candidates=(
+                program_files / "poppler" / "Library" / "bin" / "pdftoppm.exe",
+                program_files / "poppler" / "bin" / "pdftoppm.exe",
+                program_files_x86 / "poppler" / "Library" / "bin" / "pdftoppm.exe",
+                program_files_x86 / "poppler" / "bin" / "pdftoppm.exe",
+            ),
+        )
+        if renderer is None:
+            raise OcrUnavailableError(
+                "OCR_UNAVAILABLE: pdftoppm executable was not found"
+            )
+
+    configured_languages = os.environ.get("OCR_LANGUAGES", "kor+eng")
+    languages = tuple(
+        language.strip()
+        for language in configured_languages.split("+")
+        if language.strip()
+    )
+    if not languages:
+        raise OcrUnavailableError(
+            "OCR_UNAVAILABLE: no OCR language was configured"
+        )
+    configured_tessdata = os.environ.get("TESSDATA_PREFIX")
+    tessdata_sources = _unique_existing_directories(
+        (
+            Path(configured_tessdata) if configured_tessdata else None,
+            backend_root / ".local" / "ocr" / "tessdata",
+            tesseract.parent / "tessdata",
+            Path("/usr/share/tesseract-ocr/5/tessdata"),
+            Path("/usr/share/tesseract-ocr/4.00/tessdata"),
+            Path("/usr/share/tessdata"),
+        )
+    )
+    missing = [
+        language
+        for language in languages
+        if not any(
+            (source / f"{language}.traineddata").is_file()
+            for source in tessdata_sources
+        )
+    ]
+    if missing:
+        raise OcrUnavailableError(
+            "OCR_UNAVAILABLE: configured OCR language data was not found"
+        )
+    return _OcrRuntime(
+        tesseract=tesseract,
+        renderer=renderer,
+        languages=languages,
+        tessdata_sources=tessdata_sources,
+    )
+
+
+def _find_executable(
+    name: str,
+    *,
+    environment_name: str,
+    candidates: tuple[Path, ...],
+) -> Path | None:
+    configured = os.environ.get(environment_name)
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if (
+            configured_path.is_file()
+            and configured_path.suffix.lower() not in {".bat", ".cmd"}
+        ):
+            return configured_path
+        resolved = shutil.which(configured)
+        if resolved and Path(resolved).suffix.lower() not in {".bat", ".cmd"}:
+            return Path(resolved)
+        return None
+
+    path_directories = [
+        Path(entry)
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry
+    ]
+    executable_names = (
+        (f"{name}.exe", name)
+        if os.name == "nt"
+        else (name,)
+    )
+    for directory in path_directories:
+        for executable_name in executable_names:
+            candidate = directory / executable_name
+            if candidate.is_file():
+                return candidate
+    resolved = shutil.which(name)
+    if resolved and Path(resolved).suffix.lower() not in {".bat", ".cmd"}:
+        return Path(resolved)
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _unique_existing_directories(
+    candidates: tuple[Path | None, ...],
+) -> tuple[Path, ...]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate is None or not candidate.is_dir():
+            continue
+        resolved = candidate.resolve(strict=False)
+        key = os.path.normcase(str(resolved))
+        if key not in seen:
+            seen.add(key)
+            result.append(resolved)
+    return tuple(result)
+
+
+@contextmanager
+def _ocr_tessdata(
+    runtime: _OcrRuntime,
+    temporary_root: Path | None = None,
+) -> Iterator[Path]:
+    required = {
+        language: f"{language}.traineddata"
+        for language in runtime.languages
+    }
+    for source in runtime.tessdata_sources:
+        if all((source / filename).is_file() for filename in required.values()):
+            yield source
+            return
+
+    if temporary_root is not None:
+        combined = temporary_root / "tessdata"
+        combined.mkdir()
+        for filename in required.values():
+            source_file = next(
+                source / filename
+                for source in runtime.tessdata_sources
+                if (source / filename).is_file()
+            )
+            shutil.copyfile(source_file, combined / filename)
+        yield combined
+        return
+
+    with tempfile.TemporaryDirectory(prefix="price-tessdata-") as directory:
+        combined = Path(directory)
+        for filename in required.values():
+            source_file = next(
+                source / filename
+                for source in runtime.tessdata_sources
+                if (source / filename).is_file()
+            )
+            shutil.copyfile(source_file, combined / filename)
+        yield combined
+
+
+def _run_tesseract(
+    image_path: Path,
+    runtime: _OcrRuntime,
+    *,
+    tessdata: Path,
+) -> str:
+    completed = _run_command(
+        [
+            str(runtime.tesseract),
+            str(image_path),
+            "stdout",
+            "--tessdata-dir",
+            str(tessdata),
+            "-l",
+            "+".join(runtime.languages),
+            "--psm",
+            "6",
+            "-c",
+            "preserve_interword_spaces=1",
+        ],
+        error_message="OCR execution needs manual review",
+    )
+    text = completed.stdout
+    if len(text) > MAX_OCR_TEXT_CHARS:
+        raise UnsafeQuoteFileError("OCR text exceeds safe extraction limits")
+    return text
+
+
+def _run_command(
+    command: list[str],
+    *,
+    error_message: str,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=OCR_COMMAND_TIMEOUT_SECONDS,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        raise OcrUnavailableError(
+            "OCR_UNAVAILABLE: local OCR executable disappeared"
+        ) from exc
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise OcrReviewRequiredError(error_message) from exc
 
 
 def _read_wia_pdf_tables(
@@ -388,6 +1126,12 @@ def _parse_wia_pdf_table(
             if offset + 6 < len(row)
             else None
         )
+        warnings = ["PDF_WIA_TABLE", f"UNIT_SECTION:{unit_name}"]
+        if spec is None:
+            warnings.append("SOURCE_SPEC_BLANK")
+        if maker is not None and not _plausible_maker(maker):
+            maker = None
+            warnings.append("MAKER_REJECTED_NON_BRAND")
         if (
             len(item_name) < 2
             or _is_number(item_name)
@@ -408,7 +1152,7 @@ def _parse_wia_pdf_table(
                 unit_price=unit_price,
                 amount=amount,
                 maker=maker,
-                warnings=("PDF_WIA_TABLE", f"UNIT_SECTION:{unit_name}"),
+                warnings=tuple(warnings),
             )
         )
     return parsed
@@ -998,6 +1742,9 @@ def _parse_tabular_rows(
     page: int | None,
     row_numbers: bool,
     cell_ranges: bool,
+    require_price: bool = False,
+    derive_unit_price: bool = False,
+    extra_warnings: tuple[str, ...] = (),
 ) -> list[ParsedRow]:
     header_index, columns = _find_header(rows)
     if header_index is None:
@@ -1006,6 +1753,10 @@ def _parse_tabular_rows(
             if cell_ranges
             else []
         )
+    if _contains_cjk_quote_header(rows[header_index]):
+        require_price = True
+        derive_unit_price = True
+        extra_warnings = (*extra_warnings, "CJK_HEADER_TABLE")
 
     parsed: list[ParsedRow] = []
     mapped_columns = sorted(columns.values())
@@ -1013,82 +1764,264 @@ def _parse_tabular_rows(
         rows[header_index + 1 :],
         start=header_index + 1,
     ):
-        fields = {
-            field: _raw_text(
-                values[column] if column < len(values) else None
-            )
-            for field, column in columns.items()
-        }
-        if not any(fields.values()):
-            continue
-        if not fields.get("item_name"):
-            continue
+        for expanded_values, expansion_warnings in _expanded_tabular_values(
+            values,
+            columns,
+        ):
+            fields = {
+                field: _raw_text(
+                    expanded_values[column]
+                    if column < len(expanded_values)
+                    else None
+                )
+                for field, column in columns.items()
+            }
+            if not any(fields.values()):
+                continue
+            item_name = fields.get("item_name")
+            if _is_non_item_label(item_name):
+                continue
+            for field in ("quantity", "unit_price", "amount"):
+                normalized = _normalized_money(fields.get(field))
+                if normalized is not None:
+                    fields[field] = normalized
+            warnings = [*extra_warnings, *expansion_warnings]
+            if _looks_like_multi_item_block(item_name):
+                warnings.extend(
+                    (
+                        "MULTI_ITEM_BLOCK",
+                        "PARSER_SOURCE_REVIEW_REQUIRED",
+                    )
+                )
+            if (
+                derive_unit_price
+                and not fields.get("unit_price")
+                and fields.get("amount")
+                and fields.get("quantity")
+            ):
+                derived = _derived_unit_price(
+                    fields["amount"],
+                    fields["quantity"],
+                )
+                if derived is not None:
+                    fields["unit_price"] = derived
+                    warnings.extend(
+                        (
+                            "DERIVED_UNIT_PRICE",
+                            "PARSER_SOURCE_REVIEW_REQUIRED",
+                        )
+                    )
+            if require_price and not (
+                _positive_number(fields.get("unit_price"))
+                or _positive_number(fields.get("amount"))
+            ):
+                continue
 
-        source_row = row_index + 1 if row_numbers else None
-        source_cells = None
-        if cell_ranges:
-            first_column = get_column_letter(mapped_columns[0] + 1)
-            last_column = get_column_letter(mapped_columns[-1] + 1)
-            source_cells = (
-                f"{first_column}{source_row}:{last_column}{source_row}"
+            maker = fields.get("maker")
+            if "spec" not in columns:
+                warnings.append("SPEC_COLUMN_NOT_FOUND")
+                if any(
+                    source_warning in warnings
+                    for source_warning in (
+                        "PDF_COORDINATE_TABLE",
+                        "PDF_LAYOUT_TEXT",
+                    )
+                ):
+                    warnings.append("PARSER_SOURCE_REVIEW_REQUIRED")
+            elif fields.get("spec") is None:
+                warnings.append("SOURCE_SPEC_BLANK")
+            if maker is not None and not _plausible_maker(maker):
+                maker = None
+                warnings.append("MAKER_REJECTED_NON_BRAND")
+
+            source_row = row_index + 1 if row_numbers else None
+            source_cells = None
+            if cell_ranges:
+                first_column = get_column_letter(mapped_columns[0] + 1)
+                last_column = get_column_letter(mapped_columns[-1] + 1)
+                source_cells = (
+                    f"{first_column}{source_row}:{last_column}{source_row}"
+                )
+            parsed.append(
+                ParsedRow(
+                    sheet=sheet,
+                    page=page,
+                    row=source_row,
+                    cells=source_cells,
+                    item_name=item_name,
+                    spec=fields.get("spec"),
+                    unit=fields.get("unit"),
+                    quantity=fields.get("quantity"),
+                    unit_price=fields.get("unit_price"),
+                    amount=fields.get("amount"),
+                    maker=maker,
+                    warnings=tuple(dict.fromkeys(warnings)),
+                )
             )
-        parsed.append(
-            ParsedRow(
-                sheet=sheet,
-                page=page,
-                row=source_row,
-                cells=source_cells,
-                item_name=fields.get("item_name"),
-                spec=fields.get("spec"),
-                unit=fields.get("unit"),
-                quantity=fields.get("quantity"),
-                unit_price=fields.get("unit_price"),
-                amount=fields.get("amount"),
-                maker=fields.get("maker"),
-            )
-        )
     return parsed
+
+
+def _expanded_tabular_values(
+    values: list[Any],
+    columns: dict[str, int],
+) -> list[tuple[list[Any], tuple[str, ...]]]:
+    parts = {
+        field: _multiline_parts(
+            values[column] if column < len(values) else None
+        )
+        for field, column in columns.items()
+    }
+    candidate_lengths = [
+        len(parts[field])
+        for field in ("quantity", "unit", "unit_price", "amount")
+        if field in parts and len(parts[field]) > 1
+    ]
+    if not candidate_lengths:
+        return [(values, ())]
+    count = max(candidate_lengths)
+    item_parts = parts.get("item_name", [])
+    if len(item_parts) not in {count, count + 1}:
+        return [(values, ("PARSER_SOURCE_REVIEW_REQUIRED",))]
+
+    expanded: list[tuple[list[Any], tuple[str, ...]]] = []
+    for item_index in range(count):
+        row = list(values)
+        valid = True
+        for field, column in columns.items():
+            field_parts = parts[field]
+            if len(field_parts) == count:
+                value = field_parts[item_index]
+            elif field == "item_name" and len(field_parts) == count + 1:
+                value = field_parts[item_index + 1]
+            elif len(field_parts) == 1 and field in {"unit", "spec", "maker"}:
+                value = field_parts[0]
+            elif not field_parts:
+                value = None
+            else:
+                valid = False
+                break
+            if column >= len(row):
+                row.extend([None] * (column + 1 - len(row)))
+            row[column] = value
+        if not valid:
+            return [(values, ("PARSER_SOURCE_REVIEW_REQUIRED",))]
+        expanded.append((row, ("PDF_MULTILINE_TABLE_EXPANDED",)))
+    return expanded
+
+
+def _multiline_parts(value: Any) -> list[str]:
+    raw = _raw_text(value)
+    if raw is None:
+        return []
+    return [part.strip() for part in raw.splitlines() if part.strip()]
+
+
+def _contains_cjk_quote_header(row: list[Any]) -> bool:
+    aliases = {
+        "\u54c1\u540d",
+        "\u898f\u683c",
+        "\u6578\u91cf",
+        "\u6570\u91cf",
+        "\u55ae\u4f4d",
+        "\u5358\u4f4d",
+        "\u55ae\u50f9",
+        "\u5358\u4fa1",
+        "\u91d1\u984d",
+        "\uf90a\u984d",
+        "\u91d1\u989d",
+    }
+    normalized = {_normalized_header(value) for value in row}
+    return len(normalized.intersection(aliases)) >= 2
 
 
 def _find_header(
     rows: list[list[Any]],
 ) -> tuple[int | None, dict[str, int]]:
     for row_index, row in enumerate(rows):
-        columns: dict[str, int] = {}
-        for column_index, value in enumerate(row):
-            field = _field_for_header(value)
-            if field is not None and field not in columns:
-                columns[field] = column_index
-        if "item_name" not in columns and (
-            "unit_price" in columns or "amount" in columns
-        ):
-            item_column = _fallback_item_column(row, columns)
-            if item_column is not None:
-                columns["item_name"] = item_column
-        has_item = "item_name" in columns
-        has_price = (
-            "unit_price" in columns or "amount" in columns
+        width = max(
+            (len(candidate) for candidate in rows[row_index : row_index + 4]),
+            default=len(row),
         )
-        if has_item and has_price:
-            return row_index, columns
+        combined = [None] * width
+        for header_end in range(row_index, min(len(rows), row_index + 4)):
+            for column_index, value in enumerate(rows[header_end]):
+                raw = _raw_text(value)
+                if raw:
+                    current = _raw_text(combined[column_index])
+                    combined[column_index] = (
+                        f"{current}\n{raw}" if current else raw
+                    )
+            columns = _header_columns(combined)
+            has_item = "item_name" in columns
+            has_price = "unit_price" in columns or "amount" in columns
+            if has_item and has_price:
+                return header_end, columns
     return None, {}
 
 
+def _header_columns(row: list[Any]) -> dict[str, int]:
+    columns: dict[str, int] = {}
+    normalized_headers = [_normalized_header(value) for value in row]
+    device = "\uc7a5\uce58"
+    content = "\ub0b4\uc6a9"
+    if device in normalized_headers and content in normalized_headers:
+        columns["item_name"] = normalized_headers.index(device)
+        columns["spec"] = normalized_headers.index(content)
+    for column_index, value in enumerate(row):
+        if column_index in columns.values():
+            continue
+        field = _field_for_header(value)
+        if field is not None and field not in columns:
+            columns[field] = column_index
+    if "item_name" not in columns and (
+        "unit_price" in columns or "amount" in columns
+    ):
+        item_column = _fallback_item_column(row, columns)
+        if item_column is not None:
+            columns["item_name"] = item_column
+    return columns
+
+
 def _field_for_header(value: Any) -> str | None:
-    normalized = _HEADER_SEPARATORS.sub(
+    raw = _raw_text(value)
+    if not raw:
+        return None
+    candidates = (raw, *re.split(r"[\r\n]+", raw))
+    for candidate in candidates:
+        normalized = _normalized_header(candidate)
+        if not normalized:
+            continue
+        for field, aliases in _FIELD_ALIASES.items():
+            if normalized in aliases:
+                return field
+        undecorated = normalized.removesuffix("\uc6d0").removesuffix("krw")
+        for field in ("unit_price", "amount"):
+            if undecorated in _FIELD_ALIASES[field]:
+                return field
+    return None
+
+
+def _normalized_header(value: Any) -> str:
+    return _HEADER_SEPARATORS.sub(
         "",
         _raw_text(value) or "",
     ).casefold()
-    if not normalized:
-        return None
-    for field, aliases in _FIELD_ALIASES.items():
-        if normalized in aliases:
-            return field
-    undecorated = normalized.removesuffix("원").removesuffix("krw")
-    for field in ("unit_price", "amount"):
-        if undecorated in _FIELD_ALIASES[field]:
-            return field
-    return None
+
+
+def _plausible_maker(value: str) -> bool:
+    normalized = " ".join(value.split())
+    if not normalized or len(normalized) > 120:
+        return False
+    if re.search(r"\d+\s*인\s*[x×*]\s*\d+\s*일", normalized, re.IGNORECASE):
+        return False
+    rejected_terms = (
+        "이동일 제외",
+        "인건비",
+        "노무비",
+        "작업일",
+        "출장비",
+    )
+    return not any(term in normalized for term in rejected_terms)
 
 
 def _fallback_item_column(
@@ -1112,6 +2045,93 @@ def _fallback_item_column(
         ):
             return column
     return None
+
+
+def _is_non_item_label(value: str | None) -> bool:
+    item = " ".join((value or "").split()).strip()
+    if len(item) < 2 or _is_number(item):
+        return True
+    if re.fullmatch(r"\d+(?:[._-]\d+)+[.)]?", item):
+        return True
+    normalized = re.sub(r"[\s_.\-/():：]+", "", item).casefold()
+    summary_labels = {
+        "total",
+        "grandtotal",
+        "subtotal",
+        "vat",
+        "\ud569\uacc4",
+        "\ucd1d\uacc4",
+        "\uc18c\uacc4",
+        "\uacf5\uae09\uac00\uc561",
+        "\ubd80\uac00\uc138",
+        "\uacac\uc801\uae08\uc561",
+        "\uacf5\uc0ac\uae08\uc561",
+        "\ubb38\uc11c\ubc88\ud638",
+        "quotationno",
+        "quoteno",
+        "refno",
+        "opno",
+    }
+    if normalized in summary_labels:
+        return True
+    summary_markers = (
+        "subtotal",
+        "grandtotal",
+        "totalamount",
+        "합계",
+        "총계",
+        "소계",
+        "合計",
+        "總計",
+        "小計",
+    )
+    return any(marker.casefold() in normalized for marker in summary_markers)
+
+
+def _looks_like_multi_item_block(value: str | None) -> bool:
+    if not value or "\n" not in value:
+        return False
+    numbered_lines = re.findall(
+        r"(?:^|\n)\s*\d{1,3}\s*[.)]",
+        value,
+    )
+    return len(numbered_lines) >= 2
+
+
+def _normalized_money(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    negative = text.startswith("(") and text.endswith(")")
+    if negative:
+        text = text[1:-1]
+    text = re.sub(r"(?:KRW|JPY|USD|EUR)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[₩￦$\¥€,\s]", "", text)
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return None
+    if negative and not text.startswith("-"):
+        text = f"-{text}"
+    try:
+        number = Decimal(text)
+    except InvalidOperation:
+        return None
+    return format(number, "f")
+
+
+def _derived_unit_price(
+    amount: str | None,
+    quantity: str | None,
+) -> str | None:
+    amount_text = _normalized_money(amount)
+    quantity_text = _normalized_money(quantity)
+    if amount_text is None or quantity_text is None:
+        return None
+    amount_number = Decimal(amount_text)
+    quantity_number = Decimal(quantity_text)
+    if amount_number <= 0 or quantity_number <= 0:
+        return None
+    result = amount_number / quantity_number
+    return format(result.quantize(Decimal("0.000001")).normalize(), "f")
 
 
 def _raw_text(value: Any) -> str | None:
@@ -1157,7 +2177,10 @@ def _parse_fixed_column_fallback(
                 unit_price=unit_price,
                 amount=None,
                 maker=None,
-                warnings=("FALLBACK_FIXED_C_E_F_H",),
+                warnings=(
+                    "FALLBACK_FIXED_C_E_F_H",
+                    "SPEC_COLUMN_NOT_FOUND",
+                ),
             )
         )
     return parsed

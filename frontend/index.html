@@ -3,9 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#080c0d" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Price Analyzer · 신규 견적 분석</title>
+    <script>
+      (() => {
+        try {
+          const theme = localStorage.getItem("price-analyzer-theme") === "light"
+            ? "light"
+            : "dark";
+          document.documentElement.dataset.theme = theme;
+          document.querySelector('meta[name="theme-color"]')?.setAttribute(
+            "content",
+            theme === "light" ? "#f4f7f6" : "#080c0d",
+          );
+        } catch {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

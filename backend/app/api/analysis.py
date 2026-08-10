@@ -54,7 +54,14 @@ class AnalysisDocumentListResponse(BaseModel):
 class AnalysisDocumentIdentityResponse(BaseModel):
     id: int
     logical_name: str
+    display_name: str
     purpose: QuoteDocumentPurpose
+
+
+class PricePolicyResponse(BaseModel):
+    within_percent: Decimal
+    high_low_percent: Decimal
+    description: str
 
 
 class AnalysisSourceResponse(BaseModel):
@@ -93,6 +100,7 @@ class AnalysisLineResponse(BaseModel):
     raw_item_id: int
     item_name: str | None
     spec: str | None
+    spec_source_status: str
     unit: str | None
     quantity: Decimal | None
     quote_unit_price: Decimal | None
@@ -114,6 +122,8 @@ class AnalysisLineResponse(BaseModel):
     canonical_unit: str | None
     standard_price_version_id: int | None
     standard_price_item_version_id: int | None
+    standard_observation_count: int | None
+    evidence_quality: str | None
     market_price_lookup_required: bool
     market_price_lookup_status: Literal[
         "NOT_REQUIRED", "FUTURE_MARKET_LOOKUP"
@@ -124,6 +134,7 @@ class AnalysisLineResponse(BaseModel):
 
 class DocumentAnalysisResponse(BaseModel):
     document: AnalysisDocumentIdentityResponse
+    price_policy: PricePolicyResponse
     lines: list[AnalysisLineResponse]
     next_cursor: int | None
     limit: int
@@ -247,7 +258,13 @@ def _analysis_payload(result: DocumentAnalysis) -> dict[str, object]:
         "document": {
             "id": result.document_id,
             "logical_name": result.logical_name,
+            "display_name": result.logical_name.replace("\\", "/").split("/")[-1],
             "purpose": QuoteDocumentPurpose.INCOMING_BID,
+        },
+        "price_policy": {
+            "within_percent": settings.price_variance_review_percent,
+            "high_low_percent": settings.price_variance_high_percent,
+            "description": "표준 중앙값 대비 ±10% 이내 적정, ±10~20% 주의, ±20% 초과 고가·저가",
         },
         "lines": result.lines,
         "next_cursor": result.next_cursor,

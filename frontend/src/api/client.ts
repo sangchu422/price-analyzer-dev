@@ -44,8 +44,52 @@ export interface ReviewQueueItem {
   normalized: DisplayValues;
   reason_code: string;
   reason_detail: string | null;
+  reason_evidence: ReasonEvidence | null;
+  spec_source_status: "PRESENT" | "SOURCE_BLANK" | "PARSER_UNMAPPED" | "UNKNOWN";
   decision: Decision;
   source: SourceEvidence;
+}
+
+export interface ReasonEvidenceObservation {
+  raw_item_id: number;
+  clean_decision_id: number;
+  unit_price: string;
+  source?: {
+    document_id: number;
+    logical_name: string;
+    variant_id: number;
+    file_name: string;
+    sheet: string | null;
+    page: number | null;
+    row: number | null;
+    cells: string | null;
+  } | null;
+}
+
+export interface ReasonEvidence {
+  kind: "UNIT_PRICE_DISTRIBUTION" | string;
+  current_unit_price?: string | null;
+  median_unit_price?: string | null;
+  variance_percent?: string | null;
+  observation_count?: number;
+  observations?: ReasonEvidenceObservation[];
+}
+
+export interface SourcePreview {
+  kind: "SPREADSHEET" | "PDF" | "FILE";
+  file_url: string;
+  file_name: string;
+  sheet: string | null;
+  page: number | null;
+  target_cells: string | null;
+  rows: Array<{
+    row_number: number;
+    cells: Array<{
+      coordinate: string;
+      value: string | null;
+      highlighted: boolean;
+    }>;
+  }>;
 }
 
 export interface ReviewQueueResponse {
@@ -89,6 +133,13 @@ export interface StandardItemSummary {
   maker_summary: string[];
   quote_date_start: string | null;
   quote_date_end: string | null;
+  spec_source_status:
+    | "PRESENT"
+    | "SOURCE_BLANK"
+    | "PARSER_UNMAPPED"
+    | "MIXED_REVIEW_REQUIRED"
+    | "MIXED_SOURCE_VALUES"
+    | "UNKNOWN";
   provenance: StandardBuildProvenance | null;
 }
 
@@ -97,6 +148,25 @@ export interface StandardItemListResponse {
   next_cursor: number | null;
   limit: number;
   latest_build: StandardBuildProvenance | null;
+}
+
+export interface SourceCoverageSummary {
+  scanned_files: number;
+  parsed_files: number;
+  standard_price_files: number;
+  unparsed_files: number;
+  ocr_required_files: number;
+  parser_required_files: number;
+  recollection_required_files: number;
+  recovered_copy_files: number;
+  security_release_required_files: number;
+  unsupported_files: number;
+  raw_item_count: number;
+  auto_confirmed_files: number;
+  review_required_files: number;
+  failed_files: number;
+  candidate_count: number;
+  accepted_candidate_count: number;
 }
 
 export type EvidenceQuality =
@@ -134,6 +204,7 @@ export interface DocumentMetadata {
   project_name: string | null;
   decided_by: string;
   reason_detail: string;
+  evidence: Record<string, unknown>;
   created_at: string;
 }
 
@@ -331,6 +402,7 @@ export interface AnalysisLine {
   raw_item_id: number;
   item_name: string | null;
   spec: string | null;
+  spec_source_status: "PRESENT" | "SOURCE_BLANK" | "PARSER_UNMAPPED" | "UNKNOWN";
   unit: string | null;
   quantity: string | null;
   quote_unit_price: string | null;
@@ -352,6 +424,8 @@ export interface AnalysisLine {
   canonical_unit: string | null;
   standard_price_version_id: number | null;
   standard_price_item_version_id: number | null;
+  standard_observation_count: number | null;
+  evidence_quality: EvidenceQuality | null;
   market_price_lookup_required: boolean;
   market_price_lookup_status: "NOT_REQUIRED" | "FUTURE_MARKET_LOOKUP";
   candidates: Array<{
@@ -437,7 +511,13 @@ export interface DocumentAnalysis {
   document: {
     id: number;
     logical_name: string;
+    display_name: string;
     purpose: "INCOMING_BID";
+  };
+  price_policy: {
+    within_percent: string;
+    high_low_percent: string;
+    description: string;
   };
   lines: AnalysisLine[];
   next_cursor: number | null;
@@ -529,6 +609,17 @@ export function getReviewQueue({
   if (afterId !== undefined) params.set("after_id", String(afterId));
   return requestJson<ReviewQueueResponse>(
     `/api/cleansing/review-queue?${params.toString()}`,
+    { signal },
+  );
+}
+
+export function getSourcePreview(
+  variantId: number,
+  rawItemId: number,
+  signal?: AbortSignal,
+) {
+  return requestJson<SourcePreview>(
+    `/api/documents/variants/${variantId}/preview?raw_item_id=${rawItemId}`,
     { signal },
   );
 }
@@ -638,6 +729,13 @@ export function getStandardItems({
   if (evidenceQuality) params.set("evidence_quality", evidenceQuality);
   return requestJson<StandardItemListResponse>(
     `/api/catalog/standard-items?${params.toString()}`,
+    { signal },
+  );
+}
+
+export function getSourceCoverageSummary(signal?: AbortSignal) {
+  return requestJson<SourceCoverageSummary>(
+    "/api/catalog/metadata-audit/summary",
     { signal },
   );
 }
@@ -796,6 +894,7 @@ export async function getCompleteDocumentAnalysis(
   const lines: AnalysisLine[] = [];
   let afterId: number | undefined;
   let document: DocumentAnalysis["document"] | undefined;
+  let pricePolicy: DocumentAnalysis["price_policy"] | undefined;
   do {
     const page = await getDocumentAnalysis({
       documentId,
@@ -804,11 +903,13 @@ export async function getCompleteDocumentAnalysis(
       signal,
     });
     document = page.document;
+    pricePolicy = page.price_policy;
     lines.push(...page.lines);
     afterId = page.next_cursor ?? undefined;
   } while (afterId !== undefined);
   return {
     document: document!,
+    price_policy: pricePolicy!,
     lines,
     next_cursor: null,
     limit: 100,

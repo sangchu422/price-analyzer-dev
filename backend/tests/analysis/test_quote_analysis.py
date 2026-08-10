@@ -356,6 +356,7 @@ def test_stale_price_is_inactive_until_rebuild_captures_remaining_evidence() -> 
         ).lines[0]
         assert stale.match_status == "MATCHED_NO_PRICE"
         assert stale.standard_price_version_id is None
+        assert stale.market_price_lookup_required is True
         assert session.query(StandardPriceVersion).count() == 1
 
         result = build_standard_database(session)
@@ -515,6 +516,8 @@ def test_candidate_never_applies_a_standard_price() -> None:
         assert line.reference_price is None
         assert line.standard_price_version_id is None
         assert line.variance_amount is None
+        assert line.market_price_lookup_required is True
+        assert line.market_price_lookup_status == "FUTURE_MARKET_LOOKUP"
         assert line.candidates[0].standard_item_id == item.id
         assert line.candidates[0].standard_item_version_id == item_version.id
         assert not hasattr(
@@ -562,6 +565,10 @@ def test_all_non_comparison_states_are_distinct() -> None:
         assert result.lines[2].market_price_lookup_status == (
             "FUTURE_MARKET_LOOKUP"
         )
+        assert result.lines[3].market_price_lookup_required is True
+        assert result.lines[3].market_price_lookup_status == (
+            "FUTURE_MARKET_LOOKUP"
+        )
         assert all(
             line.reference_price is None
             for line in result.lines
@@ -574,7 +581,16 @@ def test_variance_threshold_boundaries_are_configurable() -> None:
         _approve_reference_price(session, item, price="100")
         quote = _document(session, "thresholds.xlsx")
         for row, price in enumerate(
-            ("89.999999", "90", "110", "110.000001", "120", "120.000001"),
+            (
+                "79.999999",
+                "80",
+                "89.999999",
+                "90",
+                "110",
+                "110.000001",
+                "120",
+                "120.000001",
+            ),
             start=1,
         ):
             _row(session, quote, row=row, price=price, item=item)
@@ -588,6 +604,8 @@ def test_variance_threshold_boundaries_are_configurable() -> None:
 
         assert [line.assessment for line in result.lines] == [
             "LOW",
+            "REVIEW",
+            "REVIEW",
             "WITHIN_RANGE",
             "WITHIN_RANGE",
             "REVIEW",
@@ -603,6 +621,8 @@ def test_assessment_uses_exact_variance_before_display_rounding() -> None:
         quote = _document(session, "exact-thresholds.xlsx")
         for row, price in enumerate(
             (
+                "799999.996",
+                "800000",
                 "899999.996",
                 "900000",
                 "1100000",
@@ -617,6 +637,8 @@ def test_assessment_uses_exact_variance_before_display_rounding() -> None:
         result = analyze_document(session, quote.id)
 
         assert [line.variance_percent for line in result.lines] == [
+            Decimal("-20.000000"),
+            Decimal("-20.000000"),
             Decimal("-10.000000"),
             Decimal("-10.000000"),
             Decimal("10.000000"),
@@ -626,6 +648,8 @@ def test_assessment_uses_exact_variance_before_display_rounding() -> None:
         ]
         assert [line.assessment for line in result.lines] == [
             "LOW",
+            "REVIEW",
+            "REVIEW",
             "WITHIN_RANGE",
             "WITHIN_RANGE",
             "REVIEW",

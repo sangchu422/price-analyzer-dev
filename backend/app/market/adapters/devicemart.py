@@ -3,12 +3,17 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode, urljoin
 
 import httpx
 
-from app.market.adapters.base import CollectedProduct, CollectedTier
+from app.market.adapters.base import (
+    CollectedProduct,
+    CollectedTier,
+    search_query_variants,
+)
 from app.market.models import MarketSource
 
 
@@ -36,19 +41,34 @@ class DeviceMartAdapter:
         )
         close_client = self.client is None
         try:
-            search_url = (
-                f"{self.base_url}/goods/search_sse_stream?"
-                f"{urlencode({'search_text': query})}"
-            )
-            response = client.get(search_url)
-            response.raise_for_status()
-            return parse_sse_products(response.content, self.base_url)[:10]
+            for index, search_query in enumerate(search_query_variants(query)):
+                if index and self.delay_seconds:
+                    time.sleep(self.delay_seconds)
+                search_url = (
+                    f"{self.base_url}/goods/search_sse_stream?"
+                    f"{urlencode({'search_text': search_query})}"
+                )
+                response = client.get(search_url)
+                response.raise_for_status()
+                products = parse_sse_products(
+                    response.content,
+                    self.base_url,
+                    search_query=search_query,
+                )[:10]
+                if products:
+                    return products
+            return []
         finally:
             if close_client:
                 client.close()
 
 
-def parse_sse_products(raw: bytes, base_url: str) -> list[CollectedProduct]:
+def parse_sse_products(
+    raw: bytes,
+    base_url: str,
+    *,
+    search_query: str | None = None,
+) -> list[CollectedProduct]:
     source = raw.decode("utf-8", errors="replace")
     event_name = ""
     products: list[CollectedProduct] = []
@@ -64,7 +84,11 @@ def parse_sse_products(raw: bytes, base_url: str) -> list[CollectedProduct]:
             continue
         records = ((payload.get("list") or {}).get("record") or [])
         for record in records:
-            product = _product_from_sse_record(record, base_url)
+            product = _product_from_sse_record(
+                record,
+                base_url,
+                search_query=search_query,
+            )
             if product is not None:
                 products.append(product)
         event_name = ""
@@ -74,6 +98,8 @@ def parse_sse_products(raw: bytes, base_url: str) -> list[CollectedProduct]:
 def _product_from_sse_record(
     record: dict[str, object],
     base_url: str,
+    *,
+    search_query: str | None = None,
 ) -> CollectedProduct | None:
     source_id = str(record.get("goods_seq") or "")
     title = str(record.get("goods_name") or "").strip()
@@ -95,6 +121,7 @@ def _product_from_sse_record(
     raw_record = json.dumps(
         {
             "source_endpoint": "/goods/search_sse_stream",
+            "search_query": search_query,
             "record": record,
         },
         ensure_ascii=False,

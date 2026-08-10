@@ -4,8 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CleansingReviewPage } from "./CleansingReviewPage";
+import type { ReviewQueueItem } from "../api/client";
 
-const firstItem = {
+const firstItem: ReviewQueueItem = {
   raw_item_id: 7,
   raw: {
     item_name: " BEARING ",
@@ -27,6 +28,8 @@ const firstItem = {
   },
   reason_code: "AMOUNT_MISMATCH",
   reason_detail: "수량 × 단가와 금액을 확인해 주세요.",
+  reason_evidence: null,
+  spec_source_status: "PRESENT",
   decision: {
     id: 41,
     status: "REVIEW_REQUIRED",
@@ -52,6 +55,27 @@ const firstItem = {
     parser_version: "1.2.0",
     parser_warnings: [{ code: "FORMULA_VALUE_USED", cell: "G12" }],
   },
+};
+
+const sourcePreview = {
+  kind: "SPREADSHEET",
+  variant_id: 8,
+  file_name: "260707_러닝랩_견적_보안해제.xlsx",
+  file_url: "/api/documents/variants/8/file",
+  sheet: "견적서",
+  page: null,
+  target_row: 12,
+  target_cells: ["A12", "B12", "C12", "D12", "E12", "F12", "G12"],
+  rows: [
+    {
+      row_number: 12,
+      cells: [
+        { coordinate: "A12", value: "BEARING", highlighted: true },
+        { coordinate: "B12", value: "6204 ZZ", highlighted: true },
+        { coordinate: "E12", value: "2,800", highlighted: true },
+      ],
+    },
+  ],
 };
 
 const secondItem = {
@@ -102,20 +126,70 @@ function renderPage() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("CleansingReviewPage", () => {
-  it("shows exact source provenance and raw versus normalized values", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => jsonResponse(queue())));
+  it("shows operator-friendly values and an original quote link", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("/preview")
+        ? jsonResponse(sourcePreview)
+        : jsonResponse(queue()),
+    ));
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "BEARING", level: 1 })).toBeVisible();
-    expect(screen.getByText((_, node) => node?.tagName === "DD" && node.textContent === "BEARING")).toBeVisible();
-    expect(screen.getByText((_, node) => node?.tagName === "DD" && node.textContent === " BEARING ")).toBeVisible();
-    expect(screen.getByText("2,800")).toBeVisible();
-    expect(screen.getByText("2800.000000")).toBeVisible();
-    expect(screen.getByText("견적서/260707_러닝랩_견적_보안해제.xlsx")).toBeVisible();
-    expect(screen.getByText("a".repeat(64))).toBeVisible();
+    expect(await screen.findByLabelText("원본 견적서 셀 미리보기")).toBeVisible();
+    expect(screen.getByTitle("A12")).toHaveClass("is-source-target");
+    expect(screen.getByTitle("E12")).toHaveTextContent("2,800");
+    expect(screen.getByText("260707_러닝랩_견적_보안해제.xlsx")).toBeVisible();
     expect(screen.getByText("견적서 · 12행 · A12:G12")).toBeVisible();
-    expect(screen.getByText(/openpyxl-profile 1\.2\.0/)).toBeVisible();
-    expect(screen.getByText(/FORMULA_VALUE_USED/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "금액 불일치" })).toBeVisible();
+    expect(screen.getByText("수량 × 단가로 계산한 값과 견적서 금액이 일치하지 않습니다.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "원본 전체 열기" })).toHaveAttribute(
+      "href",
+      "/api/documents/variants/8/file",
+    );
+    expect(screen.queryByText("a".repeat(64))).not.toBeInTheDocument();
+    expect(screen.queryByText(/openpyxl-profile/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/FORMULA_VALUE_USED/)).not.toBeInTheDocument();
+  });
+
+  it("translates an outlier rule into a Korean price comparison", async () => {
+    const outlier = {
+      ...secondItem,
+      reason_code: "UNIT_PRICE_MAD_OUTLIER",
+      reason_detail: "observations=4; median=400000.000000; rule=outlier-mad-v1",
+      raw: { ...secondItem.raw, unit_price: "1000000" },
+      normalized: { ...secondItem.normalized, unit_price: "1000000.000000" },
+      reason_evidence: {
+        kind: "UNIT_PRICE_DISTRIBUTION",
+        current_unit_price: "1000000.000000",
+        median_unit_price: "400000.000000",
+        variance_percent: "150.000000",
+        observation_count: 4,
+        mad: "50000.000000",
+        observations: [
+          { raw_item_id: 21, clean_decision_id: 31, unit_price: "300000.000000", source: null },
+          { raw_item_id: 22, clean_decision_id: 36, unit_price: "400000.000000", source: null },
+          { raw_item_id: 23, clean_decision_id: 46, unit_price: "400000.000000", source: null },
+          { raw_item_id: 12, clean_decision_id: 52, unit_price: "1000000.000000", source: null },
+        ],
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("/preview")
+        ? jsonResponse(sourcePreview)
+        : jsonResponse(queue([outlier])),
+    ));
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "단가 편차 큼" })).toBeVisible();
+    expect(
+      screen.getByText("과거 유사 품목 4건의 중앙 단가 400,000원보다 +150% 차이가 납니다."),
+    ).toBeVisible();
+    expect(screen.getByText("차이 +150%")).toBeVisible();
+    expect(screen.getByText("300,000원")).toBeVisible();
+    expect(screen.getAllByText("400,000원")).toHaveLength(2);
+    expect(screen.getAllByText("1,000,000원").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/outlier-mad-v1/)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -340,7 +414,11 @@ describe("CleansingReviewPage", () => {
   });
 
   it("rejects reserved or overlong manual decision fields without posting", async () => {
-    const fetchMock = vi.fn(() => jsonResponse(queue()));
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return jsonResponse(queue());
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     renderPage();
@@ -363,7 +441,7 @@ describe("CleansingReviewPage", () => {
     expect(screen.getByText("판단 근거는 2,000자 이내로 입력해 주세요.")).toBeVisible();
     expect(screen.getByText("101 / 100")).toBeVisible();
     expect(screen.getByText("2,001 / 2,000")).toBeVisible();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("announces a safe API mutation error detail", async () => {
@@ -531,7 +609,9 @@ describe("CleansingReviewPage", () => {
 
     expect(searchbox).toHaveAttribute("maxlength", "200");
     expect(searchbox).toHaveValue("x".repeat(200));
-    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) =>
+      new URL(String(input), "http://localhost").searchParams.has("search"),
+    )).toBe(true));
     const sentSearches = fetchMock.mock.calls
       .map(([input]) => new URL(String(input), "http://localhost").searchParams.get("search"))
       .filter((value): value is string => value !== null);

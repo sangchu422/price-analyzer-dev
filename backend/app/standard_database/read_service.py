@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -58,6 +59,7 @@ class StandardExplorerSummary:
     maker_summary: tuple[str, ...]
     quote_date_start: date | None
     quote_date_end: date | None
+    spec_source_status: str
     provenance: StandardBuildProvenance | None
 
     @property
@@ -235,12 +237,15 @@ def list_standard_explorer_items(
     suppliers: dict[int, set[str]] = defaultdict(set)
     makers: dict[int, set[str]] = defaultdict(set)
     dates: dict[int, list[date]] = defaultdict(list)
+    spec_statuses: dict[int, set[str]] = defaultdict(set)
     evidence_statement = (
         select(
             StandardPriceObservation.standard_price_version_id,
             DocumentMetadataVersion.supplier_name,
             DocumentMetadataVersion.quote_date,
             CleanDecision.maker_norm,
+            RawQuoteItem.spec_raw,
+            RawQuoteItem.parse_warnings_json,
         )
         .outerjoin(
             DocumentMetadataVersion,
@@ -251,12 +256,23 @@ def list_standard_explorer_items(
             CleanDecision,
             CleanDecision.id == StandardPriceObservation.clean_decision_id,
         )
+        .join(
+            RawQuoteItem,
+            RawQuoteItem.id == StandardPriceObservation.raw_item_id,
+        )
         .where(
             StandardPriceObservation.standard_price_version_id.in_(price_ids)
         )
     )
     if price_ids:
-        for price_id, supplier, quote_date, maker in session.execute(
+        for (
+            price_id,
+            supplier,
+            quote_date,
+            maker,
+            spec_raw,
+            warnings_json,
+        ) in session.execute(
             evidence_statement
         ):
             if supplier:
@@ -265,6 +281,9 @@ def list_standard_explorer_items(
                 makers[price_id].add(maker)
             if quote_date:
                 dates[price_id].append(quote_date)
+            spec_statuses[price_id].add(
+                _spec_source_status(spec_raw, warnings_json)
+            )
 
     provenance = latest_build_provenance(session)
     summaries = [
@@ -288,6 +307,11 @@ def list_standard_explorer_items(
                 if price is None or not dates[price.id]
                 else max(dates[price.id])
             ),
+            spec_source_status=(
+                "UNKNOWN"
+                if price is None
+                else _aggregate_spec_status(spec_statuses[price.id])
+            ),
             provenance=provenance,
         )
         for version, price, member_count in page
@@ -296,6 +320,35 @@ def list_standard_explorer_items(
         summaries[-1].current_version.standard_item_id if has_more else None
     )
     return summaries, next_cursor, provenance
+
+
+def _spec_source_status(spec_raw: str | None, warnings_json: str) -> str:
+    if spec_raw is not None and spec_raw.strip():
+        return "PRESENT"
+    try:
+        warnings = json.loads(warnings_json)
+    except (json.JSONDecodeError, TypeError):
+        warnings = []
+    if "SOURCE_SPEC_BLANK" in warnings:
+        return "SOURCE_BLANK"
+    if (
+        "SPEC_COLUMN_NOT_FOUND" in warnings
+        or "FALLBACK_FIXED_C_E_F_H" in warnings
+    ):
+        return "PARSER_UNMAPPED"
+    return "UNKNOWN"
+
+
+def _aggregate_spec_status(statuses: set[str]) -> str:
+    if not statuses:
+        return "UNKNOWN"
+    if len(statuses) == 1:
+        return next(iter(statuses))
+    if "PARSER_UNMAPPED" in statuses:
+        return "MIXED_REVIEW_REQUIRED"
+    if statuses <= {"PRESENT", "SOURCE_BLANK"}:
+        return "MIXED_SOURCE_VALUES"
+    return "UNKNOWN"
 
 
 def standard_item_evidence(

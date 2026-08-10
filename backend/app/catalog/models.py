@@ -161,6 +161,11 @@ class DocumentMetadataVersion(_ImmutableCatalogRow, Base):
         default="DOCUMENT_METADATA_REVIEW",
         server_default=text("'DOCUMENT_METADATA_REVIEW'"),
     )
+    evidence_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         NaiveUTCDateTime(),
         default=utc_now,
@@ -168,6 +173,92 @@ class DocumentMetadataVersion(_ImmutableCatalogRow, Base):
     )
 
     source_document: Mapped[SourceDocument] = relationship("SourceDocument")
+
+
+class DocumentMetadataScan(_ImmutableCatalogRow, Base):
+    __tablename__ = "document_metadata_scan"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_path",
+            "input_fingerprint",
+            "rule_version",
+            name="uq_document_metadata_scan_file_rule",
+        ),
+        CheckConstraint(
+            "json_valid(diagnostics_json)",
+            name="ck_document_metadata_scan_diagnostics_json",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_variant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_variant.id", ondelete="RESTRICT"),
+        index=True,
+        nullable=True,
+    )
+    source_path: Mapped[str] = mapped_column(Text)
+    rule_version: Mapped[str] = mapped_column(String(100))
+    input_fingerprint: Mapped[str] = mapped_column(String(64))
+    open_status: Mapped[str] = mapped_column(String(32))
+    content_status: Mapped[str] = mapped_column(String(32))
+    review_status: Mapped[str] = mapped_column(String(32))
+    acquisition_channel: Mapped[str | None] = mapped_column(String(100))
+    diagnostics_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+    )
+    scanned_at: Mapped[datetime] = mapped_column(
+        NaiveUTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+
+class DocumentMetadataCandidate(_ImmutableCatalogRow, Base):
+    __tablename__ = "document_metadata_candidate"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_id",
+            "candidate_fingerprint",
+            name="uq_document_metadata_candidate_scan_fingerprint",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 100",
+            name="ck_document_metadata_candidate_confidence",
+        ),
+        CheckConstraint(
+            "json_valid(evidence_json)",
+            name="ck_document_metadata_candidate_evidence_json",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_id: Mapped[int] = mapped_column(
+        ForeignKey("document_metadata_scan.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    field_name: Mapped[str] = mapped_column(String(50))
+    value_text: Mapped[str] = mapped_column(Text)
+    source_kind: Mapped[str] = mapped_column(String(50))
+    confidence: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32))
+    source_sheet: Mapped[str | None] = mapped_column(String(255))
+    source_page: Mapped[int | None] = mapped_column(Integer)
+    source_cells: Mapped[str | None] = mapped_column(Text)
+    evidence_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+    )
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        NaiveUTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
 
 
 class ItemMembershipDecision(_ImmutableCatalogRow, Base):

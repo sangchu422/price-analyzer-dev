@@ -1,4 +1,6 @@
 from app.catalog.models import (
+    DocumentMetadataCandidate,
+    DocumentMetadataScan,
     DocumentMetadataVersion,
     ItemMembershipDecision,
     MembershipStatus,
@@ -28,6 +30,8 @@ __all__ = [
     "CleanDecision",
     "CleanStatus",
     "DocumentMetadataVersion",
+    "DocumentMetadataCandidate",
+    "DocumentMetadataScan",
     "ItemMembershipDecision",
     "MembershipStatus",
     "MarketCollectionRun",

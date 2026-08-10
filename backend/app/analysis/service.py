@@ -98,6 +98,7 @@ class AnalysisLine:
     raw_item_id: int
     item_name: str | None
     spec: str | None
+    spec_source_status: str
     unit: str | None
     quantity: Decimal | None
     quote_unit_price: Decimal | None
@@ -119,6 +120,8 @@ class AnalysisLine:
     canonical_unit: str | None
     standard_price_version_id: int | None
     standard_price_item_version_id: int | None
+    standard_observation_count: int | None
+    evidence_quality: str | None
     market_price_lookup_required: bool
     market_price_lookup_status: MarketLookupStatus
     candidates: tuple[AnalysisCandidate, ...]
@@ -562,6 +565,7 @@ def _classify_line(
             if clean is not None and clean.spec_norm is not None
             else raw.spec_raw
         ),
+        "spec_source_status": _spec_source_status(raw),
         "unit": (
             clean.unit_norm
             if clean is not None and clean.unit_norm is not None
@@ -622,6 +626,7 @@ def _classify_line(
                 standard_item_version_id=(
                     None if item_version is None else item_version.id
                 ),
+                market_lookup=True,
             )
         quote_price = clean.unit_price
         assessment: Assessment = "REVIEW_REQUIRED"
@@ -654,6 +659,12 @@ def _classify_line(
             ),
             standard_price_version_id=price.id,
             standard_price_item_version_id=price.standard_item_version_id,
+            standard_observation_count=price.observation_count,
+            evidence_quality=(
+                "SINGLE_OBSERVATION"
+                if price.observation_count == 1
+                else "MULTI_OBSERVATION"
+            ),
             market_price_lookup_required=False,
             market_price_lookup_status="NOT_REQUIRED",
             candidates=(),
@@ -664,6 +675,7 @@ def _classify_line(
             match_status="CANDIDATE",
             assessment="REVIEW_REQUIRED",
             candidates=candidates,
+            market_lookup=True,
         )
     return _unpriced_line(
         **base,
@@ -678,6 +690,7 @@ def _unpriced_line(
     raw_item_id: int,
     item_name: str | None,
     spec: str | None,
+    spec_source_status: str,
     unit: str | None,
     quantity: Decimal | None,
     quote_unit_price: Decimal | None,
@@ -699,6 +712,7 @@ def _unpriced_line(
         raw_item_id=raw_item_id,
         item_name=item_name,
         spec=spec,
+        spec_source_status=spec_source_status,
         unit=unit,
         quantity=quantity,
         quote_unit_price=quote_unit_price,
@@ -720,6 +734,8 @@ def _unpriced_line(
         canonical_unit=canonical_unit,
         standard_price_version_id=None,
         standard_price_item_version_id=None,
+        standard_observation_count=None,
+        evidence_quality=None,
         market_price_lookup_required=market_lookup,
         market_price_lookup_status=(
             "FUTURE_MARKET_LOOKUP" if market_lookup else "NOT_REQUIRED"
@@ -727,6 +743,23 @@ def _unpriced_line(
         candidates=candidates,
         source=source,
     )
+
+
+def _spec_source_status(raw: RawQuoteItem) -> str:
+    if raw.spec_raw is not None and raw.spec_raw.strip():
+        return "PRESENT"
+    try:
+        warnings = json.loads(raw.parse_warnings_json)
+    except (json.JSONDecodeError, TypeError):
+        warnings = []
+    if "SOURCE_SPEC_BLANK" in warnings:
+        return "SOURCE_BLANK"
+    if (
+        "SPEC_COLUMN_NOT_FOUND" in warnings
+        or "FALLBACK_FIXED_C_E_F_H" in warnings
+    ):
+        return "PARSER_UNMAPPED"
+    return "UNKNOWN"
 
 
 def _candidate_batch(
@@ -840,8 +873,10 @@ def _assessment(
     review_percent: Decimal,
     high_percent: Decimal,
 ) -> Assessment:
-    if percent < -review_percent:
+    if percent < -high_percent:
         return "LOW"
+    if percent < -review_percent:
+        return "REVIEW"
     if percent <= review_percent:
         return "WITHIN_RANGE"
     if percent <= high_percent:

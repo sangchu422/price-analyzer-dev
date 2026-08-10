@@ -319,6 +319,39 @@ def test_apply_rules_persists_exact_decimals_without_committing(
     assert session.scalar(select(func.count(CleanDecision.id))) == 0
 
 
+def test_ocr_candidate_requires_manual_review_before_inclusion(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw(
+        parse_warnings=("OCR_SOURCE", "OCR_REVIEW_REQUIRED"),
+    )
+
+    decision = apply_rules(session, raw)
+
+    assert decision.status is CleanStatus.REVIEW_REQUIRED
+    assert decision.reason_code == "OCR_SOURCE_REVIEW_REQUIRED"
+    assert decision.unit_price == Decimal("1000")
+
+
+def test_layout_derived_candidate_requires_manual_review_before_inclusion(
+    session: Session,
+    make_raw,
+) -> None:
+    raw = make_raw(
+        parse_warnings=(
+            "PDF_LEGACY_LINE",
+            "PARSER_SOURCE_REVIEW_REQUIRED",
+        ),
+    )
+
+    decision = apply_rules(session, raw)
+
+    assert decision.status is CleanStatus.REVIEW_REQUIRED
+    assert decision.reason_code == "PARSER_SOURCE_REVIEW_REQUIRED"
+    assert decision.unit_price == Decimal("1000")
+
+
 def test_exact_decimal_max_boundary_persists(
     session: Session,
     make_raw,

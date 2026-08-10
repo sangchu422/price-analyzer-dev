@@ -6,7 +6,11 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from app.market.adapters.base import CollectedProduct, CollectedTier
+from app.market.adapters.base import (
+    CollectedProduct,
+    CollectedTier,
+    search_query_variants,
+)
 from app.market.models import MarketSource
 
 
@@ -27,35 +31,51 @@ class MouserAdapter:
         self.client = client
 
     def search(self, query: str) -> list[CollectedProduct]:
-        payload = {
-            "SearchByKeywordRequest": {
-                "keyword": query,
-                "records": 10,
-                "startingRecord": 0,
-                "searchOptions": "None",
-                "searchWithYourSignUpLanguage": "None",
-            }
-        }
         raw_client = self.client or httpx.Client(timeout=self.timeout)
         close_client = self.client is None
         try:
-            response = raw_client.post(
-                f"{self.base_url}/search/keyword",
-                params={"apiKey": self.api_key},
-                json=payload,
-            )
-            response.raise_for_status()
-            raw = response.content
-            data = response.json()
+            data: dict[str, object] = {}
+            raw = b""
+            search_query = query
+            for search_query in search_query_variants(query):
+                payload = {
+                    "SearchByKeywordRequest": {
+                        "keyword": search_query,
+                        "records": 10,
+                        "startingRecord": 0,
+                        "searchOptions": "None",
+                        "searchWithYourSignUpLanguage": "None",
+                    }
+                }
+                response = raw_client.post(
+                    f"{self.base_url}/search/keyword",
+                    params={"apiKey": self.api_key},
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                errors = data.get("Errors") or []
+                if errors:
+                    raise RuntimeError(
+                        "; ".join(
+                            str(error.get("Message", error)) for error in errors
+                        )
+                    )
+                if (data.get("SearchResults") or {}).get("Parts"):
+                    raw = json.dumps(
+                        {
+                            "source_endpoint": "/search/keyword",
+                            "search_query": search_query,
+                            "response": data,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    break
         finally:
             if close_client:
                 raw_client.close()
 
-        errors = data.get("Errors") or []
-        if errors:
-            raise RuntimeError(
-                "; ".join(str(error.get("Message", error)) for error in errors)
-            )
         parts = (data.get("SearchResults") or {}).get("Parts") or []
         products: list[CollectedProduct] = []
         for part in parts:

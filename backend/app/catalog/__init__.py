@@ -2,6 +2,8 @@
 
 from app.catalog.models import (
     CatalogIntegrityError,
+    DocumentMetadataCandidate,
+    DocumentMetadataScan,
     DocumentMetadataVersion,
     ItemMembershipDecision,
     MembershipStatus,
@@ -13,6 +15,8 @@ from app.catalog.models import (
 
 __all__ = [
     "CatalogIntegrityError",
+    "DocumentMetadataCandidate",
+    "DocumentMetadataScan",
     "DocumentMetadataVersion",
     "ItemMembershipDecision",
     "MembershipStatus",

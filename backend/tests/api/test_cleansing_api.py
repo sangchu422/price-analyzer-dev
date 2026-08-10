@@ -89,6 +89,8 @@ def test_review_queue_returns_current_decision_and_exact_provenance(
     assert row["normalized"]["item_name"] == "BEARING"
     assert row["normalized"]["unit_price"] == "1000"
     assert row["reason_code"] == "AMOUNT_MISMATCH"
+    assert row["reason_evidence"] is None
+    assert row["spec_source_status"] == "PRESENT"
     assert row["decision"]["id"] > 0
     assert row["decision"]["rule_version"] == "clean-v1"
     assert row["decision"]["decided_by"] == "SYSTEM"

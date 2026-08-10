@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
+    DocumentMetadataScan,
     DocumentMetadataVersion,
     ItemMembershipDecision,
     StandardItem,
@@ -18,6 +19,7 @@ from app.catalog.models import (
 from app.catalog.service import CandidateEmbeddingRuntime
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
+from app.metadata_audit.service import AUDIT_RULE_VERSION
 from app.embeddings.base import EmbeddingBatch
 from app.embeddings.index import EmbeddingIndex, IndexMetadata
 from app.main import app
@@ -557,6 +559,74 @@ def test_catalog_payload_bounds_are_enforced(
     assert oversized_alias.status_code == 422
     assert deep_evidence.status_code == 422
     assert oversized_evidence.status_code == 422
+
+
+def test_metadata_audit_summary_explains_unparsed_files(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _, raw = _source(api_session)
+    scans = [
+        DocumentMetadataScan(
+            source_variant_id=raw.source_variant_id,
+            source_path="3차 학습/parsed.xlsx",
+            rule_version=AUDIT_RULE_VERSION,
+            input_fingerprint="1" * 64,
+            open_status="OPENED",
+            content_status="TEXT",
+            review_status="REVIEW_REQUIRED",
+        ),
+        DocumentMetadataScan(
+            source_path="3차 학습/image.pdf",
+            rule_version=AUDIT_RULE_VERSION,
+            input_fingerprint="2" * 64,
+            open_status="OPENED",
+            content_status="OCR_REQUIRED",
+            review_status="REVIEW_REQUIRED",
+        ),
+        DocumentMetadataScan(
+            source_path="3차 학습/layout.pdf",
+            rule_version=AUDIT_RULE_VERSION,
+            input_fingerprint="3" * 64,
+            open_status="OPENED",
+            content_status="TEXT",
+            review_status="REVIEW_REQUIRED",
+        ),
+        DocumentMetadataScan(
+            source_path="3차 학습/drm.pdf",
+            rule_version=AUDIT_RULE_VERSION,
+            input_fingerprint="4" * 64,
+            open_status="FAILED",
+            content_status="UNREADABLE",
+            review_status="REVIEW_REQUIRED",
+        ),
+        DocumentMetadataScan(
+            source_path="3차 학습/archive.zip",
+            rule_version=AUDIT_RULE_VERSION,
+            input_fingerprint="5" * 64,
+            open_status="UNSUPPORTED",
+            content_status="MANUAL_REVIEW",
+            review_status="REVIEW_REQUIRED",
+        ),
+    ]
+    api_session.add_all(scans)
+    api_session.flush()
+
+    response = client.get("/api/catalog/metadata-audit/summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scanned_files"] == 5
+    assert payload["parsed_files"] == 1
+    assert payload["standard_price_files"] == 0
+    assert payload["unparsed_files"] == 4
+    assert payload["ocr_required_files"] == 1
+    assert payload["parser_required_files"] == 1
+    assert payload["recollection_required_files"] == 1
+    assert payload["recovered_copy_files"] == 0
+    assert payload["security_release_required_files"] == 1
+    assert payload["unsupported_files"] == 1
+    assert payload["raw_item_count"] == 1
 
 
 def test_item_metadata_and_document_metadata_append_versions(

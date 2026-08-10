@@ -99,6 +99,15 @@ def test_analysis_document_list_and_typed_detail(
     assert detail.status_code == 200
     payload = detail.json()
     assert payload["document"]["id"] == document.id
+    assert payload["document"]["display_name"] == "new.xlsx"
+    assert payload["price_policy"] == {
+        "within_percent": "10",
+        "high_low_percent": "20",
+        "description": (
+            "표준 중앙값 대비 ±10% 이내 적정, ±10~20% 주의, "
+            "±20% 초과 고가·저가"
+        ),
+    }
     assert len(payload["lines"]) == 1
     assert payload["lines"][0]["match_status"] == "NO_MATCH"
     assert payload["lines"][0]["canonical_name"] is None

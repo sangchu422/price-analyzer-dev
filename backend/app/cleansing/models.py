@@ -58,6 +58,11 @@ class CleanDecision(Base):
     )
     reason_code: Mapped[str] = mapped_column(String(100))
     reason_detail: Mapped[str | None] = mapped_column(Text)
+    reason_evidence_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default=text("'{}'"),
+    )
     item_name_norm: Mapped[str | None] = mapped_column(Text)
     spec_norm: Mapped[str | None] = mapped_column(Text)
     unit_norm: Mapped[str | None] = mapped_column(String(100))

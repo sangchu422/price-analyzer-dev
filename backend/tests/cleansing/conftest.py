@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+import json
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ def make_raw(session: Session):
         unit_price: str | None = "1000",
         amount: str | None = "2000",
         maker: str | None = "ACME",
+        parse_warnings: tuple[str, ...] = (),
         source_row: int = 1,
     ) -> RawQuoteItem:
         raw = RawQuoteItem(
@@ -60,6 +62,7 @@ def make_raw(session: Session):
             maker_raw=maker,
             parser_name="fixture",
             parser_version="1",
+            parse_warnings_json=json.dumps(parse_warnings),
         )
         session.add(raw)
         session.flush()

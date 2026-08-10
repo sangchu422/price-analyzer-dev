@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -90,6 +91,8 @@ class ReviewQueueItem(BaseModel):
     normalized: NormalizedDisplay
     reason_code: str
     reason_detail: str | None
+    reason_evidence: dict[str, Any] | None
+    spec_source_status: str
     decision: DecisionResponse
     source: SourceEvidence
 
@@ -220,7 +223,7 @@ def review_queue(
     page_rows = rows[:limit]
     return {
         "items": [
-            _review_item(raw, decision, variant, document)
+            _review_item(session, raw, decision, variant, document)
             for raw, decision, variant, document in page_rows
         ],
         "remaining": total,
@@ -309,11 +312,13 @@ def append_manual_decision(
 
 
 def _review_item(
+    session: Session,
     raw: RawQuoteItem,
     decision: CleanDecision,
     variant: SourceVariant,
     document: SourceDocument,
 ) -> dict[str, object]:
+    warnings = _parser_warnings(raw.parse_warnings_json)
     return {
         "raw_item_id": raw.id,
         "raw": {
@@ -336,6 +341,8 @@ def _review_item(
         },
         "reason_code": decision.reason_code,
         "reason_detail": decision.reason_detail,
+        "reason_evidence": _reason_evidence(session, decision),
+        "spec_source_status": _spec_source_status(raw.spec_raw, warnings),
         "decision": _decision_summary(decision),
         "source": {
             "document_id": document.id,
@@ -353,9 +360,71 @@ def _review_item(
             "cells": raw.source_cells,
             "parser_name": raw.parser_name,
             "parser_version": raw.parser_version,
-            "parser_warnings": _parser_warnings(raw.parse_warnings_json),
+            "parser_warnings": warnings,
         },
     }
+
+
+def _spec_source_status(spec_raw: str | None, warnings: list[object]) -> str:
+    if spec_raw is not None and spec_raw.strip():
+        return "PRESENT"
+    if "SOURCE_SPEC_BLANK" in warnings:
+        return "SOURCE_BLANK"
+    if (
+        "SPEC_COLUMN_NOT_FOUND" in warnings
+        or "FALLBACK_FIXED_C_E_F_H" in warnings
+    ):
+        return "PARSER_UNMAPPED"
+    return "UNKNOWN"
+
+
+def _reason_evidence(
+    session: Session,
+    decision: CleanDecision,
+) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(decision.reason_evidence_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not payload:
+        return None
+    observations = payload.get("observations")
+    if not isinstance(observations, list):
+        return payload
+    raw_ids = [
+        row.get("raw_item_id")
+        for row in observations
+        if isinstance(row, dict) and isinstance(row.get("raw_item_id"), int)
+    ]
+    sources = {
+        raw.id: (raw, variant, document)
+        for raw, variant, document in session.execute(
+            select(RawQuoteItem, SourceVariant, SourceDocument)
+            .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
+            .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
+            .where(RawQuoteItem.id.in_(raw_ids))
+        )
+    } if raw_ids else {}
+    enriched = []
+    for row in observations:
+        if not isinstance(row, dict):
+            continue
+        source_row = sources.get(row.get("raw_item_id"))
+        enriched_row = dict(row)
+        if source_row is not None:
+            raw, variant, document = source_row
+            enriched_row["source"] = {
+                "document_id": document.id,
+                "logical_name": document.logical_name,
+                "variant_id": variant.id,
+                "file_name": Path(variant.path).name,
+                "sheet": raw.source_sheet,
+                "page": raw.source_page,
+                "row": raw.source_row,
+                "cells": raw.source_cells,
+            }
+        enriched.append(enriched_row)
+    return {**payload, "observations": enriched}
 
 
 def _decision_summary(decision: CleanDecision) -> dict[str, object]:

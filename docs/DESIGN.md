@@ -4,7 +4,7 @@
 > 리포트를 전제로 작성한 초기 구상이며 현재 구현 요구사항이나 실행 절차가
 > 아니다. 현재 기준은 `DECISIONS.md`,
 > `superpowers/specs/2026-07-26-automatic-standard-database-design.md`,
-> `HANDOFF_2026-07-24.md`다.
+> `HANDOFF_2026-08-11.md`다.
 
 # DESIGN.md — 협력사 견적 단가 AI 분석 시스템
 

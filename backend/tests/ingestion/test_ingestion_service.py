@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import zipfile
 import zlib
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
+from PIL import Image
+from pypdf import PdfWriter
 from sqlalchemy import create_engine, func, inspect as sa_inspect, select
 from sqlalchemy.orm import Session
 
@@ -14,8 +18,12 @@ from app.db.base import Base
 from app.db.models import RawQuoteItem, SourceDocument, SourceVariant
 from app.db.sqlite import configure_sqlite
 from app.ingestion.readers import (
+    OcrUnavailableError,
     ParsedRow,
     UnsafeQuoteFileError,
+    _OcrRuntime,
+    _parse_legacy_pdf_lines,
+    _parse_ocr_text,
     _parse_wia_pdf_table,
     read_quote,
     read_xlsx,
@@ -118,11 +126,163 @@ def test_headerless_fixed_column_fallback_is_auditable(
     assert rows[0].unit_price == "11100"
     assert rows[0].row == 2
     assert rows[0].cells == "C2:H2"
-    assert rows[0].warnings == ("FALLBACK_FIXED_C_E_F_H",)
+    assert rows[0].warnings == (
+        "FALLBACK_FIXED_C_E_F_H",
+        "SPEC_COLUMN_NOT_FOUND",
+    )
     variant = ingest_path(session, quote, root=tmp_path)
     assert json.loads(variant.raw_items[0].parse_warnings_json) == [
-        "FALLBACK_FIXED_C_E_F_H"
+        "FALLBACK_FIXED_C_E_F_H",
+        "SPEC_COLUMN_NOT_FOUND",
     ]
+
+
+def test_device_and_content_columns_preserve_content_as_spec(
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "device-content.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "10-2"
+    sheet.append(["위치", "장치", "내용", "단위", "수량", "단가", "금액"])
+    sheet.append(["A", "(NU, G1)", "FRAME/SUPPORT", "SET", 1, 6000000, 6000000])
+    workbook.save(quote)
+
+    rows = read_xlsx(quote)
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "(NU, G1)"
+    assert rows[0].spec == "FRAME/SUPPORT"
+    assert rows[0].unit == "SET"
+
+
+def test_labor_description_is_not_accepted_as_maker(tmp_path: Path) -> None:
+    quote = tmp_path / "maker.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["품명", "규격", "단위", "수량", "단가", "금액", "제조사"])
+    sheet.append(["설치", "현장", "식", 1, 1000000, 1000000, "1인x7일(이동일 제외)"])
+    workbook.save(quote)
+
+    rows = read_xlsx(quote)
+
+    assert len(rows) == 1
+    assert rows[0].maker is None
+    assert rows[0].warnings == ("MAKER_REJECTED_NON_BRAND",)
+
+
+def test_blank_spec_is_distinguished_from_missing_spec_column(tmp_path: Path) -> None:
+    quote = tmp_path / "blank-spec.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["품명", "규격", "단위", "수량", "단가", "금액"])
+    sheet.append(["FRAME", None, "SET", 1, 1000000, 1000000])
+    workbook.save(quote)
+
+    rows = read_xlsx(quote)
+
+    assert len(rows) == 1
+    assert rows[0].spec is None
+    assert rows[0].warnings == ("SOURCE_SPEC_BLANK",)
+
+
+def test_cjk_quote_headers_are_supported_and_derived_price_needs_review(
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "cjk-header.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["品名", "規格", "數量", "單位", "單價", "金額"])
+    sheet.append(["MOTOR", "5KW", 2, "EA", None, 1000000])
+    workbook.save(quote)
+
+    rows = read_xlsx(quote)
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "MOTOR"
+    assert rows[0].spec == "5KW"
+    assert rows[0].unit_price == "500000"
+    assert rows[0].amount == "1000000"
+    assert "CJK_HEADER_TABLE" in rows[0].warnings
+    assert "DERIVED_UNIT_PRICE" in rows[0].warnings
+    assert "PARSER_SOURCE_REVIEW_REQUIRED" in rows[0].warnings
+
+
+def test_bilingual_pdf_style_headers_are_recognized_in_one_band(
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "bilingual-header.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(
+        [
+            "품 명\nDescription.",
+            "규 격\nType",
+            "수 량\nQty",
+            "단 위\nUnit",
+            "단 가\nUnit Price",
+            "금 액\nTotal Price",
+        ]
+    )
+    sheet.append(["BEARING", "6204", 2, "EA", 2400, 4800])
+    workbook.save(quote)
+
+    rows = read_xlsx(quote)
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "BEARING"
+    assert rows[0].spec == "6204"
+    assert rows[0].unit_price == "2400"
+
+
+def test_legacy_pdf_line_parser_is_review_only_and_rejects_totals() -> None:
+    rows = _parse_legacy_pdf_lines(
+        "1 MOTOR AC220V 2 EA 500,000 1,000,000\n"
+        "TOTAL 1 LOT 1,000,000",
+        page=2,
+    )
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "MOTOR AC220V"
+    assert rows[0].unit_price == "500000"
+    assert rows[0].amount == "1000000"
+    assert "PARSER_SOURCE_REVIEW_REQUIRED" in rows[0].warnings
+
+
+def test_quote_zip_is_bounded_and_preserves_member_provenance(
+    tmp_path: Path,
+) -> None:
+    member = tmp_path / "member.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "items"
+    sheet.append(["item", "spec", "unit", "qty", "unitprice", "amount"])
+    sheet.append(["SENSOR", "PNP", "EA", 2, 11100, 22200])
+    workbook.save(member)
+    quote = tmp_path / "quotes.zip"
+    with zipfile.ZipFile(quote, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(member, "vendor/quote.xlsx")
+
+    rows = read_quote(quote)
+
+    assert len(rows) == 1
+    assert rows[0].sheet == "vendor/quote.xlsx::items"
+    assert rows[0].item_name == "SENSOR"
+    assert rows[0].warnings[:2] == (
+        "ARCHIVE_MEMBER",
+        "ARCHIVE_MEMBER:vendor/quote.xlsx",
+    )
+
+
+def test_quote_zip_rejects_path_traversal_before_member_extraction(
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(quote, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("../outside.xlsx", b"not a workbook")
+
+    with pytest.raises(UnsafeQuoteFileError, match="path is unsafe"):
+        read_quote(quote)
 
 
 def test_ingestion_preserves_exact_variant_and_cell_provenance(
@@ -580,6 +740,208 @@ def test_pdf_reader_records_page_provenance(
     assert rows[0].unit_price == "2400"
 
 
+def test_ocr_text_reuses_header_parser_and_marks_provenance() -> None:
+    rows = _parse_ocr_text(
+        "item  spec  unit  qty  unitprice  amount\n"
+        "SERVO MOTOR  AC220V  EA  2  500000  1000000",
+        page=3,
+    )
+
+    assert rows == [
+        ParsedRow(
+            sheet=None,
+            page=3,
+            row=None,
+            cells=None,
+            item_name="SERVO MOTOR",
+            spec="AC220V",
+            unit="EA",
+            quantity="2",
+            unit_price="500000",
+            amount="1000000",
+            maker=None,
+            warnings=("OCR_SOURCE", "OCR_REVIEW_REQUIRED"),
+        )
+    ]
+
+
+def test_blank_pdf_uses_bounded_ocr_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    quote = tmp_path / "image-quote.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    with quote.open("wb") as stream:
+        writer.write(stream)
+
+    tessdata = tmp_path / "tessdata"
+    tessdata.mkdir()
+    (tessdata / "kor.traineddata").write_bytes(b"fixture")
+    (tessdata / "eng.traineddata").write_bytes(b"fixture")
+    runtime = _OcrRuntime(
+        tesseract=Path("tesseract.exe"),
+        renderer=Path("pdftoppm.exe"),
+        languages=("kor", "eng"),
+        tessdata_sources=(tessdata,),
+    )
+    monkeypatch.setattr(readers, "_resolve_ocr_runtime", lambda **_: runtime)
+
+    def fake_command(
+        command: list[str],
+        *,
+        error_message: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del error_message
+        if command[0] == "pdftoppm.exe":
+            Image.new("RGB", (100, 100), "white").save(
+                Path(command[-1]).with_suffix(".png")
+            )
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "item  spec  unit  qty  unitprice  amount\n"
+            "BEARING  6204  EA  1  2400  2400",
+            "",
+        )
+
+    monkeypatch.setattr(readers, "_run_command", fake_command)
+
+    rows = read_quote(quote)
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "BEARING"
+    assert rows[0].page == 1
+    assert rows[0].warnings == ("OCR_SOURCE", "OCR_REVIEW_REQUIRED")
+
+
+def test_pdf_ocr_page_cap_is_checked_before_runtime_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    quote = tmp_path / "many-image-pages.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    writer.add_blank_page(width=300, height=300)
+    with quote.open("wb") as stream:
+        writer.write(stream)
+    monkeypatch.setattr(readers, "MAX_OCR_PAGES", 1)
+
+    def must_not_resolve(**_: object) -> object:
+        raise AssertionError("OCR runtime must not be resolved")
+
+    monkeypatch.setattr(readers, "_resolve_ocr_runtime", must_not_resolve)
+
+    with pytest.raises(UnsafeQuoteFileError, match="OCR page"):
+        read_quote(quote)
+
+
+def test_image_ocr_unavailable_is_explicit_and_non_destructive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    quote = tmp_path / "quote.jpg"
+    Image.new("RGB", (100, 100), "white").save(quote)
+
+    def unavailable(**_: object) -> object:
+        raise OcrUnavailableError("OCR_UNAVAILABLE")
+
+    monkeypatch.setattr(readers, "_resolve_ocr_runtime", unavailable)
+
+    with pytest.raises(OcrUnavailableError, match="OCR_UNAVAILABLE"):
+        read_quote(quote)
+    assert quote.is_file()
+    assert quote.stat().st_size > 0
+
+
+def test_jpeg_quote_uses_same_ocr_header_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    quote = tmp_path / "quote.jpeg"
+    Image.new("RGB", (100, 100), "white").save(quote)
+    tessdata = tmp_path / "tessdata"
+    tessdata.mkdir()
+    (tessdata / "kor.traineddata").write_bytes(b"fixture")
+    (tessdata / "eng.traineddata").write_bytes(b"fixture")
+    runtime = _OcrRuntime(
+        tesseract=Path("tesseract.exe"),
+        renderer=None,
+        languages=("kor", "eng"),
+        tessdata_sources=(tessdata,),
+    )
+    monkeypatch.setattr(readers, "_resolve_ocr_runtime", lambda **_: runtime)
+    monkeypatch.setattr(
+        readers,
+        "_run_command",
+        lambda command, **_: subprocess.CompletedProcess(
+            command,
+            0,
+            "item  spec  unit  qty  unitprice  amount\n"
+            "SENSOR  PNP  EA  2  11100  22200",
+            "",
+        ),
+    )
+
+    rows = read_quote(quote)
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "SENSOR"
+    assert rows[0].unit_price == "11100"
+    assert rows[0].warnings == ("OCR_SOURCE", "OCR_REVIEW_REQUIRED")
+
+
+def test_jpeg_resolution_is_bounded_before_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    quote = tmp_path / "large.jpg"
+    Image.new("RGB", (101, 101), "white").save(quote)
+    monkeypatch.setattr(readers, "MAX_OCR_PAGE_PIXELS", 10_000)
+
+    def must_not_resolve(**_: object) -> object:
+        raise AssertionError("OCR runtime must not be resolved")
+
+    monkeypatch.setattr(readers, "_resolve_ocr_runtime", must_not_resolve)
+
+    with pytest.raises(UnsafeQuoteFileError, match="resolution"):
+        read_quote(quote)
+
+
+def test_ocr_runtime_honors_configured_command_and_tessdata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.ingestion import readers
+
+    executable = tmp_path / "tesseract.exe"
+    executable.write_bytes(b"fixture")
+    tessdata = tmp_path / "tessdata"
+    tessdata.mkdir()
+    (tessdata / "kor.traineddata").write_bytes(b"fixture")
+    (tessdata / "eng.traineddata").write_bytes(b"fixture")
+    monkeypatch.setenv("TESSERACT_CMD", str(executable))
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tessdata))
+    monkeypatch.setenv("OCR_LANGUAGES", "kor+eng")
+
+    runtime = readers._resolve_ocr_runtime(require_renderer=False)
+
+    assert runtime.tesseract == executable
+    assert runtime.languages == ("kor", "eng")
+    assert runtime.tessdata_sources[0] == tessdata
+
+
 def test_wia_pdf_table_reader_preserves_fields_and_page_provenance() -> None:
     table = [
         [
@@ -791,6 +1153,7 @@ def test_pdf_allows_bounded_dct_image_that_text_extraction_skips(
         pages = [FakePage()]
 
     monkeypatch.setattr(readers, "PdfReader", lambda _: FakePdf())
+    monkeypatch.setattr(readers, "_read_pdf_with_ocr", lambda *_: [])
     quote = tmp_path / "bounded-image.pdf"
     quote.write_bytes(b"fixture")
 
@@ -1027,6 +1390,56 @@ def test_rows_without_item_name_are_skipped_even_when_other_fields_present(
     assert "BASE FRAME" in item_names
     assert "SAFETY COVER" in item_names
     assert len(rows) == 2, f"품명 있는 행만 2개여야 함, got {len(rows)}: {item_names}"
+
+
+def test_summary_and_merged_pdf_rows_are_not_auto_included() -> None:
+    from app.ingestion import readers
+
+    rows = readers._parse_tabular_rows(
+        [
+            ["Description", "Qty", "Unit Price", "Total Price"],
+            ["Labor Cost Sub Total (4)", "1", "1000000", "1000000"],
+            ["TOTAL AMOUNT", "1", "580000000", "580000000"],
+            [
+                "1. MOTOR\n2. BEARING",
+                "1",
+                "500000",
+                "500000",
+            ],
+        ],
+        sheet=None,
+        page=1,
+        row_numbers=False,
+        cell_ranges=False,
+        require_price=True,
+        extra_warnings=("PDF_COORDINATE_TABLE",),
+    )
+
+    assert len(rows) == 1
+    assert rows[0].item_name == "1. MOTOR\n2. BEARING"
+    assert "MULTI_ITEM_BLOCK" in rows[0].warnings
+    assert "PARSER_SOURCE_REVIEW_REQUIRED" in rows[0].warnings
+
+
+def test_coordinate_pdf_without_spec_column_requires_review() -> None:
+    from app.ingestion import readers
+
+    rows = readers._parse_tabular_rows(
+        [
+            ["Description", "Qty", "Unit Price", "Total Price"],
+            ["Mitsubishi", "1", "4000000", "4000000"],
+        ],
+        sheet=None,
+        page=2,
+        row_numbers=False,
+        cell_ranges=False,
+        require_price=True,
+        extra_warnings=("PDF_COORDINATE_TABLE",),
+    )
+
+    assert len(rows) == 1
+    assert "SPEC_COLUMN_NOT_FOUND" in rows[0].warnings
+    assert "PARSER_SOURCE_REVIEW_REQUIRED" in rows[0].warnings
 
 
 def test_품목내역_header_is_recognized_and_subheader_exchange_rate_column_ignored(

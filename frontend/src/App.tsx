@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { motion, useReducedMotion } from "motion/react";
 
 import { AppNavigation } from "./components/AppNavigation";
 import { CleansingReviewPage } from "./pages/CleansingReviewPage";
 import { GroupingReviewPage } from "./pages/GroupingReviewPage";
 import { QuoteAnalysisPage } from "./pages/QuoteAnalysisPage";
 import { StandardPricesPage } from "./pages/StandardPricesPage";
+import { applyTheme, getStoredTheme, type AppTheme } from "./theme";
 
 function currentPathname() {
   return window.location.pathname.replace(/\/+$/, "") || "/";
@@ -13,7 +13,11 @@ function currentPathname() {
 
 export function App() {
   const [path, setPath] = useState(currentPathname);
-  const reduceMotion = useReducedMotion();
+  const [theme, setTheme] = useState<AppTheme>(getStoredTheme);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     const handlePopState = () => setPath(currentPathname());
@@ -72,16 +76,15 @@ export function App() {
 
   return (
     <div className="application-frame">
-      <AppNavigation currentPath={path} onNavigate={navigate} />
-      <motion.div
-        className="route-stage"
-        key={path}
-        initial={false}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: reduceMotion ? 0 : 0.18, ease: "easeOut" }}
-      >
+      <AppNavigation
+        currentPath={path}
+        onNavigate={navigate}
+        theme={theme}
+        onThemeChange={setTheme}
+      />
+      <div className="route-stage" key={path}>
         {page}
-      </motion.div>
+      </div>
     </div>
   );
 }

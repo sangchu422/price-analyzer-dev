@@ -21,28 +21,38 @@ scripts\start-local.bat
 backend\.local\standard-item-migration-v2.sqlite3
 ```
 
-DB가 없으면 실행기가 Alembic으로 빈 스키마를 만든다. 빈 DB에는 과거 견적과
-표준가격이 없으므로 첫 실행 시 추적 중인 `견적서` 원본을 적재하고 표준 DB를
-자동 구축한다. 데이터 구축만 먼저 실행하려면 다음 명령을 사용한다.
+현재 운영 DB는 저장소에 함께 관리하므로 다른 PC에서 pull하면 같은 DB를 바로
+사용할 수 있다. DB가 없거나 원본을 추가한 경우에는 실행기가 Alembic으로
+스키마를 준비한 뒤 `견적서` 원본을 증분 적재하고 표준 DB를 갱신한다. 데이터
+갱신만 먼저 실행하려면 다음 명령을 사용한다.
 
 ```bat
 scripts\start-local.bat --initialize-only
 ```
 
-새 PC에서 처음 pull한 경우에는 Python 3.12 가상환경과 프런트엔드 의존성을
-먼저 설치해야 한다. DB 파일은 Git에 포함되지 않으며, 아래 초기화 명령이
-추적 중인 1·2·3차 견적 원본으로 로컬 DB를 다시 만든다.
+`--initialize-only`와 `--refresh-data`는 같은 증분 갱신 절차다. 기존 운영 DB를
+삭제하거나 새 DB로 교체하지 않으며, 실행 전에 SQLite 백업을
+`backend\.local\backups\`에 자동 생성한다.
+
+새 PC에서 처음 pull한 경우에는 Python 가상환경, 프런트엔드 의존성과 OCR
+런타임을 먼저 준비한다. 저장소의 운영 DB를 그대로 사용하면서 추적 중인
+1·2·3차 견적 원본과 복구본을 증분 확인한다.
 
 ```bat
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -e backend
 call npm.cmd --prefix frontend install
+scripts\install-ocr-runtime.bat
 scripts\start-local.bat --initialize-only
 scripts\start-local.bat
 ```
 
-상세 절차와 예상 건수는 `docs/HANDOFF_2026-07-24.md`의
+OCR로 읽은 행은 자동으로 표준가격 근거가 되지 않는다. 웹의 `정제 검토`에서
+원본과 값을 확인해 포함 결정한 뒤에만 반영된다. Excel에서 복구한 구형 XLS
+복사본은 `견적서\복구본\3차 학습\`에 원본과 분리해 보관한다.
+
+상세 절차와 예상 건수는 `docs/HANDOFF_2026-08-11.md`의
 `다른 PC에서 pull 후 최초 DB 구축`을 따른다.
 
 ## 과거 견적 적재와 표준 DB 구축
@@ -57,6 +67,7 @@ cd backend
 ..\.venv\Scripts\python.exe -m alembic upgrade head
 ..\.venv\Scripts\python.exe -m app.cli ingest --quote-root "%REPO_ROOT%\견적서" --database-file "%DATABASE_FILE%"
 ..\.venv\Scripts\python.exe -m app.cli standard-db-build --database-file "%DATABASE_FILE%"
+..\.venv\Scripts\python.exe -m app.metadata_audit.cli --quote-root "%REPO_ROOT%\견적서" --database-file "%DATABASE_FILE%" --report ".local\reports\third-training-metadata-audit.csv"
 cd ..
 ```
 
@@ -64,6 +75,11 @@ cd ..
 표준 DB 구축은 최신 `INCLUDED` 행만 사용한다. `/analysis`로 접수한 신규
 견적은 `INCOMING_BID`이므로 어떤 쓰기 경로에서도 표준 DB의 멤버나 가격
 근거로 추가할 수 없다.
+
+메타데이터 감사 명령은 3차 원본 677개에서 명시된 공급사·견적일·공사명과
+그 위치만 기록한다. `AONE`, `바츠` 같은 폴더 구분은 수집 경로로만 저장하며
+공급사로 사용하지 않는다. 상세 결과와 해석 기준은
+`docs/DATA_QUALITY_AUDIT_2026-08-11.md`를 따른다.
 
 ## 직접 개발 실행
 

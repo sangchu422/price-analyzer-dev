@@ -35,6 +35,7 @@ function line(
     raw_item_id: id,
     item_name: `ITEM ${id}`,
     spec: `SPEC-${id}`,
+    spec_source_status: "PRESENT",
     unit: "EA",
     quantity: "2.000000",
     quote_unit_price: "130.000000",
@@ -56,6 +57,8 @@ function line(
     canonical_unit: matched ? "EA" : null,
     standard_price_version_id: matched ? id : null,
     standard_price_item_version_id: matched ? id : null,
+    standard_observation_count: matched ? 2 : null,
+    evidence_quality: matched ? "MULTI_OBSERVATION" : null,
     market_price_lookup_required: !matched,
     market_price_lookup_status: matched
       ? "NOT_REQUIRED"
@@ -70,6 +73,7 @@ const analysis = {
   document: {
     id: 91,
     logical_name: "신규견적.xlsx",
+    display_name: "신규견적.xlsx",
     purpose: "INCOMING_BID",
   },
   lines: [
@@ -91,6 +95,12 @@ const analysis = {
   ],
   next_cursor: null,
   limit: 100,
+  price_policy: {
+    within_percent: "10.000000",
+    high_low_percent: "20.000000",
+    description:
+      "표준 대비 ±10% 이내 적정, ±10% 초과~±20% 주의, ±20% 초과 고가·저가",
+  },
 };
 
 function successfulSubmission() {
@@ -156,12 +166,12 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(screen.getByText("총 9개 품목")).toBeVisible();
   expect(screen.getByText("고가 2건")).toBeVisible();
   expect(screen.getByText("적정 5건")).toBeVisible();
-  expect(screen.getByText("가격 검토 1건")).toBeVisible();
+  expect(screen.getByText("주의 1건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 1건")).toBeVisible();
   expect(screen.getByText("DeviceMart·Mouser 캐시 우선 조회")).toBeVisible();
   const servo = screen.getByRole("row", { name: /SERVO MOTOR/ });
   expect(within(servo).getByText("시장가 확인 필요")).toBeVisible();
-  expect(within(servo).getByText("판정대기")).toBeVisible();
+  expect(within(servo).getByText("판정 대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
 });
 
@@ -178,8 +188,8 @@ it("renders comparison basis, signed variance, and every operational status dist
       match_status: "MATCHED_NO_PRICE",
       standard_item_id: 22,
       standard_price_version_id: null,
-      market_price_lookup_required: false,
-      market_price_lookup_status: "NOT_REQUIRED",
+      market_price_lookup_required: true,
+      market_price_lookup_status: "FUTURE_MARKET_LOOKUP",
     }),
     line(23, "REVIEW_REQUIRED", {
       item_name: "NO MATCH ITEM",
@@ -192,8 +202,8 @@ it("renders comparison basis, signed variance, and every operational status dist
       item_name: "CANDIDATE ITEM",
       match_status: "CANDIDATE",
       standard_item_id: null,
-      market_price_lookup_required: false,
-      market_price_lookup_status: "NOT_REQUIRED",
+      market_price_lookup_required: true,
+      market_price_lookup_status: "FUTURE_MARKET_LOOKUP",
       candidates: [
         {
           standard_item_id: 44,
@@ -244,7 +254,7 @@ it("renders comparison basis, signed variance, and every operational status dist
   await user.type(screen.getByLabelText("접수자"), "buyer");
   await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
 
-  expect(await screen.findByText("가격 검토 0건")).toBeVisible();
+  expect(await screen.findByText("주의 0건")).toBeVisible();
   const matched = await screen.findByRole("row", { name: /MATCHED ITEM/ });
   expect(within(matched).getByText("표준 DB 근거 매칭")).toBeVisible();
   expect(within(matched).getByText("101원")).toBeVisible();
@@ -257,6 +267,9 @@ it("renders comparison basis, signed variance, and every operational status dist
   const noPrice = screen.getByRole("row", { name: /NO PRICE ITEM/ });
   expect(within(noPrice).getByText("표준단가 없음")).toBeVisible();
   expect(within(noPrice).queryByRole("link")).not.toBeInTheDocument();
+  expect(
+    within(noPrice).getByRole("button", { name: "시장가 조회" }),
+  ).toHaveClass("stable-action");
   const noMatch = screen.getByRole("row", { name: /NO MATCH ITEM/ });
   expect(within(noMatch).getByText("매칭 없음")).toBeVisible();
   expect(within(noMatch).getByRole("button", { name: "시장가 조회" })).toBeVisible();
@@ -264,6 +277,10 @@ it("renders comparison basis, signed variance, and every operational status dist
   expect(
     within(screen.getByRole("row", { name: /CANDIDATE ITEM/ }))
       .getByText("유사 후보 검토"),
+  ).toBeVisible();
+  expect(
+    within(screen.getByRole("row", { name: /CANDIDATE ITEM/ }))
+      .getByRole("button", { name: "시장가 조회" }),
   ).toBeVisible();
   expect(
     within(screen.getByRole("row", { name: /EXCLUDED ITEM/ }))

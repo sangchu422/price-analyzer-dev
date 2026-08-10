@@ -6,6 +6,7 @@ import {
   getStandardItems,
   getStandardPriceVersion,
   getStandardPriceVersions,
+  getSourceCoverageSummary,
   type EvidenceQuality,
   type PriceVersion,
   type StandardItemSummary,
@@ -46,8 +47,20 @@ export function StandardPricesPage() {
     getNextPageParam: safeNextCursor,
     retry: false,
   });
+  const sourceCoverage = useQuery({
+    queryKey: ["source-coverage-summary"],
+    queryFn: ({ signal }) => getSourceCoverageSummary(signal),
+    retry: false,
+  });
   const items = uniqueById(
     catalog.data?.pages.flatMap((page) => page.items) ?? [],
+  );
+  const displayedItems = [...items].sort((left, right) =>
+    left.current_version.canonical_name.localeCompare(
+      right.current_version.canonical_name,
+      "ko-KR",
+      { numeric: true },
+    ),
   );
   const {
     fetchNextPage: fetchNextCatalogPage,
@@ -142,23 +155,65 @@ export function StandardPricesPage() {
   const versions = uniqueById(
     history.data?.pages.flatMap((page) => page.versions) ?? [],
   );
+  const sourceCoverageData = sourceCoverage.data;
+  const hasSourceCoverage = Boolean(
+    sourceCoverageData &&
+      Number.isFinite(sourceCoverageData.scanned_files) &&
+      Number.isFinite(sourceCoverageData.parsed_files) &&
+      Number.isFinite(sourceCoverageData.parser_required_files) &&
+      Number.isFinite(sourceCoverageData.ocr_required_files) &&
+      Number.isFinite(sourceCoverageData.recovered_copy_files) &&
+      Number.isFinite(sourceCoverageData.security_release_required_files),
+  );
 
   return (
     <main className="workspace-page standard-db-page">
       <header className="standard-db-heading">
         <div>
-          <p className="section-kicker">Historical quote reference</p>
+          <p className="section-kicker">과거 견적 기준</p>
           <h1>표준 DB</h1>
-          <p>과거 견적의 정제 완료 품목과 단가 근거를 읽기 전용으로 확인합니다.</p>
+          <p>과거 견적에서 정제한 품목별 단가 범위와 원본 근거를 확인합니다.</p>
         </div>
-        <div className="build-status" aria-label="마지막 구축 상태">
-          <span>마지막 구축</span>
+        <div className="build-status" aria-label="최근 갱신 상태">
+          <span>최근 갱신</span>
           <strong>
             {latestBuild ? formatDateTime(latestBuild.built_at) : "구축 기록 없음"}
           </strong>
-          <small>{latestBuild?.rule_version ?? "—"}</small>
         </div>
       </header>
+
+      {hasSourceCoverage && sourceCoverageData && (
+        <section className="source-coverage" aria-label="원본 견적 활용 현황">
+          <div>
+            <span>3차 원본</span>
+            <strong>{sourceCoverageData.scanned_files.toLocaleString("ko-KR")}개</strong>
+          </div>
+          <div className="is-complete">
+            <span>품목 추출 완료</span>
+            <strong>{sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개</strong>
+          </div>
+          <div>
+            <span>추가 파서 대상</span>
+            <strong>{sourceCoverageData.parser_required_files.toLocaleString("ko-KR")}개</strong>
+          </div>
+          <div>
+            <span>OCR 대상</span>
+            <strong>{sourceCoverageData.ocr_required_files.toLocaleString("ko-KR")}개</strong>
+          </div>
+          <div className="is-warning">
+            <span>복구본 반영</span>
+            <strong>{sourceCoverageData.recovered_copy_files.toLocaleString("ko-KR")}개</strong>
+          </div>
+          <div className="is-warning">
+            <span>보안해제·정상본 필요</span>
+            <strong>{sourceCoverageData.security_release_required_files.toLocaleString("ko-KR")}개</strong>
+          </div>
+          <p>
+            품목 추출이 완료된 원본만 표준단가 계산 후보가 됩니다. 나머지는
+            OCR·양식 보완 또는 보안해제본 재수집 후 다시 반영합니다.
+          </p>
+        </section>
+      )}
 
       <form
         className="standard-db-toolbar"
@@ -200,10 +255,13 @@ export function StandardPricesPage() {
         <button type="submit">검색</button>
       </form>
 
-      <div className="standard-db-workspace">
-        <section className="standard-db-list" aria-label="표준 품목 목록">
+      <div className="standard-db-catalog">
+        <section className="standard-db-table-panel" aria-label="표준 품목 목록">
           <header>
-            <strong>표준 품목</strong>
+            <div>
+              <strong>표준 품목 목록</strong>
+              <small>품명·사양·단위별로 묶은 가격 기준</small>
+            </div>
             <span>{items.length.toLocaleString("ko-KR")}건 표시</span>
           </header>
           {catalog.isPending && <p className="inline-state">목록을 불러오는 중…</p>}
@@ -226,21 +284,41 @@ export function StandardPricesPage() {
           {!catalog.isPending && !catalog.isError && items.length === 0 && (
             <p className="inline-state">검색 결과가 없습니다.</p>
           )}
-          <ul>
-            {items.map((item, index) => (
-              <StandardItemRow
-                item={item}
-                selected={selected?.id === item.id}
-                index={index}
-                key={item.id}
-                onSelect={() => setSelectedId(item.id)}
-                onClearRequested={() => {
-                  setRequestedItemId(null);
-                  setRequestedVersionId(null);
-                }}
-              />
-            ))}
-          </ul>
+          {displayedItems.length > 0 && (
+            <div className="table-scroll standard-catalog-scroll">
+              <table className="data-table standard-catalog-table">
+                <thead>
+                  <tr>
+                    <th>품명</th>
+                    <th>규격</th>
+                    <th>단위</th>
+                    <th className="numeric">최저</th>
+                    <th className="numeric">중앙값</th>
+                    <th className="numeric">평균</th>
+                    <th className="numeric">최고</th>
+                    <th className="numeric">근거</th>
+                    <th>주요 제조사</th>
+                    <th>최근 견적일</th>
+                    <th>공급사</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedItems.map((item) => (
+                    <StandardItemTableRow
+                      item={item}
+                      selected={selected?.id === item.id}
+                      key={item.id}
+                      onSelect={() => setSelectedId(item.id)}
+                      onClearRequested={() => {
+                        setRequestedItemId(null);
+                        setRequestedVersionId(null);
+                      }}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {hasNextCatalogPage && (
             <button
               className="load-more-button"
@@ -253,7 +331,11 @@ export function StandardPricesPage() {
           )}
         </section>
 
-        <section className="standard-db-detail" aria-label="선택한 표준 품목">
+        <section
+          className="standard-db-detail"
+          id="standard-item-detail"
+          aria-label="선택한 표준 품목"
+        >
           {!selected ? (
             <div className="empty-detail">
               <p>왼쪽 목록에서 표준 품목을 선택하세요.</p>
@@ -296,47 +378,46 @@ export function StandardPricesPage() {
   );
 }
 
-function StandardItemRow({
+function StandardItemTableRow({
   item,
   selected,
-  index,
   onSelect,
   onClearRequested,
 }: {
   item: StandardItemSummary;
   selected: boolean;
-  index: number;
   onSelect: () => void;
   onClearRequested: () => void;
 }) {
+  const price = item.current_price;
   return (
-    <li style={{ "--row-index": index } as React.CSSProperties}>
-      <button
-        type="button"
-        className={`standard-db-row ${selected ? "is-selected" : ""}`}
-        aria-current={selected ? "true" : undefined}
-        aria-pressed={selected}
-        onClick={() => {
-          onClearRequested();
-          onSelect();
-        }}
-      >
-        <span>
+    <tr className={selected ? "is-selected" : undefined}>
+      <td>
+        <button
+          type="button"
+          className="standard-item-name-button"
+          aria-expanded={selected}
+          aria-controls="standard-item-detail"
+          onClick={() => {
+            onClearRequested();
+            onSelect();
+          }}
+        >
           <strong>{item.current_version.canonical_name}</strong>
-          <small>
-            {item.current_version.canonical_spec ?? "사양 없음"} ·{" "}
-            {item.current_version.canonical_unit ?? "단위 없음"}
-          </small>
-        </span>
-        <span className="standard-db-row-meta">
-          <EvidenceBadge
-            quality={item.evidence_quality}
-            count={item.observation_count}
-          />
-          <strong>{formatWon(item.current_price?.median ?? null)}</strong>
-        </span>
-      </button>
-    </li>
+          <small>품목 #{item.id}</small>
+        </button>
+      </td>
+      <td>{displaySpec(item)}</td>
+      <td>{item.current_version.canonical_unit ?? "원문에 단위 없음"}</td>
+      <td className="numeric">{formatWon(price?.minimum ?? null)}</td>
+      <td className="numeric is-emphasis">{formatWon(price?.median ?? null)}</td>
+      <td className="numeric">{formatWon(price?.average ?? null)}</td>
+      <td className="numeric">{formatWon(price?.maximum ?? null)}</td>
+      <td className="numeric">{item.observation_count.toLocaleString("ko-KR")}건</td>
+      <td>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</td>
+      <td>{item.quote_date_end ?? "원본에서 확인되지 않음"}</td>
+      <td>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</td>
+    </tr>
   );
 }
 
@@ -374,7 +455,8 @@ function StandardItemDetail({
     supplier_name: string | null;
     maker: string | null;
     quote_date: string | null;
-    source: {
+      source: {
+      variant_id: number;
       logical_name: string;
       path: string;
       sheet: string | null;
@@ -430,11 +512,11 @@ function StandardItemDetail({
       )}
       <header className="standard-record-heading">
         <div>
-          <p className="section-kicker">Standard item #{item.id}</p>
+          <p className="section-kicker">표준 품목 #{item.id}</p>
           <h2>{item.current_version.canonical_name}</h2>
           <p>
-            {item.current_version.canonical_spec ?? "사양 없음"} ·{" "}
-            {item.current_version.canonical_unit ?? "단위 없음"}
+            {displaySpec(item)} ·{" "}
+            {item.current_version.canonical_unit ?? "원문에 단위 없음"}
           </p>
         </div>
         <EvidenceBadge
@@ -456,8 +538,8 @@ function StandardItemDetail({
       )}
 
       <dl className="standard-context-strip">
-        <div><dt>공급사</dt><dd>{item.supplier_summary.join(", ") || "미등록"}</dd></div>
-        <div><dt>제조사</dt><dd>{item.maker_summary.join(", ") || "미등록"}</dd></div>
+        <div><dt>공급사</dt><dd>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
+        <div><dt>제조사</dt><dd>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
         <div>
           <dt>견적일 범위</dt>
           <dd>{formatDateRange(item.quote_date_start, item.quote_date_end)}</dd>
@@ -467,7 +549,7 @@ function StandardItemDetail({
       <section className="standard-evidence-section">
         <div className="section-heading">
           <div>
-            <p className="section-kicker">Traceable observations</p>
+            <p className="section-kicker">원본 견적 근거</p>
             <h2>가격 근거</h2>
           </div>
           <span>{observationCount}건</span>
@@ -505,13 +587,17 @@ function StandardItemDetail({
               <tbody>
                 {observations.map((row) => (
                   <tr key={row.raw_item_id}>
-                    <td>{row.supplier_name ?? "미등록"}</td>
-                    <td>{row.maker ?? "미등록"}</td>
+                    <td>{row.supplier_name ?? "원본에서 확인되지 않음"}</td>
+                    <td>{row.maker ?? "원본에서 확인되지 않음"}</td>
                     <td className="numeric">{formatWon(row.unit_price)}</td>
                     <td>{row.quote_date ?? "—"}</td>
                     <td>
-                      <a href={`/grouping?raw_item_id=${row.raw_item_id}`}>
-                        원본 견적 근거
+                       <a
+                         href={`/api/documents/variants/${row.source.variant_id}/file`}
+                         target="_blank"
+                         rel="noreferrer"
+                       >
+                         원본 견적서 열기
                       </a>
                       <small>
                         {sourceLocation(row.source)}
@@ -538,8 +624,8 @@ function StandardItemDetail({
       <section className="standard-history-section">
         <div className="section-heading">
           <div>
-            <p className="section-kicker">Immutable ledger</p>
-            <h2>가격 버전 이력</h2>
+            <p className="section-kicker">변경 이력</p>
+            <h2>표준단가 변경 이력</h2>
           </div>
           <span>{versions.length}개 버전</span>
         </div>
@@ -594,6 +680,24 @@ function StandardItemDetail({
   );
 }
 
+function displaySpec(item: StandardItemSummary) {
+  if (item.current_version.canonical_spec) {
+    return item.current_version.canonical_spec;
+  }
+  switch (item.spec_source_status) {
+    case "SOURCE_BLANK":
+      return "원문에 규격 없음";
+    case "PARSER_UNMAPPED":
+      return "견적서에서 규격 위치 확인 필요";
+    case "MIXED_REVIEW_REQUIRED":
+      return "일부 원본의 규격 위치 확인 필요";
+    case "MIXED_SOURCE_VALUES":
+      return "일부 원문에 규격 없음";
+    default:
+      return "원본에서 확인되지 않음";
+  }
+}
+
 function formatWon(value: string | null) {
   if (value === null) return "—";
   const amount = Number(value);
@@ -610,8 +714,8 @@ function formatDateTime(value: string) {
 }
 
 function formatDateRange(start: string | null, end: string | null) {
-  if (!start && !end) return "미등록";
-  if (start === end || !end) return start ?? end ?? "미등록";
+  if (!start && !end) return "원본에서 확인되지 않음";
+  if (start === end || !end) return start ?? end ?? "원본에서 확인되지 않음";
   return `${start} – ${end}`;
 }
 

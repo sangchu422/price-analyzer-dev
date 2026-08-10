@@ -3,10 +3,40 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { jsonResponse, renderApp } from "./test/renderApp";
+import { THEME_STORAGE_KEY } from "./theme";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.localStorage.removeItem(THEME_STORAGE_KEY);
+  delete document.documentElement.dataset.theme;
+});
+
+it("switches themes with an accessible control and persists the selection", async () => {
+  const user = userEvent.setup();
+  renderApp("/unknown");
+
+  expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+  const toLight = screen.getByRole("button", { name: "라이트 모드로 전환" });
+  expect(toLight).toHaveAttribute("aria-pressed", "false");
+
+  await user.click(toLight);
+
+  expect(document.documentElement).toHaveAttribute("data-theme", "light");
+  expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+  expect(
+    screen.getByRole("button", { name: "다크 모드로 전환" }),
+  ).toHaveAttribute("aria-pressed", "true");
+});
+
+it("restores the saved theme when the app renders", () => {
+  window.localStorage.setItem(THEME_STORAGE_KEY, "light");
+  renderApp("/unknown");
+
+  expect(document.documentElement).toHaveAttribute("data-theme", "light");
+  expect(
+    screen.getByRole("button", { name: "다크 모드로 전환" }),
+  ).toHaveAttribute("aria-pressed", "true");
 });
 
 it("keeps the cleansing review page and URL available", async () => {

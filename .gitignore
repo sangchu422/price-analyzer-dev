@@ -11,7 +11,7 @@ venv/
 # Excel temporary lock files
 ~$*
 
-# Claude Code settings
+# Local workspace settings
 .claude/
 
 # Local isolated development worktrees
@@ -22,7 +22,8 @@ venv/
 output/playwright/
 
 # Local corpus runs (may contain quote-derived evidence)
-backend/.local/
+backend/.local/*
+!backend/.local/standard-item-migration-v2.sqlite3
 /data/*.sqlite3
 /data/*.sqlite3-shm
 /data/*.sqlite3-wal

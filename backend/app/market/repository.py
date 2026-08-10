@@ -37,7 +37,7 @@ class MarketRepository:
         query: str,
         now: datetime,
     ) -> MarketCollectionRun | None:
-        return self.session.scalar(
+        run = self.session.scalar(
             select(MarketCollectionRun)
             .where(
                 MarketCollectionRun.source == source,
@@ -54,6 +54,22 @@ class MarketRepository:
             )
             .order_by(MarketCollectionRun.collected_at.desc())
         )
+        if run is None:
+            return None
+        for observation in run.observations:
+            paths = (
+                observation.raw_evidence_path,
+                observation.image_evidence_path,
+                observation.screenshot_evidence_path,
+            )
+            for relative_path in (path for path in paths if path):
+                try:
+                    available = self.evidence_store.resolve(relative_path).is_file()
+                except ValueError:
+                    available = False
+                if not available:
+                    return None
+        return run
 
     def save_success(
         self,

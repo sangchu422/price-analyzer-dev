@@ -13,6 +13,25 @@ const build = {
   rule_version: "STANDARD_DB_EXACT_V2",
 };
 
+const sourceCoverage = {
+  scanned_files: 677,
+  parsed_files: 185,
+  standard_price_files: 142,
+  unparsed_files: 492,
+  ocr_required_files: 61,
+  parser_required_files: 370,
+  recollection_required_files: 57,
+  recovered_copy_files: 4,
+  security_release_required_files: 53,
+  unsupported_files: 4,
+  raw_item_count: 18592,
+  auto_confirmed_files: 0,
+  review_required_files: 677,
+  failed_files: 57,
+  candidate_count: 187,
+  accepted_candidate_count: 142,
+};
+
 const sensor = {
   id: 12,
   current_price_version_id: 31,
@@ -29,6 +48,7 @@ const sensor = {
   maker_summary: ["OMRON"],
   quote_date_start: "2026-07-03",
   quote_date_end: "2026-07-03",
+  spec_source_status: "PRESENT" as const,
   provenance: build,
   current_version: {
     id: 22,
@@ -75,13 +95,16 @@ function version(id: number) {
   };
 }
 
-it("renders the standard DB as a read-only evidence explorer", async () => {
+it("renders the standard DB as a grouped price table with source evidence", async () => {
   const requests: Array<{ url: string; method: string }> = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       requests.push({ url, method: init?.method ?? "GET" });
+      if (url.includes("/metadata-audit/summary")) {
+        return jsonResponse(sourceCoverage);
+      }
       if (url.includes("/api/catalog/standard-items?")) {
         return jsonResponse({
           items: [sensor],
@@ -142,16 +165,24 @@ it("renders the standard DB as a read-only evidence explorer", async () => {
     await screen.findByRole("button", { name: /SENSOR/ }),
   ).toBeVisible();
   expect(screen.getAllByText("근거 1건").length).toBeGreaterThan(0);
-  expect(screen.getByText(/마지막 구축/)).toBeVisible();
+  expect(screen.getByText(/최근 갱신/)).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "최저" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "중앙값" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "평균" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "최고" })).toBeVisible();
   expect(screen.getAllByText("50,000원").length).toBeGreaterThan(0);
+  expect(screen.getByText("품목 추출 완료")).toBeVisible();
+  expect(screen.getByText("185개")).toBeVisible();
+  expect(screen.getByText("복구본 반영")).toBeVisible();
+  expect(screen.getByText("보안해제·정상본 필요")).toBeVisible();
   expect(
     await screen.findByRole("columnheader", { name: "공급사" }),
   ).toBeVisible();
   expect(screen.getAllByText("SUPPLIER C").length).toBeGreaterThan(0);
   expect(
-    screen.getByRole("link", { name: "원본 견적 근거" }),
-  ).toHaveAttribute("href", "/grouping?raw_item_id=7");
-  expect(screen.getByRole("heading", { name: "가격 버전 이력" })).toBeVisible();
+    screen.getByRole("link", { name: "원본 견적서 열기" }),
+  ).toHaveAttribute("href", "/api/documents/variants/8/file");
+  expect(screen.getByRole("heading", { name: "표준단가 변경 이력" })).toBeVisible();
   expect(screen.queryByRole("button", { name: /승인/ })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("승인자")).not.toBeInTheDocument();
   expect(requests.every(({ method }) => method === "GET")).toBe(true);
@@ -168,7 +199,7 @@ it("renders the standard DB as a read-only evidence explorer", async () => {
     ),
   ).toBe(true);
   expect(screen.getByRole("button", { name: /SENSOR/ })).toHaveAttribute(
-    "aria-pressed",
+    "aria-expanded",
     "true",
   );
 });
@@ -508,7 +539,7 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
   ).toBeVisible();
   await user.click(screen.getByRole("button", { name: "근거 다시 시도" }));
   expect(await screen.findByText("SUPPLIER 8")).toBeVisible();
-  expect(screen.getAllByRole("link", { name: "원본 견적 근거" })).toHaveLength(2);
+  expect(screen.getAllByRole("link", { name: "원본 견적서 열기" })).toHaveLength(2);
   expect(screen.queryByRole("button", { name: "근거 더 보기" })).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "가격 이력 더 보기" }));

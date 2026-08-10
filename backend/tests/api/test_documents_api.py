@@ -130,6 +130,78 @@ def test_documents_returns_variants_preference_and_current_counts(
     }
 
 
+def test_variant_file_opens_the_registered_unchanged_source(
+    client: TestClient,
+    quote_root: Path,
+) -> None:
+    source = quote_root / "nested" / "원본 견적.xlsx"
+    _write_quote(source, item_name="SOURCE")
+    assert client.post("/api/documents/scan").status_code == 200
+    variant_id = client.get("/api/documents").json()["items"][0][
+        "preferred_variant"
+    ]["id"]
+
+    response = client.get(f"/api/documents/variants/{variant_id}/file")
+
+    assert response.status_code == 200
+    assert response.content == source.read_bytes()
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+def test_variant_preview_returns_nearby_rows_and_highlights_source_cells(
+    client: TestClient,
+    api_session: Session,
+    quote_root: Path,
+) -> None:
+    source = quote_root / "nested" / "원본 견적.xlsx"
+    _write_quote(source, item_name="SOURCE", unit_price=1234567)
+    assert client.post("/api/documents/scan").status_code == 200
+    variant = api_session.scalar(select(SourceVariant))
+    raw_item = api_session.scalar(select(RawQuoteItem))
+    assert variant is not None
+    assert raw_item is not None
+
+    response = client.get(
+        f"/api/documents/variants/{variant.id}/preview",
+        params={"raw_item_id": raw_item.id},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["kind"] == "SPREADSHEET"
+    assert payload["sheet"] == "내역"
+    assert payload["target_cells"] == "A2:F2"
+    highlighted = [
+        cell
+        for row in payload["rows"]
+        for cell in row["cells"]
+        if cell["highlighted"]
+    ]
+    assert {cell["coordinate"] for cell in highlighted} == {
+        "A2", "B2", "C2", "D2", "E2", "F2"
+    }
+    assert any(cell["value"] == "SOURCE" for cell in highlighted)
+    assert any(cell["value"] == "1234567" for cell in highlighted)
+
+
+def test_variant_file_refuses_changed_or_missing_evidence(
+    client: TestClient,
+    quote_root: Path,
+) -> None:
+    source = quote_root / "원본.xlsx"
+    _write_quote(source, item_name="SOURCE")
+    assert client.post("/api/documents/scan").status_code == 200
+    variant_id = client.get("/api/documents").json()["items"][0][
+        "preferred_variant"
+    ]["id"]
+    source.write_bytes(b"changed after registration")
+
+    response = client.get(f"/api/documents/variants/{variant_id}/file")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "source file not found"}
+
+
 def test_scan_missing_folder_is_explicit_and_safe(
     client: TestClient,
 ) -> None:
@@ -144,6 +216,7 @@ def test_scan_missing_folder_is_explicit_and_safe(
         "documents_found": 0,
         "documents_succeeded": 0,
         "documents_failed": 1,
+        "documents_review_required": 0,
         "variants_created": 0,
         "raw_items_created": 0,
         "decisions_created": 0,
@@ -156,6 +229,7 @@ def test_scan_missing_folder_is_explicit_and_safe(
                 ),
             }
         ],
+        "review_required": [],
     }
 
 

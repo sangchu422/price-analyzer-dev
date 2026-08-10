@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     price_variance_review_percent: Decimal = Decimal("10")
     price_variance_high_percent: Decimal = Decimal("20")
     market_price_ttl_hours: int = 7 * 24
+    market_empty_result_ttl_hours: int = 6
     market_evidence_folder: Path = Path("backend/.local/evidence/market")
     market_request_timeout_seconds: float = 15.0
     mouser_api_key: SecretStr | None = None

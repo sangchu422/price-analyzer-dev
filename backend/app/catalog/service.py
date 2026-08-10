@@ -620,6 +620,7 @@ def append_document_metadata(
     expected_current_version_id: int | None,
     decided_by: str,
     reason_detail: str,
+    evidence_json: str = "{}",
 ) -> DocumentMetadataVersion:
     decided_by, reason_detail = _validate_human_audit(
         decided_by,
@@ -644,6 +645,7 @@ def append_document_metadata(
         project_name=project_name,
         decided_by=decided_by,
         reason_detail=reason_detail,
+        evidence_json=evidence_json,
     )
     session.add(row)
     session.flush()

@@ -1,4 +1,6 @@
-import { Database, ScanSearch, ShieldCheck } from "lucide-react";
+import { Database, Moon, ScanSearch, ShieldCheck, Sun } from "lucide-react";
+
+import type { AppTheme } from "../theme";
 
 const destinations = [
   { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
@@ -9,10 +11,20 @@ const destinations = [
 export function AppNavigation({
   currentPath,
   onNavigate,
+  theme,
+  onThemeChange,
 }: {
   currentPath: string;
   onNavigate: (path: string) => void;
+  theme: AppTheme;
+  onThemeChange: (theme: AppTheme) => void;
 }) {
+  const lightThemeActive = theme === "light";
+  const nextTheme = lightThemeActive ? "dark" : "light";
+  const themeToggleLabel = lightThemeActive
+    ? "다크 모드로 전환"
+    : "라이트 모드로 전환";
+
   return (
     <nav className="app-navigation" aria-label="주요 작업">
       <a
@@ -53,6 +65,20 @@ export function AppNavigation({
           );
         })}
         </div>
+        <button
+          className="theme-toggle"
+          type="button"
+          aria-label={themeToggleLabel}
+          aria-pressed={lightThemeActive}
+          title={themeToggleLabel}
+          onClick={() => onThemeChange(nextTheme)}
+        >
+          {lightThemeActive ? (
+            <Moon aria-hidden="true" size={16} strokeWidth={1.8} />
+          ) : (
+            <Sun aria-hidden="true" size={16} strokeWidth={1.8} />
+          )}
+        </button>
       </div>
     </nav>
   );

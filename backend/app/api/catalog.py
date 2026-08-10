@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,13 +16,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
+    DocumentMetadataCandidate,
+    DocumentMetadataScan,
     DocumentMetadataVersion,
     ItemMembershipDecision,
     MembershipStatus,
+    StandardPriceObservation,
     StandardItemVersion,
 )
 from app.catalog.service import (
@@ -41,6 +46,7 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import settings
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
+from app.metadata_audit.service import AUDIT_RULE_VERSION
 from app.quotes.models import RawQuoteItem
 from app.standard_database.read_service import (
     EvidenceQuality,
@@ -57,6 +63,54 @@ MAX_ALIAS_LENGTH = 500
 MAX_ALIASES_TOTAL_LENGTH = 20_000
 MAX_EVIDENCE_JSON_BYTES = 65_536
 MAX_EVIDENCE_JSON_DEPTH = 8
+
+
+class MetadataAuditSummaryResponse(BaseModel):
+    scanned_files: int
+    parsed_files: int
+    standard_price_files: int
+    unparsed_files: int
+    ocr_required_files: int
+    parser_required_files: int
+    recollection_required_files: int
+    recovered_copy_files: int
+    security_release_required_files: int
+    unsupported_files: int
+    raw_item_count: int
+    auto_confirmed_files: int
+    review_required_files: int
+    failed_files: int
+    candidate_count: int
+    accepted_candidate_count: int
+
+
+class MetadataCandidateResponse(BaseModel):
+    field_name: str
+    value_text: str
+    source_kind: str
+    confidence: int
+    status: str
+    source_sheet: str | None
+    source_page: int | None
+    source_cells: str | None
+
+
+class MetadataAuditDocumentResponse(BaseModel):
+    scan_id: int
+    document_id: int | None
+    variant_id: int | None
+    file_name: str
+    acquisition_channel: str | None
+    open_status: str
+    content_status: str
+    review_status: str
+    candidates: list[MetadataCandidateResponse]
+
+
+class MetadataAuditDocumentListResponse(BaseModel):
+    items: list[MetadataAuditDocumentResponse]
+    next_cursor: int | None
+    limit: int
 
 
 class AuditBody(BaseModel):
@@ -200,6 +254,7 @@ class StandardItemSummaryResponse(StandardItemResponse):
     maker_summary: list[str]
     quote_date_start: date | None
     quote_date_end: date | None
+    spec_source_status: str
     provenance: "BuildProvenanceResponse | None"
 
 
@@ -282,6 +337,7 @@ class DocumentMetadataResponse(BaseModel):
     project_name: str | None
     decided_by: str
     reason_detail: str
+    evidence: dict[str, Any]
     created_at: datetime
 
 
@@ -520,8 +576,17 @@ def _metadata_payload(
         "project_name": row.project_name,
         "decided_by": row.decided_by,
         "reason_detail": row.reason_detail,
+        "evidence": _json_object(row.evidence_json),
         "created_at": row.created_at,
     }
+
+
+def _json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _membership_payload(
@@ -593,7 +658,183 @@ def _explorer_summary_payload(
         "maker_summary": list(summary.maker_summary),
         "quote_date_start": summary.quote_date_start,
         "quote_date_end": summary.quote_date_end,
+        "spec_source_status": summary.spec_source_status,
         "provenance": _build_provenance_payload(summary.provenance),
+    }
+
+
+@router.get(
+    "/metadata-audit/summary",
+    response_model=MetadataAuditSummaryResponse,
+)
+def get_metadata_audit_summary(
+    session: Session = Depends(get_session),
+) -> dict[str, int]:
+    scans = list(
+        session.scalars(
+            select(DocumentMetadataScan).where(
+                DocumentMetadataScan.rule_version == AUDIT_RULE_VERSION
+            )
+        )
+    )
+    variant_ids = {
+        row.source_variant_id
+        for row in scans
+        if row.source_variant_id is not None
+    }
+    raw_counts = {
+        variant_id: count
+        for variant_id, count in session.execute(
+            select(
+                RawQuoteItem.source_variant_id,
+                func.count(RawQuoteItem.id),
+            )
+            .where(RawQuoteItem.source_variant_id.in_(variant_ids))
+            .group_by(RawQuoteItem.source_variant_id)
+        )
+    } if variant_ids else {}
+    parsed_variant_ids = {
+        variant_id for variant_id, count in raw_counts.items() if count > 0
+    }
+    standard_price_variant_ids = set(
+        session.scalars(
+            select(RawQuoteItem.source_variant_id)
+            .join(
+                StandardPriceObservation,
+                StandardPriceObservation.raw_item_id == RawQuoteItem.id,
+            )
+            .where(RawQuoteItem.source_variant_id.in_(variant_ids))
+            .distinct()
+        )
+    ) if variant_ids else set()
+    unparsed = [
+        row for row in scans
+        if row.source_variant_id not in parsed_variant_ids
+    ]
+    recovered_copy_files = sum(
+        "복구본/3차 학습/" in path.replace("\\", "/")
+        for path in session.scalars(select(SourceVariant.path))
+    )
+    recollection_required_files = sum(
+        row.open_status == "FAILED" for row in unparsed
+    )
+    return {
+        "scanned_files": len(scans),
+        "parsed_files": len(parsed_variant_ids),
+        "standard_price_files": len(standard_price_variant_ids),
+        "unparsed_files": len(unparsed),
+        "ocr_required_files": sum(
+            row.open_status == "OPENED"
+            and row.content_status == "OCR_REQUIRED"
+            for row in unparsed
+        ),
+        "parser_required_files": sum(
+            row.open_status == "OPENED"
+            and row.content_status == "TEXT"
+            for row in unparsed
+        ),
+        "recollection_required_files": recollection_required_files,
+        "recovered_copy_files": recovered_copy_files,
+        "security_release_required_files": max(
+            0,
+            recollection_required_files - recovered_copy_files,
+        ),
+        "unsupported_files": sum(
+            row.open_status == "UNSUPPORTED" for row in unparsed
+        ),
+        "raw_item_count": sum(raw_counts.values()),
+        "auto_confirmed_files": sum(
+            row.review_status == "AUTO_CONFIRMED" for row in scans
+        ),
+        "review_required_files": sum(
+            row.review_status == "REVIEW_REQUIRED" for row in scans
+        ),
+        "failed_files": sum(row.open_status == "FAILED" for row in scans),
+        "candidate_count": session.scalar(
+            select(func.count(DocumentMetadataCandidate.id))
+            .join(
+                DocumentMetadataScan,
+                DocumentMetadataScan.id == DocumentMetadataCandidate.scan_id,
+            )
+            .where(DocumentMetadataScan.rule_version == AUDIT_RULE_VERSION)
+        ) or 0,
+        "accepted_candidate_count": session.scalar(
+            select(func.count(DocumentMetadataCandidate.id))
+            .join(
+                DocumentMetadataScan,
+                DocumentMetadataScan.id == DocumentMetadataCandidate.scan_id,
+            )
+            .where(
+                DocumentMetadataScan.rule_version == AUDIT_RULE_VERSION,
+                DocumentMetadataCandidate.status == "AUTO_ACCEPTED",
+            )
+        ) or 0,
+    }
+
+
+@router.get(
+    "/metadata-audit/documents",
+    response_model=MetadataAuditDocumentListResponse,
+)
+def get_metadata_audit_documents(
+    session: Session = Depends(get_session),
+    *,
+    after_id: int | None = Query(None, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    review_status: str | None = Query(None, max_length=32),
+) -> dict[str, object]:
+    statement = (
+        select(DocumentMetadataScan, SourceVariant)
+        .outerjoin(SourceVariant, SourceVariant.id == DocumentMetadataScan.source_variant_id)
+        .where(DocumentMetadataScan.rule_version == AUDIT_RULE_VERSION)
+        .order_by(DocumentMetadataScan.id)
+    )
+    if after_id is not None:
+        statement = statement.where(DocumentMetadataScan.id > after_id)
+    if review_status:
+        statement = statement.where(
+            DocumentMetadataScan.review_status == review_status
+        )
+    rows = session.execute(statement.limit(limit + 1)).all()
+    page = rows[:limit]
+    scan_ids = [scan.id for scan, _ in page]
+    candidates_by_scan: dict[int, list[DocumentMetadataCandidate]] = {}
+    if scan_ids:
+        for candidate in session.scalars(
+            select(DocumentMetadataCandidate)
+            .where(DocumentMetadataCandidate.scan_id.in_(scan_ids))
+            .order_by(DocumentMetadataCandidate.id)
+        ):
+            candidates_by_scan.setdefault(candidate.scan_id, []).append(candidate)
+    return {
+        "items": [
+            {
+                "scan_id": scan.id,
+                "document_id": None if variant is None else variant.document_id,
+                "variant_id": None if variant is None else variant.id,
+                "file_name": Path(scan.source_path).name,
+                "acquisition_channel": scan.acquisition_channel,
+                "open_status": scan.open_status,
+                "content_status": scan.content_status,
+                "review_status": scan.review_status,
+                "candidates": [
+                    {
+                        "field_name": candidate.field_name,
+                        "value_text": candidate.value_text,
+                        "source_kind": candidate.source_kind,
+                        "confidence": candidate.confidence,
+                        "status": candidate.status,
+                        "source_sheet": candidate.source_sheet,
+                        "source_page": candidate.source_page,
+                        "source_cells": candidate.source_cells,
+                    }
+                    for candidate in candidates_by_scan.get(scan.id, [])
+                ],
+            }
+            for scan, variant in page
+        ],
+        "next_cursor": page[-1][0].id if len(rows) > limit and page else None,
+        "limit": limit,
     }
 
 
