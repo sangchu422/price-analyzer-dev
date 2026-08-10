@@ -1,7 +1,9 @@
+import { Database, ScanSearch, ShieldCheck } from "lucide-react";
+
 const destinations = [
-  { path: "/cleansing", label: "정제 검토" },
-  { path: "/standard-prices", label: "표준 DB" },
-  { path: "/analysis", label: "신규 견적 분석" },
+  { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
+  { path: "/standard-prices", label: "표준 DB", icon: Database },
+  { path: "/analysis", label: "신규 견적 분석", icon: ScanSearch },
 ] as const;
 
 export function AppNavigation({
@@ -21,14 +23,17 @@ export function AppNavigation({
           onNavigate("/cleansing");
         }}
       >
-        <span aria-hidden="true">PA</span>
-        <span className="wordmark-copy">
-          <strong>Price Analyzer</strong>
-          <small>견적 적정성 분석</small>
+        <span className="wordmark-copy" aria-hidden="true">
+          <strong>PRICE</strong>
+          <i>/</i>
+          <strong>ANALYZER</strong>
         </span>
+        <span className="sr-only">Price Analyzer 견적 적정성 분석</span>
       </a>
-      <div className="navigation-links">
-        {destinations.map(({ path, label }) => {
+      <div className="navigation-cluster">
+        <span className="runtime-status"><i aria-hidden="true" /> LOCAL MODE</span>
+        <div className="navigation-links">
+        {destinations.map(({ path, label, icon: Icon }) => {
           const active =
             currentPath === path ||
             (currentPath === "/" && path === "/cleansing");
@@ -42,10 +47,12 @@ export function AppNavigation({
                 onNavigate(path);
               }}
             >
+              <Icon aria-hidden="true" size={15} strokeWidth={1.7} />
               {label}
             </a>
           );
         })}
+        </div>
       </div>
     </nav>
   );

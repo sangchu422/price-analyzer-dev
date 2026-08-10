@@ -29,6 +29,22 @@ DB가 없으면 실행기가 Alembic으로 빈 스키마를 만든다. 빈 DB에
 scripts\start-local.bat --initialize-only
 ```
 
+새 PC에서 처음 pull한 경우에는 Python 3.12 가상환경과 프런트엔드 의존성을
+먼저 설치해야 한다. DB 파일은 Git에 포함되지 않으며, 아래 초기화 명령이
+추적 중인 1·2·3차 견적 원본으로 로컬 DB를 다시 만든다.
+
+```bat
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e backend
+call npm.cmd --prefix frontend install
+scripts\start-local.bat --initialize-only
+scripts\start-local.bat
+```
+
+상세 절차와 예상 건수는 `docs/HANDOFF_2026-07-24.md`의
+`다른 PC에서 pull 후 최초 DB 구축`을 따른다.
+
 ## 과거 견적 적재와 표준 DB 구축
 
 아래 명령은 자동 초기화 대신 각 단계를 직접 확인해야 할 때만 사용한다.

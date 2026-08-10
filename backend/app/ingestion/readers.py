@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import xlrd
+import pdfplumber
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
@@ -44,6 +45,9 @@ MAX_PDF_COMPRESSED_CONTENT_BYTES = 25 * 1024 * 1024
 MAX_PDF_DECODED_CONTENT_BYTES = 32 * 1024 * 1024
 MAX_PDF_EXTRACTED_TEXT_CHARS = 5_000_000
 MAX_PDF_EXTRACTED_ROWS = 200_000
+MAX_PDF_TABLES = 1_000
+MAX_PDF_TABLE_ROWS = 200_000
+MAX_PDF_TABLE_CELLS = 1_000_000
 MAX_PDF_TOTAL_FLATE_DECODED_BYTES = 32 * 1024 * 1024
 MAX_PDF_REACHABLE_OBJECTS = 50_000
 MAX_PDF_RESOURCE_DEPTH = 50
@@ -106,6 +110,11 @@ _FIELD_ALIASES = {
 }
 _HEADER_SEPARATORS = re.compile(r"[\s_\-./()\[\]:]+")
 _PDF_COLUMNS = re.compile(r"\t+|\s{2,}")
+_WIA_UNIT_NAME = re.compile(
+    r"(?:단위(?:공사명|장비명)[^:：\n]*|전기부문)\s*[:：]\s*"
+    r"(.+?)\s*(?:\(첨부\)|$)",
+    re.MULTILINE,
+)
 
 
 def read_quote(path: Path) -> list[ParsedRow]:
@@ -261,9 +270,13 @@ def _read_pdf(path: Path) -> list[ParsedRow]:
     text_total = 0
     row_total = 0
     resource_budget = _PdfResourceBudget()
+    wia_units: dict[int, str] = {}
     for page_number, page in enumerate(reader.pages, start=1):
         _inspect_pdf_page_graph(page, resource_budget)
         text = page.extract_text() or ""
+        unit_match = _WIA_UNIT_NAME.search(text)
+        if unit_match is not None:
+            wia_units[page_number] = unit_match.group(1).strip()
         text_total += len(text)
         if text_total > MAX_PDF_EXTRACTED_TEXT_CHARS:
             raise UnsafeQuoteFileError(
@@ -287,6 +300,115 @@ def _read_pdf(path: Path) -> list[ParsedRow]:
                 page=page_number,
                 row_numbers=False,
                 cell_ranges=False,
+            )
+        )
+    if wia_units:
+        table_rows = _read_wia_pdf_tables(path, wia_units)
+        if table_rows:
+            return table_rows
+    return parsed
+
+
+def _read_wia_pdf_tables(
+    path: Path,
+    wia_units: dict[int, str],
+) -> list[ParsedRow]:
+    """Extract rows from the observed Hyundai WIA detail-table layout.
+
+    The generic pypdf text reader remains the fallback. This layout-specific
+    pass runs only after the bounded pypdf preflight recognized a unit-work or
+    electrical-section marker, so arbitrary PDFs are not sent through the
+    slower table extractor.
+    """
+    parsed: list[ParsedRow] = []
+    table_count = 0
+    row_count = 0
+    cell_count = 0
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page_number, unit_name in sorted(wia_units.items()):
+                if page_number > len(pdf.pages):
+                    continue
+                page = pdf.pages[page_number - 1]
+                for table in page.extract_tables():
+                    if not table:
+                        continue
+                    table_count += 1
+                    row_count += len(table)
+                    cell_count += sum(len(row or ()) for row in table)
+                    if (
+                        table_count > MAX_PDF_TABLES
+                        or row_count > MAX_PDF_TABLE_ROWS
+                        or cell_count > MAX_PDF_TABLE_CELLS
+                    ):
+                        raise UnsafeQuoteFileError(
+                            "pdf extracted table data exceeds safe limits"
+                        )
+                    parsed.extend(
+                        _parse_wia_pdf_table(
+                            table,
+                            page=page_number,
+                            unit_name=unit_name,
+                        )
+                    )
+    except UnsafeQuoteFileError:
+        raise
+    except Exception:
+        return []
+    return parsed
+
+
+def _parse_wia_pdf_table(
+    table: list[list[Any] | None],
+    *,
+    page: int,
+    unit_name: str,
+) -> list[ParsedRow]:
+    parsed: list[ParsedRow] = []
+    header_found = False
+    for row in table:
+        if row is None or len(row) < 7:
+            continue
+        row_text = " ".join(_raw_text(value) or "" for value in row)
+        if "품 명" in row_text or "단가(원)" in row_text:
+            header_found = True
+            continue
+        if not header_found:
+            continue
+
+        offset = 2 if len(row) >= 9 else 1
+        item_name = (_raw_text(row[offset]) or "").lstrip("■□●○").strip()
+        spec = _raw_text(row[offset + 1])
+        unit = _raw_text(row[offset + 2])
+        quantity = _raw_text(row[offset + 3])
+        unit_price = _raw_text(row[offset + 4])
+        amount = _raw_text(row[offset + 5])
+        maker = (
+            _raw_text(row[offset + 6])
+            if offset + 6 < len(row)
+            else None
+        )
+        if (
+            len(item_name) < 2
+            or _is_number(item_name)
+            or not _positive_number(unit_price)
+            or not _number_at_least(amount, Decimal("1000"))
+        ):
+            continue
+        parsed.append(
+            ParsedRow(
+                sheet=None,
+                page=page,
+                row=None,
+                cells=None,
+                item_name=item_name,
+                spec=spec,
+                unit=unit,
+                quantity=quantity,
+                unit_price=unit_price,
+                amount=amount,
+                maker=maker,
+                warnings=("PDF_WIA_TABLE", f"UNIT_SECTION:{unit_name}"),
             )
         )
     return parsed
@@ -1062,6 +1184,13 @@ def _is_safe_fixed_column_row(
 def _positive_number(value: str | None) -> bool:
     try:
         return Decimal((value or "").replace(",", "").strip()) > 0
+    except InvalidOperation:
+        return False
+
+
+def _number_at_least(value: str | None, minimum: Decimal) -> bool:
+    try:
+        return Decimal((value or "").replace(",", "").strip()) >= minimum
     except InvalidOperation:
         return False
 

@@ -172,6 +172,35 @@ def test_failed_document_does_not_abort_good_documents_and_is_accounted(
     assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
 
 
+def test_broken_xls_unicode_does_not_abort_remaining_documents(
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "quotes"
+    root.mkdir()
+    (root / "broken.xls").write_bytes(b"broken")
+    _write_quote(root / "good.xlsx", item_name="GOOD")
+
+    from app.ingestion import service as ingestion_service
+
+    actual_reader = ingestion_service.read_quote
+
+    def broken_xls_reader(path: Path):
+        if path.suffix.lower() == ".xls":
+            raise UnicodeDecodeError("utf-16-le", b"\x00", 0, 1, "broken")
+        return actual_reader(path)
+
+    monkeypatch.setattr(ingestion_service, "read_quote", broken_xls_reader)
+
+    report = ingest_corpus(session, root)
+
+    assert report.documents_ingested == 1
+    assert report.documents_failed == 1
+    assert report.failures[0].error_code == "UNREADABLE_SOURCE"
+    assert session.scalar(select(func.count(RawQuoteItem.id))) == 1
+
+
 def test_failed_group_report_preserves_relative_variant_hash_evidence(
     session: Session,
     tmp_path: Path,

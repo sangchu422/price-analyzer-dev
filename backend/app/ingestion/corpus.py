@@ -440,6 +440,7 @@ EXPECTED_INGESTION_ERRORS = (
     InvalidFileException,
     PdfReadError,
     XLRDError,
+    UnicodeError,
     OSError,
 )
 
@@ -461,7 +462,13 @@ def ingestion_issue(
         detail = "source file changed during ingestion"
     elif isinstance(
         exc,
-        (BadZipFile, InvalidFileException, PdfReadError, XLRDError),
+        (
+            BadZipFile,
+            InvalidFileException,
+            PdfReadError,
+            XLRDError,
+            UnicodeError,
+        ),
     ):
         code = "UNREADABLE_SOURCE"
         detail = "source file could not be read"

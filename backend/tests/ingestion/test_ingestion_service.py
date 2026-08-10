@@ -16,6 +16,7 @@ from app.db.sqlite import configure_sqlite
 from app.ingestion.readers import (
     ParsedRow,
     UnsafeQuoteFileError,
+    _parse_wia_pdf_table,
     read_quote,
     read_xlsx,
 )
@@ -577,6 +578,47 @@ def test_pdf_reader_records_page_provenance(
     assert rows[0].cells is None
     assert rows[0].item_name == "BEARING"
     assert rows[0].unit_price == "2400"
+
+
+def test_wia_pdf_table_reader_preserves_fields_and_page_provenance() -> None:
+    table = [
+        [
+            "구분",
+            "구분",
+            "품 명",
+            "규격",
+            "단위",
+            "수량",
+            "단가(원)",
+            "금액(원)",
+            "原MAKER",
+        ],
+        ["", "", "HMI", "15인치", "EA", "2", "1,550,000", "3,100,000", ""],
+        ["", "", "합계", "", "", "", "", "3,100,000", ""],
+    ]
+
+    rows = _parse_wia_pdf_table(
+        table,
+        page=4,
+        unit_name="전기부문(공통)",
+    )
+
+    assert rows == [
+        ParsedRow(
+            sheet=None,
+            page=4,
+            row=None,
+            cells=None,
+            item_name="HMI",
+            spec="15인치",
+            unit="EA",
+            quantity="2",
+            unit_price="1,550,000",
+            amount="3,100,000",
+            maker=None,
+            warnings=("PDF_WIA_TABLE", "UNIT_SECTION:전기부문(공통)"),
+        )
+    ]
 
 
 def test_pdf_reader_rejects_page_and_extracted_text_limits(

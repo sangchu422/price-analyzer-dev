@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
 
 import { AppNavigation } from "./components/AppNavigation";
 import { CleansingReviewPage } from "./pages/CleansingReviewPage";
@@ -12,6 +13,7 @@ function currentPathname() {
 
 export function App() {
   const [path, setPath] = useState(currentPathname);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     const handlePopState = () => setPath(currentPathname());
@@ -71,7 +73,15 @@ export function App() {
   return (
     <div className="application-frame">
       <AppNavigation currentPath={path} onNavigate={navigate} />
-      {page}
+      <motion.div
+        className="route-stage"
+        key={path}
+        initial={false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: reduceMotion ? 0 : 0.18, ease: "easeOut" }}
+      >
+        {page}
+      </motion.div>
     </div>
   );
 }
