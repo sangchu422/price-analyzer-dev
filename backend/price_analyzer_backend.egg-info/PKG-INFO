@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: price-analyzer-backend
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: fastapi<1,>=0.116
+Requires-Dist: uvicorn[standard]<1,>=0.35
+Requires-Dist: sqlalchemy<3,>=2.0.41
+Requires-Dist: alembic<2,>=1.16
+Requires-Dist: pydantic-settings<3,>=2.10
+Requires-Dist: python-multipart<1,>=0.0.20
+Requires-Dist: openpyxl<4,>=3.1.5
+Requires-Dist: xlrd<3,>=2.0.2
+Requires-Dist: pypdf<6,>=5.8
+Requires-Dist: pdfplumber<1,>=0.11
+Requires-Dist: Pillow<13,>=11
+Requires-Dist: rapidfuzz<4,>=3.13
+Requires-Dist: httpx<1,>=0.28
+Requires-Dist: numpy<3,>=2.0
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8.4; extra == "dev"
+Requires-Dist: pytest-cov<7,>=6.2; extra == "dev"
