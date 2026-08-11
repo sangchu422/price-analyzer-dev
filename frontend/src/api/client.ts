@@ -133,6 +133,7 @@ export interface StandardItemSummary {
   maker_summary: string[];
   quote_date_start: string | null;
   quote_date_end: string | null;
+  quote_date_end_quality?: QuoteDateQuality | null;
   spec_source_status:
     | "PRESENT"
     | "SOURCE_BLANK"
@@ -172,6 +173,11 @@ export interface SourceCoverageSummary {
 export type EvidenceQuality =
   | "SINGLE_OBSERVATION"
   | "MULTI_OBSERVATION";
+
+export type QuoteDateQuality =
+  | "CONFIRMED"
+  | "REFERENCE_BACKFILL"
+  | "FILE_DATE_INFERRED";
 
 export interface StandardBuildProvenance {
   build_run_id: number;
@@ -358,6 +364,7 @@ export interface StandardEvidence {
     supplier_name: string | null;
     maker: string | null;
     quote_date: string | null;
+    quote_date_quality?: QuoteDateQuality | null;
     source: PriceSource & { cells: string | null };
   }>;
   next_cursor: number | null;
@@ -522,6 +529,70 @@ export interface DocumentAnalysis {
   lines: AnalysisLine[];
   next_cursor: number | null;
   limit: number;
+}
+
+export interface TargetPriceEvidence {
+  raw_item_id: number;
+  metadata_version_id: number;
+  source_document_id: number;
+  source_variant_id: number;
+  source_logical_name: string;
+  source_sheet: string | null;
+  source_page: number | null;
+  source_row: number | null;
+  source_cells: string | null;
+  quote_date: string;
+  source_period: string;
+  original_unit_price: string;
+  source_index_value: string;
+  target_index_value: string;
+  adjusted_unit_price: string;
+}
+
+export interface TargetPriceLine {
+  raw_item_id: number;
+  status:
+    | "AVAILABLE"
+    | "DATE_UNAVAILABLE"
+    | "INDEX_UNAVAILABLE"
+    | "MARKET_REFERENCE_REQUIRED"
+    | "NOT_APPLICABLE";
+  target_unit_price: string | null;
+  target_amount: string | null;
+  variance_amount: string | null;
+  variance_percent: string | null;
+  used_observation_count: number;
+  excluded_observation_count: number;
+  reason: string;
+  evidence: TargetPriceEvidence[];
+}
+
+export interface QuoteAnalysisRun extends DocumentAnalysis {
+  run_id: number;
+  target_period: string | null;
+  target_index_value: string | null;
+  inflation_source_url: string;
+  inflation_source_last_changed: string | null;
+  quote_total_amount: string | null;
+  target_total_amount: string | null;
+  target_available_count: number;
+  target_unavailable_count: number;
+  target_lines: TargetPriceLine[];
+}
+
+export interface InflationSeries {
+  available: boolean;
+  sync_run_id: number | null;
+  latest_period: string | null;
+  latest_value: string | null;
+  source_last_changed: string | null;
+  point_count: number;
+  org_id: string;
+  table_id: string;
+  item_id: string;
+  classifier_code: string;
+  unit: string;
+  source_url: string;
 }
 
 export interface SubmissionResponse {
@@ -914,4 +985,45 @@ export async function getCompleteDocumentAnalysis(
     next_cursor: null,
     limit: 100,
   } satisfies DocumentAnalysis;
+}
+
+export function createQuoteAnalysisRun({
+  documentId,
+  createdBy,
+  reviewPercent,
+  highPercent,
+  signal,
+}: {
+  documentId: number;
+  createdBy: string;
+  reviewPercent: number;
+  highPercent: number;
+  signal?: AbortSignal;
+}) {
+  return requestJson<QuoteAnalysisRun>(
+    `/api/analysis/documents/${documentId}/runs`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        created_by: createdBy,
+        review_percent: reviewPercent,
+        high_percent: highPercent,
+      }),
+      signal,
+    },
+  );
+}
+
+export function getPpiSeries(signal?: AbortSignal) {
+  return requestJson<InflationSeries>(
+    "/api/analysis/inflation/series/ppi-all",
+    { signal },
+  );
+}
+
+export function syncPpiSeries(signal?: AbortSignal) {
+  return requestJson<InflationSeries>(
+    "/api/analysis/inflation/series/ppi-all/sync",
+    { method: "POST", signal },
+  );
 }

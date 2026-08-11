@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     devicemart_enabled: bool = True
     devicemart_base_url: str = "https://www.devicemart.co.kr"
     devicemart_request_delay_seconds: float = 1.0
+    kosis_proxy_base_url: str = "https://k-skill-proxy.nomadamas.org"
+    kosis_request_timeout_seconds: float = 30.0
+    kosis_ppi_start_period: str = "196501"
 
     @property
     def quote_path(self) -> Path:

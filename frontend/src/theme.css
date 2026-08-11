@@ -1005,6 +1005,41 @@ textarea::placeholder {
   }
 }
 
+.analysis-threshold-fields input,
+.analysis-mode-tabs,
+.target-price-summary,
+.inflation-basis-card {
+  border-color: var(--line);
+}
+
+.analysis-threshold-fields input,
+.analysis-mode-tabs button.is-active,
+.target-price-summary,
+.inflation-basis-card {
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.analysis-mode-tabs {
+  background: var(--surface-subtle);
+}
+
+.analysis-mode-tabs button.is-active {
+  box-shadow: 0 2px 8px var(--raised-shadow);
+}
+
+.target-price-summary > div {
+  border-color: var(--soft-line);
+}
+
+.target-price-summary .is-saving strong,
+.target-price-table .target-unit-price,
+.inflation-basis-card a,
+.target-evidence-details summary,
+.target-evidence-details a {
+  color: var(--accent);
+}
+
 /* Source-first review surfaces */
 .standard-db-heading .section-kicker {
   color: var(--accent-strong);

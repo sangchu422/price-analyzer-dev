@@ -781,6 +781,92 @@ def _read_pdf_with_ocr(
     return parsed
 
 
+def ocr_pdf_text_pages(
+    path: Path,
+    *,
+    page_limit: int = 2,
+) -> tuple[str, ...]:
+    """Return bounded OCR text for quote cover pages.
+
+    This is shared with metadata auditing. It deliberately returns text only;
+    callers must still apply field-specific evidence rules before accepting a
+    value.
+    """
+
+    if page_limit <= 0 or page_limit > MAX_OCR_PAGES:
+        raise ValueError("OCR page limit is outside the safe range")
+    _preflight_pdf_lexical(path)
+    reader = PdfReader(str(path))
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise UnsafeQuoteFileError("pdf has too many pages")
+    if reader.is_encrypted and reader.decrypt("") == 0:
+        raise OcrReviewRequiredError("encrypted PDF needs manual review")
+    pages = min(len(reader.pages), page_limit)
+    runtime = _resolve_ocr_runtime(require_renderer=True)
+    assert runtime.renderer is not None
+    result: list[str] = []
+    text_total = 0
+    with tempfile.TemporaryDirectory(prefix="price-date-ocr-") as directory:
+        temporary_root = Path(directory)
+        with _ocr_tessdata(runtime, temporary_root) as tessdata:
+            for page_number in range(1, pages + 1):
+                page = reader.pages[page_number - 1]
+                try:
+                    width_pixels = round(
+                        float(page.mediabox.width) * MAX_OCR_DPI / 72
+                    )
+                    height_pixels = round(
+                        float(page.mediabox.height) * MAX_OCR_DPI / 72
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise UnsafeQuoteFileError(
+                        "pdf page dimensions are invalid for OCR"
+                    ) from exc
+                if (
+                    width_pixels <= 0
+                    or height_pixels <= 0
+                    or width_pixels * height_pixels > MAX_OCR_PAGE_PIXELS
+                ):
+                    raise UnsafeQuoteFileError(
+                        "pdf page resolution exceeds safe OCR limits"
+                    )
+                image_prefix = temporary_root / f"page-{page_number}"
+                _run_command(
+                    [
+                        str(runtime.renderer),
+                        "-f", str(page_number),
+                        "-l", str(page_number),
+                        "-singlefile",
+                        "-r", str(MAX_OCR_DPI),
+                        "-png",
+                        str(path),
+                        str(image_prefix),
+                    ],
+                    error_message="PDF page rendering needs manual review",
+                )
+                image_path = image_prefix.with_suffix(".png")
+                if not image_path.is_file():
+                    raise OcrReviewRequiredError(
+                        "PDF renderer did not produce an OCR image"
+                    )
+                if image_path.stat().st_size > MAX_OCR_IMAGE_BYTES:
+                    raise UnsafeQuoteFileError(
+                        "rendered PDF page exceeds safe OCR byte limits"
+                    )
+                text = _run_tesseract(
+                    image_path,
+                    runtime,
+                    tessdata=tessdata,
+                )
+                text_total += len(text)
+                if text_total > MAX_OCR_TEXT_CHARS:
+                    raise UnsafeQuoteFileError(
+                        "OCR text exceeds safe extraction limits"
+                    )
+                result.append(text)
+    return tuple(result)
+
+
 def _parse_ocr_text(text: str, *, page: int) -> list[ParsedRow]:
     matrix = [
         [part for part in _PDF_COLUMNS.split(line.strip())]

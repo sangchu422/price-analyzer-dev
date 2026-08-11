@@ -415,7 +415,7 @@ function StandardItemTableRow({
       <td className="numeric">{formatWon(price?.maximum ?? null)}</td>
       <td className="numeric">{item.observation_count.toLocaleString("ko-KR")}건</td>
       <td>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</td>
-      <td>{item.quote_date_end ?? "원본에서 확인되지 않음"}</td>
+      <td>{formatQuoteDate(item.quote_date_end, item.quote_date_end_quality)}</td>
       <td>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</td>
     </tr>
   );
@@ -455,6 +455,7 @@ function StandardItemDetail({
     supplier_name: string | null;
     maker: string | null;
     quote_date: string | null;
+    quote_date_quality?: "CONFIRMED" | "REFERENCE_BACKFILL" | "FILE_DATE_INFERRED" | null;
       source: {
       variant_id: number;
       logical_name: string;
@@ -542,7 +543,13 @@ function StandardItemDetail({
         <div><dt>제조사</dt><dd>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
         <div>
           <dt>견적일 범위</dt>
-          <dd>{formatDateRange(item.quote_date_start, item.quote_date_end)}</dd>
+          <dd>
+            {formatDateRange(
+              item.quote_date_start,
+              item.quote_date_end,
+              item.quote_date_end_quality,
+            )}
+          </dd>
         </div>
       </dl>
 
@@ -590,7 +597,7 @@ function StandardItemDetail({
                     <td>{row.supplier_name ?? "원본에서 확인되지 않음"}</td>
                     <td>{row.maker ?? "원본에서 확인되지 않음"}</td>
                     <td className="numeric">{formatWon(row.unit_price)}</td>
-                    <td>{row.quote_date ?? "—"}</td>
+                    <td>{formatQuoteDate(row.quote_date, row.quote_date_quality)}</td>
                     <td>
                        <a
                          href={`/api/documents/variants/${row.source.variant_id}/file`}
@@ -713,10 +720,28 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
-function formatDateRange(start: string | null, end: string | null) {
+function formatQuoteDate(
+  value: string | null,
+  quality?: "CONFIRMED" | "REFERENCE_BACKFILL" | "FILE_DATE_INFERRED" | null,
+) {
+  if (!value) return "원본에서 확인되지 않음";
+  if (quality === "FILE_DATE_INFERRED") {
+    return `${value.slice(0, 4)}년 (파일명 기준)`;
+  }
+  if (quality === "REFERENCE_BACKFILL") {
+    return `${value} (기존 자료 보완)`;
+  }
+  return value;
+}
+
+function formatDateRange(
+  start: string | null,
+  end: string | null,
+  endQuality?: "CONFIRMED" | "REFERENCE_BACKFILL" | "FILE_DATE_INFERRED" | null,
+) {
   if (!start && !end) return "원본에서 확인되지 않음";
-  if (start === end || !end) return start ?? end ?? "원본에서 확인되지 않음";
-  return `${start} – ${end}`;
+  if (start === end || !end) return formatQuoteDate(start ?? end, endQuality);
+  return `${start} – ${formatQuoteDate(end, endQuality)}`;
 }
 
 function sourceLocation(source: {

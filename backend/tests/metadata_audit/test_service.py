@@ -16,6 +16,12 @@ from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.ingestion.service import ingest_path
 from app.metadata_audit.service import audit_quote_metadata
+from app.metadata_audit.service import (
+    ExtractedCandidate,
+    _date_text_candidates,
+    _select_candidates,
+)
+from app.standard_database.service import assign_initial_historical_roles
 
 
 def _write_quote(path: Path, supplier: str, quote_date: str) -> None:
@@ -144,3 +150,112 @@ def test_audit_allows_corpus_without_third_training_folder(
     assert report.review_required_files == 0
     with report_path.open(encoding="utf-8-sig", newline="") as stream:
         assert list(csv.DictReader(stream)) == []
+
+
+def test_all_historical_audit_includes_sources_outside_third_training(
+    tmp_path: Path,
+) -> None:
+    quote_root = tmp_path / "견적서"
+    quote = quote_root / "1차 학습" / "actual.xlsx"
+    _write_quote(quote, "실제공급사", "2024-05-20")
+    engine = configure_sqlite(create_engine("sqlite:///:memory:"))
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        ingest_path(session, quote, root=quote_root)
+        assign_initial_historical_roles(session, actor="test")
+
+        report = audit_quote_metadata(
+            session,
+            quote_root=quote_root,
+            report_path=tmp_path / "historical.csv",
+            all_historical=True,
+        )
+        session.commit()
+
+        assert report.total_files == 1
+        assert report.date_confirmed_files == 1
+        metadata = session.scalar(select(DocumentMetadataVersion))
+        assert metadata is not None
+        assert metadata.quote_date.isoformat() == "2024-05-20"
+
+
+def test_date_extractor_accepts_spaced_label_and_quote_header_date() -> None:
+    labeled = _date_text_candidates(
+        "견 적 서  제 출 일 : 2021년 07월 15일",
+        page=1,
+        quote_header=True,
+    )
+    header = _date_text_candidates(
+        "(현대 기아 설비협력업체 견적통일양식) 주식회사 신화 2022-02-24 대표 이사",
+        page=1,
+        quote_header=True,
+    )
+
+    assert {(row.value_text, row.source_kind) for row in labeled} == {
+        ("2021-07-15", "EXPLICIT_QUOTE_DATE_TEXT")
+    }
+    assert {(row.value_text, row.source_kind) for row in header} == {
+        ("2022-02-24", "QUOTE_HEADER_DATE")
+    }
+
+
+def test_date_extractor_rejects_quote_number_and_validity_date() -> None:
+    candidates = _date_text_candidates(
+        "견 적 서 견적번호 TPA20221109-02 견적 유효기간 : 2024-01-31",
+        page=1,
+        quote_header=True,
+    )
+
+    assert candidates == []
+
+
+def test_date_extractor_reads_english_ocr_header_but_not_validity() -> None:
+    candidates = _date_text_candidates(
+        "QUOTATION DATE: November 22, 2021 Terms of Validity: November 24, 2021",
+        page=1,
+        quote_header=True,
+        ocr_source=True,
+    )
+
+    assert [(row.value_text, row.source_kind, row.confidence) for row in candidates] == [
+        ("2021-11-22", "OCR_EXPLICIT_QUOTE_DATE_TEXT", 90)
+    ]
+
+
+def test_date_selection_prefers_cover_date_and_is_field_local() -> None:
+    candidates = [
+        ExtractedCandidate(
+            field_name="quote_date",
+            value_text="2024-06-26",
+            source_kind="EXPLICIT_QUOTE_DATE_TEXT",
+            confidence=99,
+            page=1,
+        ),
+        ExtractedCandidate(
+            field_name="quote_date",
+            value_text="2024-03-22",
+            source_kind="EXPLICIT_QUOTE_DATE_TEXT",
+            confidence=99,
+            page=3,
+        ),
+        ExtractedCandidate(
+            field_name="supplier_name",
+            value_text="업체A",
+            source_kind="LABELED_TEXT",
+            confidence=95,
+            page=1,
+        ),
+        ExtractedCandidate(
+            field_name="supplier_name",
+            value_text="업체B",
+            source_kind="LABELED_TEXT",
+            confidence=95,
+            page=1,
+        ),
+    ]
+
+    selected, ambiguous_fields = _select_candidates(candidates)
+
+    assert selected["quote_date"].value_text == "2024-06-26"
+    assert "quote_date" not in ambiguous_fields
+    assert "supplier_name" in ambiguous_fields

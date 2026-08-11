@@ -101,6 +101,30 @@ const analysis = {
     description:
       "표준 대비 ±10% 이내 적정, ±10% 초과~±20% 주의, ±20% 초과 고가·저가",
   },
+  run_id: 14,
+  target_period: "202606",
+  target_index_value: "130.030000",
+  inflation_source_url:
+    "https://kosis.kr/statHtml/statHtml.do?orgId=301&tblId=DT_404Y014",
+  inflation_source_last_changed: "2026-08-11",
+  quote_total_amount: "2080.000000",
+  target_total_amount: "1260.000000",
+  target_available_count: 7,
+  target_unavailable_count: 2,
+  target_lines: Array.from({ length: 9 }, (_, index) => ({
+    raw_item_id: index + 1,
+    status: index < 7 ? "AVAILABLE" : "DATE_UNAVAILABLE",
+    target_unit_price: index < 7 ? "90.000000" : null,
+    target_amount: index < 7 ? "180.000000" : null,
+    variance_amount: index < 7 ? "40.000000" : null,
+    variance_percent: index < 7 ? "44.444444" : null,
+    used_observation_count: index < 7 ? 2 : 0,
+    excluded_observation_count: index < 7 ? 0 : 2,
+    reason: index < 7
+      ? "원본 날짜가 확인된 과거 단가 2건을 보정했습니다."
+      : "원본 본문·머리말에서 확인된 견적일이 없습니다.",
+    evidence: [],
+  })),
 };
 
 function successfulSubmission() {
@@ -155,7 +179,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   ).toBeVisible();
   expect(calls.map((call) => call.url)).toEqual([
     "/api/submissions",
-    "/api/analysis/documents/91?limit=100",
+    "/api/analysis/documents/91/runs",
   ]);
   const upload = calls[0];
   expect(upload.init?.method).toBe("POST");
@@ -173,6 +197,14 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(within(servo).getByText("시장가 확인 필요")).toBeVisible();
   expect(within(servo).getByText("판정 대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
+  expect(screen.getByText("2026년 6월 생산자물가지수 130.030000")).toBeVisible();
+  expect(screen.getByText("전체 품목의 77.8%")).toBeVisible();
+  expect(screen.getByRole("link", { name: "KOSIS 공식 통계 보기" })).toHaveAttribute(
+    "href",
+    expect.stringContaining("DT_404Y014"),
+  );
 });
 
 it("renders comparison basis, signed variance, and every operational status distinctly", async () => {
@@ -405,9 +437,9 @@ it("shows a structured upload error and retries without clearing inputs", async 
   expect(attempt).toBe(2);
 });
 
-it("retries analysis pagination without uploading the accepted quote again", async () => {
+it("retries an analysis run without uploading the accepted quote again", async () => {
   let uploadCount = 0;
-  let secondPageAttempts = 0;
+  let analysisAttempts = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
@@ -416,16 +448,9 @@ it("retries analysis pagination without uploading the accepted quote again", asy
         uploadCount += 1;
         return jsonResponse(successfulSubmission(), { status: 201 });
       }
-      if (url === "/api/analysis/documents/91?limit=100") {
-        return jsonResponse({
-          ...analysis,
-          lines: analysis.lines.slice(0, 4),
-          next_cursor: 4,
-        });
-      }
-      if (url === "/api/analysis/documents/91?limit=100&after_id=4") {
-        secondPageAttempts += 1;
-        return secondPageAttempts === 1
+      if (url === "/api/analysis/documents/91/runs") {
+        analysisAttempts += 1;
+        return analysisAttempts === 1
           ? jsonResponse(
               {
                 detail: {
@@ -435,11 +460,7 @@ it("retries analysis pagination without uploading the accepted quote again", asy
               },
               { status: 500 },
             )
-          : jsonResponse({
-              ...analysis,
-              lines: analysis.lines.slice(4),
-              next_cursor: null,
-            });
+          : jsonResponse(analysis);
       }
       throw new Error(`unexpected request: ${url}`);
     }),
@@ -465,7 +486,7 @@ it("retries analysis pagination without uploading the accepted quote again", asy
     await screen.findByRole("heading", { name: "신규견적.xlsx" }),
   ).toBeVisible();
   expect(uploadCount).toBe(1);
-  expect(secondPageAttempts).toBe(2);
+  expect(analysisAttempts).toBe(2);
 });
 
 it("exposes upload, parsing, and analysis stages and prevents duplicate submits", async () => {

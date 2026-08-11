@@ -25,6 +25,13 @@ from app.standard_database.models import (
     StandardBuildStatus,
     StandardDatabaseBuildRun,
 )
+from app.analysis.models import (
+    InflationIndexPoint,
+    InflationSyncRun,
+    QuoteAnalysisLineResult,
+    QuoteAnalysisRun,
+    QuoteAnalysisTargetEvidence,
+)
 
 __all__ = [
     "CleanDecision",
@@ -50,4 +57,9 @@ __all__ = [
     "StandardDatabaseBuildRun",
     "StandardPriceObservation",
     "StandardPriceVersion",
+    "InflationIndexPoint",
+    "InflationSyncRun",
+    "QuoteAnalysisLineResult",
+    "QuoteAnalysisRun",
+    "QuoteAnalysisTargetEvidence",
 ]

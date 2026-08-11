@@ -38,6 +38,12 @@ class EvidenceQuality(StrEnum):
     MULTI_OBSERVATION = "MULTI_OBSERVATION"
 
 
+class QuoteDateQuality(StrEnum):
+    CONFIRMED = "CONFIRMED"
+    REFERENCE_BACKFILL = "REFERENCE_BACKFILL"
+    FILE_DATE_INFERRED = "FILE_DATE_INFERRED"
+
+
 class StandardExplorerNotFound(LookupError):
     pass
 
@@ -59,6 +65,7 @@ class StandardExplorerSummary:
     maker_summary: tuple[str, ...]
     quote_date_start: date | None
     quote_date_end: date | None
+    quote_date_end_quality: QuoteDateQuality | None
     spec_source_status: str
     provenance: StandardBuildProvenance | None
 
@@ -76,6 +83,7 @@ class StandardEvidenceRow:
     supplier_name: str | None
     maker: str | None
     quote_date: date | None
+    quote_date_quality: QuoteDateQuality | None
     document_id: int
     logical_name: str
     variant_id: int
@@ -236,13 +244,14 @@ def list_standard_explorer_items(
     price_ids = [price.id for _, price, _ in page if price is not None]
     suppliers: dict[int, set[str]] = defaultdict(set)
     makers: dict[int, set[str]] = defaultdict(set)
-    dates: dict[int, list[date]] = defaultdict(list)
+    dates: dict[int, list[tuple[date, QuoteDateQuality]]] = defaultdict(list)
     spec_statuses: dict[int, set[str]] = defaultdict(set)
     evidence_statement = (
         select(
             StandardPriceObservation.standard_price_version_id,
             DocumentMetadataVersion.supplier_name,
             DocumentMetadataVersion.quote_date,
+            DocumentMetadataVersion.evidence_json,
             CleanDecision.maker_norm,
             RawQuoteItem.spec_raw,
             RawQuoteItem.parse_warnings_json,
@@ -269,6 +278,7 @@ def list_standard_explorer_items(
             price_id,
             supplier,
             quote_date,
+            metadata_evidence_json,
             maker,
             spec_raw,
             warnings_json,
@@ -280,7 +290,9 @@ def list_standard_explorer_items(
             if maker:
                 makers[price_id].add(maker)
             if quote_date:
-                dates[price_id].append(quote_date)
+                dates[price_id].append(
+                    (quote_date, _quote_date_quality(metadata_evidence_json))
+                )
             spec_statuses[price_id].add(
                 _spec_source_status(spec_raw, warnings_json)
             )
@@ -300,12 +312,17 @@ def list_standard_explorer_items(
             quote_date_start=(
                 None
                 if price is None or not dates[price.id]
-                else min(dates[price.id])
+                else min(row[0] for row in dates[price.id])
             ),
             quote_date_end=(
                 None
                 if price is None or not dates[price.id]
-                else max(dates[price.id])
+                else max(row[0] for row in dates[price.id])
+            ),
+            quote_date_end_quality=(
+                None
+                if price is None or not dates[price.id]
+                else _latest_quote_date_quality(dates[price.id])
             ),
             spec_source_status=(
                 "UNKNOWN"
@@ -351,6 +368,35 @@ def _aggregate_spec_status(statuses: set[str]) -> str:
     return "UNKNOWN"
 
 
+def _quote_date_quality(evidence_json: str | None) -> QuoteDateQuality:
+    try:
+        evidence = json.loads(evidence_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        evidence = {}
+    quote_date = evidence.get("quote_date") if isinstance(evidence, dict) else None
+    quality = quote_date.get("quality") if isinstance(quote_date, dict) else None
+    if quality == QuoteDateQuality.FILE_DATE_INFERRED.value:
+        return QuoteDateQuality.FILE_DATE_INFERRED
+    if quality == QuoteDateQuality.REFERENCE_BACKFILL.value:
+        return QuoteDateQuality.REFERENCE_BACKFILL
+    return QuoteDateQuality.CONFIRMED
+
+
+def _latest_quote_date_quality(
+    dates: list[tuple[date, QuoteDateQuality]],
+) -> QuoteDateQuality:
+    latest = max(row[0] for row in dates)
+    qualities = {quality for value, quality in dates if value == latest}
+    for quality in (
+        QuoteDateQuality.CONFIRMED,
+        QuoteDateQuality.REFERENCE_BACKFILL,
+        QuoteDateQuality.FILE_DATE_INFERRED,
+    ):
+        if quality in qualities:
+            return quality
+    return QuoteDateQuality.CONFIRMED
+
+
 def standard_item_evidence(
     session: Session,
     standard_item_id: int,
@@ -375,6 +421,7 @@ def standard_item_evidence(
             DocumentMetadataVersion.supplier_name,
             CleanDecision.maker_norm,
             DocumentMetadataVersion.quote_date,
+            DocumentMetadataVersion.evidence_json,
             SourceDocument.id,
             SourceDocument.logical_name,
             SourceVariant.id,
@@ -425,14 +472,17 @@ def standard_item_evidence(
             supplier_name=row[2],
             maker=row[3],
             quote_date=row[4],
-            document_id=row[5],
-            logical_name=row[6],
-            variant_id=row[7],
-            path=row[8],
-            sheet=row[9],
-            page=row[10],
-            row=row[11],
-            cells=row[12],
+            quote_date_quality=(
+                None if row[4] is None else _quote_date_quality(row[5])
+            ),
+            document_id=row[6],
+            logical_name=row[7],
+            variant_id=row[8],
+            path=row[9],
+            sheet=row[10],
+            page=row[11],
+            row=row[12],
+            cells=row[13],
         )
         for row in result
     ]

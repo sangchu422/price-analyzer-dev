@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import ItemMembershipDecision, StandardPriceVersion
+from app.analysis.models import QuoteAnalysisLineResult, QuoteAnalysisRun
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
@@ -115,6 +116,63 @@ def test_analysis_document_list_and_typed_detail(
     assert payload["lines"][0]["canonical_unit"] is None
     assert payload["lines"][0]["source"]["path"] == "quotes/new.xlsx"
     assert payload["next_cursor"] == payload["lines"][0]["raw_item_id"]
+
+
+def test_analysis_run_persists_thresholds_and_keeps_market_target_separate(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document = _document(api_session, rows=1)
+
+    response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={
+            "created_by": "buyer-01",
+            "review_percent": 12,
+            "high_percent": 25,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["price_policy"]["within_percent"] == "12"
+    assert payload["price_policy"]["high_low_percent"] == "25"
+    assert payload["target_period"] is None
+    assert payload["target_lines"][0]["status"] == "MARKET_REFERENCE_REQUIRED"
+    assert payload["target_lines"][0]["target_unit_price"] is None
+    run = api_session.get(QuoteAnalysisRun, payload["run_id"])
+    assert run is not None
+    assert run.review_percent == Decimal("12")
+    assert run.high_percent == Decimal("25")
+    stored = api_session.scalar(
+        select(QuoteAnalysisLineResult).where(
+            QuoteAnalysisLineResult.analysis_run_id == run.id
+        )
+    )
+    assert stored is not None
+    assert stored.target_status == "MARKET_REFERENCE_REQUIRED"
+    saved = client.get(f"/api/analysis/runs/{run.id}")
+    assert saved.status_code == 200
+    assert saved.json()["review_percent"] == "12.000000"
+    assert saved.json()["target_lines"][0]["status"] == "MARKET_REFERENCE_REQUIRED"
+
+
+def test_analysis_run_rejects_reversed_thresholds(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document = _document(api_session, rows=1)
+
+    response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={
+            "created_by": "buyer-01",
+            "review_percent": 30,
+            "high_percent": 20,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_incoming_exact_key_uses_standard_price_without_membership_write(

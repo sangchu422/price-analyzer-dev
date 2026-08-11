@@ -254,6 +254,7 @@ class StandardItemSummaryResponse(StandardItemResponse):
     maker_summary: list[str]
     quote_date_start: date | None
     quote_date_end: date | None
+    quote_date_end_quality: str | None
     spec_source_status: str
     provenance: "BuildProvenanceResponse | None"
 
@@ -296,6 +297,7 @@ class StandardEvidenceRowResponse(BaseModel):
     supplier_name: str | None
     maker: str | None
     quote_date: date | None
+    quote_date_quality: str | None
     source: StandardEvidenceSourceResponse
 
 
@@ -658,6 +660,11 @@ def _explorer_summary_payload(
         "maker_summary": list(summary.maker_summary),
         "quote_date_start": summary.quote_date_start,
         "quote_date_end": summary.quote_date_end,
+        "quote_date_end_quality": (
+            None
+            if summary.quote_date_end_quality is None
+            else summary.quote_date_end_quality.value
+        ),
         "spec_source_status": summary.spec_source_status,
         "provenance": _build_provenance_payload(summary.provenance),
     }
@@ -906,6 +913,11 @@ def get_standard_item_evidence(
                 "supplier_name": row.supplier_name,
                 "maker": row.maker,
                 "quote_date": row.quote_date,
+                "quote_date_quality": (
+                    None
+                    if row.quote_date_quality is None
+                    else row.quote_date_quality.value
+                ),
                 "source": {
                     "document_id": row.document_id,
                     "logical_name": row.logical_name,

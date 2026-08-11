@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -36,6 +37,7 @@ def _historical_row(
     price: str,
     supplier: str,
     maker: str,
+    date_quality: str | None = None,
 ) -> None:
     document = SourceDocument(logical_name=f"quotes/vendor-{row}.xlsx")
     variant = SourceVariant(
@@ -79,6 +81,11 @@ def _historical_row(
                 quote_date=date(2026, 7, row),
                 project_name="LINE-A",
                 decided_by="fixture",
+                evidence_json=(
+                    None
+                    if date_quality is None
+                    else json.dumps({"quote_date": {"quality": date_quality}})
+                ),
             ),
         ]
     )
@@ -123,6 +130,7 @@ def _built_catalog(session: Session) -> int:
         price="50",
         supplier="SUPPLIER C",
         maker="OMRON",
+        date_quality="FILE_DATE_INFERRED",
     )
     session.flush()
     result = build_standard_database(session)
@@ -287,6 +295,7 @@ def test_standard_catalog_explorer_exposes_current_price_and_provenance(
     assert item["maker_summary"] == ["NSK", "SKF"]
     assert item["quote_date_start"] == "2026-07-01"
     assert item["quote_date_end"] == "2026-07-02"
+    assert item["quote_date_end_quality"] == "CONFIRMED"
     assert item["provenance"]["build_run_id"] == run_id
     assert "legacy_codes" not in item
     assert "reconciliation_run_id" not in item
@@ -323,6 +332,7 @@ def test_standard_catalog_explorer_returns_single_observation_evidence_links(
             "supplier_name": "SUPPLIER C",
             "maker": "OMRON",
             "quote_date": "2026-07-03",
+            "quote_date_quality": "FILE_DATE_INFERRED",
             "source": {
                 "document_id": payload["observations"][0]["source"]["document_id"],
                 "logical_name": "quotes/vendor-3.xlsx",

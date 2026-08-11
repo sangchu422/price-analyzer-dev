@@ -18,7 +18,7 @@ from app.metadata_audit.service import audit_quote_metadata
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="3차 학습 원본의 공급사·견적일·공사명 근거를 감사합니다.",
+        description="원본 견적서의 공급사·견적일·공사명 근거를 감사합니다.",
     )
     parser.add_argument("--quote-root", default=str(settings.quote_path))
     parser.add_argument("--database-file", default=str(settings.database_path))
@@ -33,6 +33,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--all-historical",
+        action="store_true",
+        help="3차 폴더만이 아니라 DB에 등록된 모든 과거 견적 원본을 감사합니다.",
+    )
     args = parser.parse_args()
 
     quote_root = Path(args.quote_root).expanduser().resolve(strict=True)
@@ -52,6 +57,7 @@ def main() -> int:
                 session,
                 quote_root=quote_root,
                 report_path=report_path,
+                all_historical=args.all_historical,
             )
             session.commit()
     finally:

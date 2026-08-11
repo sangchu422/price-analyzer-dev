@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,23 @@ from app.analysis.service import (
     MatchStatus,
     analyze_document,
     list_analysis_documents,
+)
+from app.analysis.target_price import (
+    KOSIS_CLASSIFIER_CODE,
+    KOSIS_ITEM_ID,
+    KOSIS_ORG_ID,
+    KOSIS_SERIES_URL,
+    KOSIS_TABLE_ID,
+    AnalysisRunResult,
+    InflationSeriesUnavailable,
+    create_analysis_run,
+    latest_ppi_series,
+    sync_ppi_series,
+)
+from app.analysis.models import (
+    QuoteAnalysisLineResult,
+    QuoteAnalysisRun,
+    QuoteAnalysisTargetEvidence,
 )
 from app.api.catalog import get_candidate_embedding_runtime
 from app.catalog.service import CandidateEmbeddingRuntime
@@ -145,6 +162,93 @@ class CandidateRefreshResponse(DocumentAnalysisResponse):
     membership_rows_created: Literal[0]
 
 
+class AnalysisRunCreateRequest(BaseModel):
+    created_by: str = Field(min_length=1, max_length=100)
+    review_percent: Decimal = Field(default=Decimal("10"), ge=0)
+    high_percent: Decimal = Field(default=Decimal("20"), ge=0)
+
+
+class TargetEvidenceResponse(BaseModel):
+    raw_item_id: int
+    metadata_version_id: int
+    source_document_id: int
+    source_variant_id: int
+    source_logical_name: str
+    source_sheet: str | None
+    source_page: int | None
+    source_row: int | None
+    source_cells: str | None
+    quote_date: str
+    source_period: str
+    original_unit_price: Decimal
+    source_index_value: Decimal
+    target_index_value: Decimal
+    adjusted_unit_price: Decimal
+
+
+class TargetLineResponse(BaseModel):
+    raw_item_id: int
+    status: Literal[
+        "AVAILABLE",
+        "DATE_UNAVAILABLE",
+        "INDEX_UNAVAILABLE",
+        "MARKET_REFERENCE_REQUIRED",
+        "NOT_APPLICABLE",
+    ]
+    target_unit_price: Decimal | None
+    target_amount: Decimal | None
+    variance_amount: Decimal | None
+    variance_percent: Decimal | None
+    used_observation_count: int
+    excluded_observation_count: int
+    reason: str
+    evidence: list[TargetEvidenceResponse]
+
+
+class InflationSeriesResponse(BaseModel):
+    available: bool
+    sync_run_id: int | None
+    latest_period: str | None
+    latest_value: Decimal | None
+    source_last_changed: str | None
+    point_count: int
+    org_id: str
+    table_id: str
+    item_id: str
+    classifier_code: str
+    unit: str
+    source_url: str
+
+
+class AnalysisRunResponse(DocumentAnalysisResponse):
+    run_id: int
+    target_period: str | None
+    target_index_value: Decimal | None
+    inflation_source_url: str
+    inflation_source_last_changed: str | None
+    quote_total_amount: Decimal | None
+    target_total_amount: Decimal | None
+    target_available_count: int
+    target_unavailable_count: int
+    target_lines: list[TargetLineResponse]
+
+
+class StoredAnalysisRunResponse(BaseModel):
+    run_id: int
+    document_id: int
+    created_by: str
+    created_at: str
+    review_percent: Decimal
+    high_percent: Decimal
+    target_period: str | None
+    target_index_value: Decimal | None
+    quote_total_amount: Decimal | None
+    target_total_amount: Decimal | None
+    target_available_count: int
+    target_unavailable_count: int
+    target_lines: list[TargetLineResponse]
+
+
 @router.get("/documents", response_model=AnalysisDocumentListResponse)
 def get_analysis_documents(
     session: Session = Depends(get_session),
@@ -194,6 +298,137 @@ def get_document_analysis(
         assessment=assessment,
     )
     return _analysis_payload(result)
+
+
+@router.post(
+    "/documents/{document_id}/runs",
+    response_model=AnalysisRunResponse,
+)
+def post_analysis_run(
+    document_id: int,
+    body: AnalysisRunCreateRequest,
+    session: Session = Depends(get_session),
+    runtime: CandidateEmbeddingRuntime = Depends(get_candidate_embedding_runtime),
+) -> dict[str, object]:
+    _require_incoming_role(session, document_id)
+    if body.high_percent < body.review_percent:
+        raise HTTPException(
+            status_code=422,
+            detail="고가·저가 기준은 적정 범위보다 크거나 같아야 합니다.",
+        )
+    try:
+        result = create_analysis_run(
+            session,
+            document_id,
+            created_by=body.created_by,
+            review_percent=body.review_percent,
+            high_percent=body.high_percent,
+            embedding_runtime=runtime,
+        )
+        session.commit()
+    except (AnalysisNotFound, ValueError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _analysis_run_payload(result, body.review_percent, body.high_percent)
+
+
+@router.get("/runs/{run_id}", response_model=StoredAnalysisRunResponse)
+def get_analysis_run(
+    run_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    run = session.get(QuoteAnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
+    lines = list(
+        session.scalars(
+            select(QuoteAnalysisLineResult)
+            .where(QuoteAnalysisLineResult.analysis_run_id == run.id)
+            .order_by(QuoteAnalysisLineResult.raw_item_id)
+        )
+    )
+    evidence_rows = list(
+        session.scalars(
+            select(QuoteAnalysisTargetEvidence)
+            .where(
+                QuoteAnalysisTargetEvidence.line_result_id.in_(
+                    [line.id for line in lines]
+                )
+            )
+            .order_by(
+                QuoteAnalysisTargetEvidence.line_result_id,
+                QuoteAnalysisTargetEvidence.raw_item_id,
+            )
+        )
+    ) if lines else []
+    evidence_by_line: dict[int, list[dict[str, object]]] = {}
+    for evidence in evidence_rows:
+        evidence_by_line.setdefault(evidence.line_result_id, []).append(
+            {
+                "raw_item_id": evidence.raw_item_id,
+                "metadata_version_id": evidence.metadata_version_id,
+                "source_document_id": evidence.source_document_id,
+                "source_variant_id": evidence.source_variant_id,
+                "source_logical_name": evidence.source_logical_name,
+                "source_sheet": evidence.source_sheet,
+                "source_page": evidence.source_page,
+                "source_row": evidence.source_row,
+                "source_cells": evidence.source_cells,
+                "quote_date": evidence.quote_date.isoformat(),
+                "source_period": evidence.source_period,
+                "original_unit_price": evidence.original_unit_price,
+                "source_index_value": evidence.source_index_value,
+                "target_index_value": evidence.target_index_value,
+                "adjusted_unit_price": evidence.adjusted_unit_price,
+            }
+        )
+    return {
+        "run_id": run.id,
+        "document_id": run.document_id,
+        "created_by": run.created_by,
+        "created_at": run.created_at.isoformat(),
+        "review_percent": run.review_percent,
+        "high_percent": run.high_percent,
+        "target_period": run.target_period,
+        "target_index_value": run.target_index_value,
+        "quote_total_amount": run.quote_total_amount,
+        "target_total_amount": run.target_total_amount,
+        "target_available_count": run.target_available_count,
+        "target_unavailable_count": run.target_unavailable_count,
+        "target_lines": [
+            {
+                "raw_item_id": line.raw_item_id,
+                "status": line.target_status,
+                "target_unit_price": line.target_unit_price,
+                "target_amount": line.target_amount,
+                "variance_amount": line.target_variance_amount,
+                "variance_percent": line.target_variance_percent,
+                "used_observation_count": line.target_used_observation_count,
+                "excluded_observation_count": line.target_excluded_observation_count,
+                "reason": line.target_reason,
+                "evidence": evidence_by_line.get(line.id, []),
+            }
+            for line in lines
+        ],
+    }
+
+
+@router.get("/inflation/series/ppi-all", response_model=InflationSeriesResponse)
+def get_ppi_series(session: Session = Depends(get_session)) -> dict[str, object]:
+    run, points = latest_ppi_series(session)
+    return _inflation_payload(run, points)
+
+
+@router.post("/inflation/series/ppi-all/sync", response_model=InflationSeriesResponse)
+def post_ppi_sync(session: Session = Depends(get_session)) -> dict[str, object]:
+    try:
+        run = sync_ppi_series(session, settings)
+        session.commit()
+    except InflationSeriesUnavailable as exc:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _, points = latest_ppi_series(session)
+    return _inflation_payload(run, points)
 
 
 @router.post(
@@ -269,6 +504,80 @@ def _analysis_payload(result: DocumentAnalysis) -> dict[str, object]:
         "lines": result.lines,
         "next_cursor": result.next_cursor,
         "limit": result.limit,
+    }
+
+
+def _analysis_run_payload(
+    result: AnalysisRunResult,
+    review_percent: Decimal,
+    high_percent: Decimal,
+) -> dict[str, object]:
+    payload = _analysis_payload(result.analysis)
+    payload["price_policy"] = {
+        "within_percent": review_percent,
+        "high_low_percent": high_percent,
+        "description": (
+            f"표준 중앙값 대비 ±{review_percent}% 이내 적정, "
+            f"±{review_percent}~{high_percent}% 주의, "
+            f"±{high_percent}% 초과 고가·저가"
+        ),
+    }
+    payload.update(
+        {
+            "run_id": result.run_id,
+            "target_period": result.target_period,
+            "target_index_value": result.target_index_value,
+            "inflation_source_url": result.inflation_source_url,
+            "inflation_source_last_changed": (
+                None
+                if result.inflation_source_last_changed is None
+                else result.inflation_source_last_changed.isoformat()
+            ),
+            "quote_total_amount": result.quote_total_amount,
+            "target_total_amount": result.target_total_amount,
+            "target_available_count": result.target_available_count,
+            "target_unavailable_count": result.target_unavailable_count,
+            "target_lines": [
+                {
+                    **{
+                        key: value
+                        for key, value in line.__dict__.items()
+                        if key != "evidence"
+                    },
+                    "evidence": [
+                        {
+                            **evidence.__dict__,
+                            "quote_date": evidence.quote_date.isoformat(),
+                        }
+                        for evidence in line.evidence
+                    ],
+                }
+                for line in result.target_lines
+            ],
+        }
+    )
+    return payload
+
+
+def _inflation_payload(run: object, points: dict[str, Decimal]) -> dict[str, object]:
+    latest_period = None if run is None else run.latest_period
+    return {
+        "available": run is not None and latest_period in points,
+        "sync_run_id": None if run is None else run.id,
+        "latest_period": latest_period,
+        "latest_value": None if latest_period is None else points.get(latest_period),
+        "source_last_changed": (
+            None
+            if run is None or run.source_last_changed is None
+            else run.source_last_changed.isoformat()
+        ),
+        "point_count": len(points),
+        "org_id": KOSIS_ORG_ID,
+        "table_id": KOSIS_TABLE_ID,
+        "item_id": KOSIS_ITEM_ID,
+        "classifier_code": KOSIS_CLASSIFIER_CODE,
+        "unit": "2020=100",
+        "source_url": KOSIS_SERIES_URL,
     }
 
 

@@ -15,7 +15,7 @@ import xlrd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
@@ -25,12 +25,19 @@ from app.catalog.models import (
 )
 from app.catalog.service import current_document_metadata
 from app.documents.models import SourceVariant
+from app.quotes.models import RawQuoteItem
+from app.standard_database.models import (
+    QuoteDocumentPurpose,
+    QuoteDocumentRole,
+)
 
 
-AUDIT_RULE_VERSION = "document-metadata-v2"
+AUDIT_RULE_VERSION = "document-metadata-v3"
 AUTOMATED_METADATA_ACTORS = {
     "metadata-audit-v1",
     "metadata-audit-v2",
+    "team-standard-date-backfill-v1",
+    "metadata-audit-v3",
 }
 SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".pdf"}
 PLACEHOLDER_VALUES = {
@@ -58,7 +65,20 @@ LABELS = {
         "견적일",
         "견적일자",
         "작성일",
+        "작성일자",
+        "발행일",
+        "발행일자",
+        "제출일",
+        "제출일자",
+        "提出日",
+        "西紀",
+        "서기",
         "quote date",
+        "quotation date",
+        "date of quote",
+        "issue date",
+        "issued date",
+        "quote update",
     ),
     "project_name": (
         "공사명",
@@ -73,6 +93,48 @@ DATE_PATTERNS = (
     "%Y/%m/%d",
     "%Y년 %m월 %d일",
 )
+DATE_REGEXES = (
+    re.compile(
+        r"(?<!\d)(20\d{2})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*"
+        r"(\d{1,2})(?!\d)"
+    ),
+    re.compile(
+        r"(?<!\d)(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일?"
+    ),
+    re.compile(
+        r"(?<![A-Za-z0-9])(20\d{2})(\d{2})(\d{2})(?![A-Za-z0-9])"
+    ),
+)
+ENGLISH_DATE_REGEXES = (
+    (
+        re.compile(
+            r"(?i)\b(?:January|February|March|April|May|June|July|August|"
+            r"September|October|November|December)\s+\d{1,2},\s+20\d{2}\b"
+        ),
+        "%B %d, %Y",
+    ),
+    (
+        re.compile(
+            r"(?i)\b\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|"
+            r"Nov|Dec)-(?:20\d{2}|\d{2})\b"
+        ),
+        None,
+    ),
+)
+QUOTE_DATE_LABEL = re.compile(
+    r"(?i)(견\s*적\s*(?:일|일자|날짜)|작\s*성\s*(?:일|일자)|"
+    r"발\s*행\s*(?:일|일자)|제\s*출\s*(?:일|일자)|"
+    r"提\s*出\s*日|서\s*기|西\s*紀|quote\s*update|"
+    r"quotation\s*date|quote\s*date|date\s*of\s*quote|"
+    r"issue(?:d)?\s*date|(?:^|\s)date\s*[:：])"
+)
+NON_QUOTE_DATE_LABEL = re.compile(
+    r"(?i)(납기|납품|유효|견적\s*유효|공사\s*기간|작업\s*기간|"
+    r"준공|계약|발주|delivery|valid(?:ity)?|due\s*date|payment)"
+)
+QUOTE_TITLE = re.compile(
+    r"(?i)(견\s*적\s*서|見\s*積\s*書|quotation|\bquote\b)"
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +146,7 @@ class ExtractedCandidate:
     sheet: str | None = None
     page: int | None = None
     cells: str | None = None
+    context_excerpt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,13 +188,49 @@ def audit_quote_metadata(
     quote_root: Path,
     report_path: Path,
     third_training_relative: Path = Path("3차 학습"),
+    all_historical: bool = False,
 ) -> MetadataAuditReport:
-    """Audit every third-training file and append source-backed evidence."""
+    """Audit source files and append only source-backed metadata evidence."""
 
     quote_root = quote_root.resolve(strict=True)
-    audit_root = (quote_root / third_training_relative).resolve(strict=False)
-    audit_root.relative_to(quote_root)
-    if not audit_root.is_dir():
+    variants = {
+        _path_key(row.path): row
+        for row in session.scalars(select(SourceVariant).order_by(SourceVariant.id))
+    }
+    if all_historical:
+        audit_root = quote_root
+        target_variants = _preferred_historical_variants(session)
+        targets = []
+        for variant in target_variants:
+            path = (quote_root / variant.path).resolve(strict=False)
+            try:
+                path.relative_to(quote_root)
+            except ValueError:
+                continue
+            if path.is_file():
+                targets.append((path, variant.path, variant.path, variant))
+    else:
+        audit_root = (quote_root / third_training_relative).resolve(strict=False)
+        audit_root.relative_to(quote_root)
+        targets = (
+            [
+                (
+                    path,
+                    path.relative_to(quote_root).as_posix(),
+                    path.relative_to(audit_root).as_posix(),
+                    variants.get(
+                        _path_key(path.relative_to(quote_root).as_posix())
+                    ),
+                )
+                for path in sorted(
+                    (row for row in audit_root.rglob("*") if row.is_file()),
+                    key=lambda row: row.as_posix().casefold(),
+                )
+            ]
+            if audit_root.is_dir()
+            else []
+        )
+    if not targets:
         _write_report(report_path, [])
         return MetadataAuditReport(
             total_files=0,
@@ -144,21 +243,12 @@ def audit_quote_metadata(
             date_confirmed_files=0,
             report_file=str(report_path),
         )
-    variants = {
-        _path_key(row.path): row
-        for row in session.scalars(select(SourceVariant).order_by(SourceVariant.id))
-    }
     existing_scans = {
         (row.source_path, row.input_fingerprint, row.rule_version): row
         for row in session.scalars(select(DocumentMetadataScan))
     }
     results: list[FileAuditResult] = []
-    for path in sorted(
-        (row for row in audit_root.rglob("*") if row.is_file()),
-        key=lambda row: row.as_posix().casefold(),
-    ):
-        relative_to_quote = path.relative_to(quote_root).as_posix()
-        relative_to_audit = path.relative_to(audit_root).as_posix()
+    for path, relative_to_quote, relative_to_audit, variant in targets:
         fingerprint = _sha256(path)
         existing = existing_scans.get(
             (relative_to_quote, fingerprint, AUDIT_RULE_VERSION)
@@ -169,7 +259,6 @@ def audit_quote_metadata(
                 results.append(restored)
                 continue
         result, candidates = _audit_file(path, relative_to_audit)
-        variant = variants.get(_path_key(relative_to_quote))
         _store_scan(
             session,
             variant,
@@ -192,6 +281,55 @@ def audit_quote_metadata(
         date_confirmed_files=sum(row.quote_date is not None for row in results),
         report_file=str(report_path),
     )
+
+
+def _preferred_historical_variants(session: Session) -> list[SourceVariant]:
+    """Return one evidence variant per historical document.
+
+    A variant that actually owns parsed rows is preferred, followed by the
+    explicitly selected parse variant. This prevents protected/unlocked copies
+    of the same document from creating duplicate metadata versions.
+    """
+
+    latest_roles = (
+        select(
+            QuoteDocumentRole.document_id.label("document_id"),
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
+    historical_ids = set(
+        session.scalars(
+            select(QuoteDocumentRole.document_id)
+            .join(latest_roles, latest_roles.c.role_id == QuoteDocumentRole.id)
+            .where(
+                QuoteDocumentRole.purpose
+                == QuoteDocumentPurpose.HISTORICAL_REFERENCE
+            )
+        )
+    )
+    parsed_variant_ids = set(
+        session.scalars(select(RawQuoteItem.source_variant_id).distinct())
+    )
+    grouped: dict[int, list[SourceVariant]] = {}
+    for variant in session.scalars(
+        select(SourceVariant)
+        .where(SourceVariant.document_id.in_(historical_ids))
+        .order_by(SourceVariant.id)
+    ):
+        grouped.setdefault(variant.document_id, []).append(variant)
+    return [
+        max(
+            rows,
+            key=lambda row: (
+                row.id in parsed_variant_ids,
+                row.selected_for_parsing_at_ingest,
+                row.id,
+            ),
+        )
+        for _, rows in sorted(grouped.items())
+    ]
 
 
 def _audit_file(
@@ -243,13 +381,15 @@ def _audit_file(
             ),
             [],
         )
-    selected, ambiguous = _select_candidates(candidates)
+    candidates = _deduplicate_candidates(candidates)
+    selected, ambiguous_fields = _select_candidates(candidates)
     locations = "; ".join(
         _candidate_location(row) for row in selected.values()
     )
     review_status = (
         "AUTO_CONFIRMED"
-        if {"supplier_name", "quote_date"}.issubset(selected) and not ambiguous
+        if {"supplier_name", "quote_date"}.issubset(selected)
+        and not ({"supplier_name", "quote_date"} & ambiguous_fields)
         else "REVIEW_REQUIRED"
     )
     return (
@@ -278,11 +418,30 @@ def _audit_file(
                 if selected else None
             ),
             diagnostic=(
-                "conflicting source values" if ambiguous else None
+                "conflicting source values: "
+                + ", ".join(sorted(ambiguous_fields))
+                if ambiguous_fields else None
             ),
         ),
         candidates,
     )
+
+
+def _deduplicate_candidates(
+    candidates: Iterable[ExtractedCandidate],
+) -> list[ExtractedCandidate]:
+    result: dict[tuple[str, str, str | None, int | None], ExtractedCandidate] = {}
+    for candidate in candidates:
+        key = (
+            candidate.field_name,
+            candidate.value_text.casefold(),
+            candidate.sheet,
+            candidate.page,
+        )
+        current = result.get(key)
+        if current is None or candidate.confidence > current.confidence:
+            result[key] = candidate
+    return list(result.values())
 
 
 def _xlsx_candidates(path: Path) -> tuple[list[ExtractedCandidate], bool]:
@@ -295,9 +454,9 @@ def _xlsx_candidates(path: Path) -> tuple[list[ExtractedCandidate], bool]:
                 list(row)
                 for row in sheet.iter_rows(
                     min_row=1,
-                    max_row=min(sheet.max_row, 50),
+                    max_row=min(sheet.max_row, 120),
                     min_col=1,
-                    max_col=min(sheet.max_column, 24),
+                    max_col=min(sheet.max_column, 32),
                     values_only=True,
                 )
             ]
@@ -318,8 +477,8 @@ def _xls_candidates(path: Path) -> tuple[list[ExtractedCandidate], bool]:
     try:
         for sheet in workbook.sheets()[:20]:
             rows = [
-                [sheet.cell_value(row, col) for col in range(min(sheet.ncols, 24))]
-                for row in range(min(sheet.nrows, 50))
+                [sheet.cell_value(row, col) for col in range(min(sheet.ncols, 32))]
+                for row in range(min(sheet.nrows, 120))
             ]
             has_text = has_text or any(
                 str(value).strip()
@@ -343,6 +502,35 @@ def _pdf_candidates(path: Path) -> tuple[list[ExtractedCandidate], bool]:
             has_text = True
         for line in text.splitlines():
             candidates.extend(_line_candidates(line, page=page_number))
+        candidates.extend(
+            _date_text_candidates(
+                text,
+                page=page_number,
+                quote_header=(page_number == 1 and bool(QUOTE_TITLE.search(text))),
+            )
+        )
+    if not has_text:
+        try:
+            from app.ingestion.readers import (
+                OcrReviewRequiredError,
+                OcrUnavailableError,
+                UnsafeQuoteFileError,
+                ocr_pdf_text_pages,
+            )
+
+            ocr_pages = ocr_pdf_text_pages(path, page_limit=2)
+        except (OcrReviewRequiredError, OcrUnavailableError, UnsafeQuoteFileError):
+            ocr_pages = ()
+        for page_number, text in enumerate(ocr_pages, start=1):
+            ocr_candidates = _date_text_candidates(
+                text,
+                page=page_number,
+                quote_header=(
+                    page_number == 1 and bool(QUOTE_TITLE.search(text))
+                ),
+                ocr_source=True,
+            )
+            candidates.extend(ocr_candidates)
     return candidates, has_text
 
 
@@ -352,10 +540,44 @@ def _grid_candidates(
 ) -> list[ExtractedCandidate]:
     candidates: list[ExtractedCandidate] = []
     for row_index, row in enumerate(rows, start=1):
+        row_text = " | ".join(
+            str(value) for value in row if value is not None
+        )
+        candidates.extend(
+            _date_text_candidates(
+                row_text,
+                sheet=sheet,
+                cells=f"A{row_index}:{get_column_letter(len(row))}{row_index}",
+            )
+        )
         for col_index, raw_value in enumerate(row, start=1):
             if raw_value is None:
                 continue
             text = str(raw_value).strip()
+            if isinstance(raw_value, (date, datetime)):
+                typed_date = (
+                    raw_value.date()
+                    if isinstance(raw_value, datetime)
+                    else raw_value
+                )
+                if 2000 <= typed_date.year <= date.today().year:
+                    left = " ".join(
+                        str(value)
+                        for value in row[max(0, col_index - 4):col_index - 1]
+                        if value is not None
+                    )
+                    if QUOTE_DATE_LABEL.search(left) and not NON_QUOTE_DATE_LABEL.search(left):
+                        candidates.append(
+                            ExtractedCandidate(
+                                field_name="quote_date",
+                                value_text=typed_date.isoformat(),
+                                source_kind="EXPLICIT_QUOTE_DATE_CELL",
+                                confidence=99,
+                                sheet=sheet,
+                                cells=f"{get_column_letter(col_index)}{row_index}",
+                                context_excerpt=f"{left} | {typed_date.isoformat()}",
+                            )
+                        )
             candidates.extend(
                 _line_candidates(
                     text,
@@ -385,6 +607,122 @@ def _grid_candidates(
                 )
             )
     return candidates
+
+
+def _date_text_candidates(
+    text: str,
+    *,
+    sheet: str | None = None,
+    page: int | None = None,
+    cells: str | None = None,
+    quote_header: bool = False,
+    ocr_source: bool = False,
+) -> list[ExtractedCandidate]:
+    """Extract source-confirmed quote dates without guessing from filenames."""
+
+    compact = " ".join(text.split())
+    mentions: list[tuple[date, bool, bool, str]] = []
+    seen: set[tuple[date, int]] = set()
+    for parsed, match_start, match_end in _date_occurrences(compact):
+        if not (2000 <= parsed.year <= date.today().year):
+            continue
+        if parsed.isoformat() in PLACEHOLDER_DATES:
+            continue
+        key = (parsed, match_start)
+        if key in seen:
+            continue
+        seen.add(key)
+        before = compact[max(0, match_start - 70):match_start]
+        context = compact[
+            max(0, match_start - 80):min(len(compact), match_end + 80)
+        ]
+        labels = list(QUOTE_DATE_LABEL.finditer(before))
+        explicit = False
+        if labels:
+            gap = before[labels[-1].end():]
+            explicit = (
+                len(gap) <= 24
+                and re.fullmatch(r"[\s:：()\[\].\-/|]*", gap) is not None
+            )
+        negative = bool(NON_QUOTE_DATE_LABEL.search(context)) and not explicit
+        mentions.append((parsed, explicit, negative, context))
+
+    result: list[ExtractedCandidate] = []
+    for parsed, explicit, negative, context in mentions:
+        if not explicit or negative:
+            continue
+        result.append(
+            ExtractedCandidate(
+                field_name="quote_date",
+                value_text=parsed.isoformat(),
+                source_kind=(
+                    "OCR_EXPLICIT_QUOTE_DATE_TEXT"
+                    if ocr_source else "EXPLICIT_QUOTE_DATE_TEXT"
+                ),
+                confidence=90 if ocr_source else 99,
+                sheet=sheet,
+                page=page,
+                cells=cells,
+                context_excerpt=context,
+            )
+        )
+    if quote_header:
+        unlabeled_dates = {
+            parsed for parsed, explicit, negative, _ in mentions
+            if not explicit and not negative
+        }
+        if len(unlabeled_dates) == 1:
+            header_date = next(iter(unlabeled_dates))
+            header_context = next(
+                context for parsed, explicit, negative, context in mentions
+                if parsed == header_date and not explicit and not negative
+            )
+            result.append(
+                ExtractedCandidate(
+                    field_name="quote_date",
+                    value_text=header_date.isoformat(),
+                    source_kind=(
+                        "OCR_QUOTE_HEADER_DATE"
+                        if ocr_source else "QUOTE_HEADER_DATE"
+                    ),
+                    confidence=90,
+                    sheet=sheet,
+                    page=page,
+                    cells=cells,
+                    context_excerpt=header_context,
+                )
+            )
+    return result
+
+
+def _date_occurrences(text: str) -> list[tuple[date, int, int]]:
+    result: list[tuple[date, int, int]] = []
+    for pattern in DATE_REGEXES:
+        for match in pattern.finditer(text):
+            try:
+                parsed = date(*(int(part) for part in match.groups()))
+            except ValueError:
+                continue
+            result.append((parsed, match.start(), match.end()))
+    for pattern, date_format in ENGLISH_DATE_REGEXES:
+        for match in pattern.finditer(text):
+            formats = (
+                (date_format,)
+                if date_format is not None
+                else ("%d-%b-%Y", "%d-%b-%y")
+            )
+            parsed = None
+            for candidate_format in formats:
+                try:
+                    parsed = datetime.strptime(
+                        match.group(0), candidate_format
+                    ).date()
+                    break
+                except ValueError:
+                    continue
+            if parsed is not None:
+                result.append((parsed, match.start(), match.end()))
+    return result
 
 
 def _line_candidates(
@@ -465,33 +803,44 @@ def _parse_date(value: str) -> date | None:
             return datetime.strptime(normalized, pattern).date()
         except ValueError:
             continue
-    match = re.search(r"(?<!\d)(20\d{2})[./-]?(\d{1,2})[./-]?(\d{1,2})(?!\d)", normalized)
-    if match is None:
-        return None
-    try:
-        return date(*(int(part) for part in match.groups()))
-    except ValueError:
-        return None
+    for pattern in DATE_REGEXES:
+        match = pattern.search(normalized)
+        if match is None:
+            continue
+        try:
+            return date(*(int(part) for part in match.groups()))
+        except ValueError:
+            continue
+    return None
 
 
 def _select_candidates(
     candidates: Iterable[ExtractedCandidate],
-) -> tuple[dict[str, ExtractedCandidate], bool]:
+) -> tuple[dict[str, ExtractedCandidate], set[str]]:
     by_field: dict[str, list[ExtractedCandidate]] = {}
     for candidate in candidates:
         by_field.setdefault(candidate.field_name, []).append(candidate)
     selected: dict[str, ExtractedCandidate] = {}
-    ambiguous = False
+    ambiguous_fields: set[str] = set()
     for field_name, rows in by_field.items():
-        values = {row.value_text.casefold() for row in rows}
+        best_confidence = max(row.confidence for row in rows)
+        preferred = [row for row in rows if row.confidence == best_confidence]
+        if field_name == "quote_date" and any(
+            row.page is not None for row in preferred
+        ):
+            first_page = min(
+                row.page for row in preferred if row.page is not None
+            )
+            preferred = [row for row in preferred if row.page == first_page]
+        values = {row.value_text.casefold() for row in preferred}
         if len(values) != 1:
-            ambiguous = True
+            ambiguous_fields.add(field_name)
             continue
         selected[field_name] = sorted(
-            rows,
+            preferred,
             key=lambda row: (-row.confidence, row.page or 0, row.cells or ""),
         )[0]
-    return selected, ambiguous
+    return selected, ambiguous_fields
 
 
 def _store_scan(
@@ -530,11 +879,11 @@ def _store_scan(
     )
     session.add(scan)
     session.flush()
-    selected, ambiguous = _select_candidates(candidates)
+    selected, ambiguous_fields = _select_candidates(candidates)
     candidate_rows: list[DocumentMetadataCandidate] = []
     for candidate in candidates:
         accepted = (
-            not ambiguous
+            candidate.field_name not in ambiguous_fields
             and selected.get(candidate.field_name) == candidate
             and candidate.confidence >= 90
         )
@@ -543,6 +892,7 @@ def _store_scan(
             "page": candidate.page,
             "cells": candidate.cells,
             "source_kind": candidate.source_kind,
+            "context_excerpt": candidate.context_excerpt,
         }
         fingerprint = hashlib.sha256(
             _json(
@@ -574,7 +924,7 @@ def _store_scan(
     # case the metadata belongs to the exact variant that supplied the rows.
     if variant is not None and (
         variant.selected_for_parsing_at_ingest or bool(variant.raw_items)
-    ) and not ambiguous:
+    ):
         _append_auto_metadata(session, variant, candidate_rows)
     return scan
 
@@ -617,10 +967,6 @@ def _append_auto_metadata(
             else (current.project_name if current is not None else None)
         ),
     }
-    if current is not None and all(
-        getattr(current, field) == value for field, value in values.items()
-    ):
-        return
     try:
         prior_evidence = (
             json.loads(current.evidence_json)
@@ -629,6 +975,15 @@ def _append_auto_metadata(
         )
     except (json.JSONDecodeError, TypeError):
         prior_evidence = {}
+    if current is not None and all(
+        getattr(current, field) == value for field, value in values.items()
+    ) and all(
+        isinstance(prior_evidence, dict)
+        and isinstance(prior_evidence.get(field), dict)
+        and prior_evidence[field].get("quality") == "SOURCE_CONFIRMED"
+        for field in accepted
+    ):
+        return
     evidence = dict(prior_evidence) if isinstance(prior_evidence, dict) else {}
     evidence.update({
         field: {
@@ -638,6 +993,8 @@ def _append_auto_metadata(
             "sheet": row.source_sheet,
             "page": row.source_page,
             "cells": row.source_cells,
+            "quality": "SOURCE_CONFIRMED",
+            "use_for_index": "EXACT_DATE" if field == "quote_date" else None,
         }
         for field, row in accepted.items()
     })
@@ -646,8 +1003,8 @@ def _append_auto_metadata(
             source_document_id=variant.document_id,
             version_number=1 if current is None else current.version_number + 1,
             **values,
-            decided_by="metadata-audit-v2",
-            reason_detail="원본 견적서의 명시된 항목에서 자동 확인",
+            decided_by="metadata-audit-v3",
+            reason_detail="원본 견적서 본문·머리말에서 자동 확인",
             evidence_json=_json(evidence),
         )
     )

@@ -3,13 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   ApiError,
-  getCompleteDocumentAnalysis,
+  createQuoteAnalysisRun,
   getStandardEvidence,
   lookupMarketPrice,
   submitIncomingBid,
   type AnalysisAssessment,
   type AnalysisLine,
-  type DocumentAnalysis,
+  type QuoteAnalysisRun,
   type MarketLookupResult,
   type SubmissionResponse,
 } from "../api/client";
@@ -34,9 +34,11 @@ const assessmentLabels: Record<AnalysisAssessment, string> = {
 export function QuoteAnalysisPage() {
   const [file, setFile] = useState<File | null>(null);
   const [submittedBy, setSubmittedBy] = useState("");
+  const [reviewPercent, setReviewPercent] = useState(10);
+  const [highPercent, setHighPercent] = useState(20);
   const [stage, setStage] = useState<WorkflowStage>("IDLE");
   const [submission, setSubmission] = useState<SubmissionResponse | null>(null);
-  const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
+  const [analysis, setAnalysis] = useState<QuoteAnalysisRun | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [resultFilter, setResultFilter] = useState<ResultFilter>("ALL");
   const [marketResults, setMarketResults] = useState<
@@ -60,6 +62,15 @@ export function QuoteAnalysisPage() {
   const startAnalysis = async (retryAccepted = false) => {
     if (!file || !submittedBy.trim()) {
       setValidationError("견적서 파일과 접수자를 모두 입력해 주세요.");
+      return;
+    }
+    if (
+      !Number.isFinite(reviewPercent)
+      || !Number.isFinite(highPercent)
+      || reviewPercent < 0
+      || highPercent < reviewPercent
+    ) {
+      setValidationError("판정 기준은 0 이상이며 고가·저가 기준이 적정 범위보다 커야 합니다.");
       return;
     }
     setValidationError("");
@@ -91,10 +102,13 @@ export function QuoteAnalysisPage() {
       setStage("ANALYZING");
       const controller = new AbortController();
       analysisController.current = controller;
-      const result = await getCompleteDocumentAnalysis(
-        accepted.document_id,
-        controller.signal,
-      );
+      const result = await createQuoteAnalysisRun({
+        documentId: accepted.document_id,
+        createdBy: submittedBy.trim(),
+        reviewPercent,
+        highPercent,
+        signal: controller.signal,
+      });
       if (!mounted.current) return;
       analysisController.current = null;
       setAnalysis(result);
@@ -179,6 +193,30 @@ export function QuoteAnalysisPage() {
             onChange={(event) => setSubmittedBy(event.target.value)}
           />
         </label>
+        <div className="analysis-threshold-fields" aria-label="가격 판정 기준">
+          <label>
+            <span>적정 범위(±%)</span>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={reviewPercent}
+              disabled={busy}
+              onChange={(event) => setReviewPercent(Number(event.target.value))}
+            />
+          </label>
+          <label>
+            <span>고가·저가 기준(±%)</span>
+            <input
+              type="number"
+              min={reviewPercent}
+              step="1"
+              value={highPercent}
+              disabled={busy}
+              onChange={(event) => setHighPercent(Number(event.target.value))}
+            />
+          </label>
+        </div>
         <button
           className="primary-action stable-action"
           type="button"
@@ -276,7 +314,7 @@ function AnalysisResults({
   marketResults,
   onMarketResult,
 }: {
-  analysis: DocumentAnalysis;
+  analysis: QuoteAnalysisRun;
   submission: SubmissionResponse;
   metrics: ReturnType<typeof summarize>;
   lines: AnalysisLine[];
@@ -285,6 +323,7 @@ function AnalysisResults({
   marketResults: Record<number, MarketLookupResult>;
   onMarketResult: (result: MarketLookupResult) => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"THRESHOLD" | "TARGET">("THRESHOLD");
   return (
     <section className="analysis-results">
       <header className="result-heading">
@@ -301,6 +340,32 @@ function AnalysisResults({
           <small>평가 금액 커버리지 {formatPercent(metrics.coverage)}</small>
         </div>
       </header>
+
+      <div className="analysis-mode-tabs" role="tablist" aria-label="견적 분석 방식">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "THRESHOLD"}
+          className={activeTab === "THRESHOLD" ? "is-active" : ""}
+          onClick={() => setActiveTab("THRESHOLD")}
+        >
+          가격 적정성
+          <small>설정한 임계값으로 고가·적정·저가 판정</small>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "TARGET"}
+          className={activeTab === "TARGET" ? "is-active" : ""}
+          onClick={() => setActiveTab("TARGET")}
+        >
+          구매 목표가
+          <small>과거 단가를 현재 생산자물가로 보정</small>
+        </button>
+      </div>
+
+      {activeTab === "THRESHOLD" ? (
+        <>
 
       <div className="decision-summary" aria-label="분석 요약">
         <div>
@@ -394,8 +459,139 @@ function AnalysisResults({
         </table>
         {lines.length === 0 && <p className="inline-state">선택한 조건에 맞는 품목이 없습니다.</p>}
       </div>
+        </>
+      ) : (
+        <TargetPriceResults analysis={analysis} />
+      )}
     </section>
   );
+}
+
+function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
+  const lineById = useMemo(
+    () => new Map(analysis.lines.map((line) => [line.raw_item_id, line])),
+    [analysis.lines],
+  );
+  const coverage = analysis.lines.length === 0
+    ? 0
+    : analysis.target_available_count / analysis.lines.length;
+  const targetDifference =
+    analysis.quote_total_amount !== null && analysis.target_total_amount !== null
+      ? Number(analysis.quote_total_amount) - Number(analysis.target_total_amount)
+      : null;
+
+  return (
+    <section className="target-price-panel" role="tabpanel">
+      <div className="target-price-summary">
+        <div>
+          <span>목표가 산정</span>
+          <strong>{analysis.target_available_count}건</strong>
+          <small>전체 품목의 {formatPercent(coverage)}</small>
+        </div>
+        <div>
+          <span>산정 제외·대기</span>
+          <strong>{analysis.target_unavailable_count}건</strong>
+          <small>날짜·지수·표준 DB 근거 부족</small>
+        </div>
+        <div>
+          <span>산정 품목 목표금액</span>
+          <strong>{formatMoney(analysis.target_total_amount)}</strong>
+          <small>계산 가능한 품목만 합산</small>
+        </div>
+        <div className={targetDifference !== null && targetDifference > 0 ? "is-saving" : ""}>
+          <span>목표가 대비 차액</span>
+          <strong>{targetDifference === null ? "—" : formatSignedMoney(String(targetDifference))}</strong>
+          <small>양수이면 협상 절감 여지</small>
+        </div>
+      </div>
+
+      <div className="inflation-basis-card">
+        <div>
+          <span>물가보정 기준</span>
+          <strong>
+            {analysis.target_period
+              ? `${analysis.target_period.slice(0, 4)}년 ${Number(analysis.target_period.slice(4))}월 생산자물가지수 ${analysis.target_index_value}`
+              : "저장된 생산자물가지수 없음"}
+          </strong>
+          <small>한국은행 생산자물가지수 총지수 · 2020=100</small>
+        </div>
+        <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
+          KOSIS 공식 통계 보기
+        </a>
+      </div>
+
+      <p className="target-policy-note">
+        원본 견적서 본문이나 머리말에서 날짜가 직접 확인된 과거 단가만 각각 물가보정한 뒤 중앙값을 계산합니다.
+        팀 엑셀 보완 날짜와 파일명 추정 날짜는 사용하지 않으며, 시장가는 목표가에 섞지 않습니다.
+      </p>
+
+      <div className="analysis-table-scroll">
+        <table className="analysis-result-table target-price-table">
+          <thead>
+            <tr>
+              <th>품목 / 사양</th>
+              <th>견적 단가</th>
+              <th>구매 목표 단가</th>
+              <th>목표 금액</th>
+              <th>목표가 대비</th>
+              <th>산정 근거</th>
+            </tr>
+          </thead>
+          <tbody>
+            {analysis.target_lines.map((target) => {
+              const line = lineById.get(target.raw_item_id);
+              return (
+                <tr key={target.raw_item_id}>
+                  <td>
+                    <strong>{line?.item_name ?? "품명 없음"}</strong>
+                    <span>{line?.spec ?? "원본에 규격 없음"}</span>
+                  </td>
+                  <td className="numeric">{formatMoney(line?.quote_unit_price ?? null)}</td>
+                  <td className="numeric target-unit-price">{formatMoney(target.target_unit_price)}</td>
+                  <td className="numeric">{formatMoney(target.target_amount)}</td>
+                  <td className="numeric">
+                    <strong>{formatSignedMoney(target.variance_amount)}</strong>
+                    <span>{formatSignedPercent(target.variance_percent)}</span>
+                  </td>
+                  <td>
+                    <details className="target-evidence-details">
+                      <summary>
+                        {target.status === "AVAILABLE"
+                          ? `원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
+                          : targetStatusLabel(target.status)}
+                      </summary>
+                      <p>{target.reason}</p>
+                      {target.evidence.map((evidence) => (
+                        <a
+                          key={evidence.raw_item_id}
+                          href={`/api/documents/variants/${evidence.source_variant_id}/file${evidence.source_page ? `#page=${evidence.source_page}` : ""}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <span>{evidence.source_logical_name.split(/[\\/]/).at(-1)}</span>
+                          <small>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</small>
+                        </a>
+                      ))}
+                    </details>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function targetStatusLabel(status: QuoteAnalysisRun["target_lines"][number]["status"]) {
+  return {
+    AVAILABLE: "산정 완료",
+    DATE_UNAVAILABLE: "원본 견적일 확인 필요",
+    INDEX_UNAVAILABLE: "물가지수 갱신 필요",
+    MARKET_REFERENCE_REQUIRED: "표준 DB 없음 · 시장가 별도 확인",
+    NOT_APPLICABLE: "산정 제외",
+  }[status];
 }
 
 function AnalysisRow({
