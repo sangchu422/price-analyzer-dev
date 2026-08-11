@@ -129,9 +129,9 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
               quote_date: "2026-07-03",
               source: {
                 document_id: 3,
-                logical_name: "quotes/vendor-c.xlsx",
+                logical_name: "3차 학습/tmp_20260803/20251208100036066Ay7qd4X7bbKd5FJB4qIB9fhgd1YYaXKCBVh1pVkgS6JMJSTctJ0INfWjNCbD5uJK",
                 variant_id: 8,
-                path: "quotes/vendor-c.xlsx",
+                path: "3차 학습/tmp_20260803/20251208100036066Ay7qd4X7bbKd5FJB4qIB9fhgd1YYaXKCBVh1pVkgS6JMJSTctJ0INfWjNCbD5uJK.xls",
                 sheet: "견적",
                 page: null,
                 row: 12,
@@ -171,18 +171,24 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   expect(screen.getByRole("columnheader", { name: "평균" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "최고" })).toBeVisible();
   expect(screen.getAllByText("50,000원").length).toBeGreaterThan(0);
+  const coverage = screen.getByRole("group", { name: "데이터 구축 현황" });
+  expect(coverage).not.toHaveAttribute("open");
+  await userEvent.click(within(coverage).getByText("데이터 구축 현황"));
   expect(screen.getByText("품목 추출 완료")).toBeVisible();
   expect(screen.getByText("185개")).toBeVisible();
   expect(screen.getByText("복구본 반영")).toBeVisible();
   expect(screen.getByText("보안해제·정상본 필요")).toBeVisible();
   expect(
-    await screen.findByRole("columnheader", { name: "공급사" }),
+    within(screen.getByRole("region", { name: "표준 품목 목록" }))
+      .getByRole("columnheader", { name: "견적 제출사" }),
   ).toBeVisible();
   expect(screen.getAllByText("SUPPLIER C").length).toBeGreaterThan(0);
   expect(
     screen.getByRole("link", { name: "원본 견적서 열기" }),
   ).toHaveAttribute("href", "/api/documents/variants/8/file");
-  expect(screen.getByRole("heading", { name: "표준단가 변경 이력" })).toBeVisible();
+  expect(screen.getByText(/수집 원본 견적서\.xls/)).toBeVisible();
+  expect(screen.queryByText(/tmp_20260803/)).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "업데이트 로그" })).toBeVisible();
   expect(screen.queryByRole("button", { name: /승인/ })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("승인자")).not.toBeInTheDocument();
   expect(requests.every(({ method }) => method === "GET")).toBe(true);
@@ -543,8 +549,8 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
   expect(screen.queryByRole("button", { name: "근거 더 보기" })).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "가격 이력 더 보기" }));
-  expect(await screen.findByText("v51")).toBeVisible();
-  expect(screen.getAllByText("v50")).toHaveLength(1);
+  expect(await screen.findByText("v1–v51")).toBeVisible();
+  expect(screen.getByText("동일 단가 재계산 51회")).toBeVisible();
   expect(
     screen.queryByRole("button", { name: "가격 이력 더 보기" }),
   ).not.toBeInTheDocument();

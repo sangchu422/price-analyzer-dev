@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.catalog.models import (
     DocumentMetadataVersion,
     MembershipStatus,
+    StandardItem,
     StandardItemVersion,
 )
 from app.catalog.service import (
@@ -33,17 +34,20 @@ from app.pricing.service import (
     approve_standard_price,
     calculate_standard_price,
     current_standard_price_version,
+    price_version_matches_draft,
 )
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
     StandardBuildStatus,
+    StandardDatabaseBuildProjection,
     StandardDatabaseBuildRun,
+    StandardOperationalStatus,
 )
 
 
-RULE_VERSION = "STANDARD_DB_EXACT_V2"
+RULE_VERSION = "STANDARD_DB_EXACT_V6_LATEST_QUOTE_BUSINESS_SOURCE_DEDUP"
 NORMALIZATION_VERSION = "match-v2"
 BUILD_ACTOR = "LOCAL_STANDARD_DB_BUILD"
 INITIAL_HISTORICAL_ROLE_REASON = "INITIAL_LOCAL_CORPUS"
@@ -189,6 +193,9 @@ class StandardDatabaseBuildResult:
     created_memberships: int = 0
     created_price_versions: int = 0
     reused_run_id: int | None = None
+    active_count: int = 0
+    rebuild_required_count: int = 0
+    no_eligible_evidence_count: int = 0
 
     @property
     def created_standard_items(self) -> int:
@@ -404,6 +411,9 @@ def _counts_payload(result: StandardDatabaseBuildResult) -> dict[str, object]:
         "changed_count": result.changed_count,
         "created_memberships": result.created_memberships,
         "created_price_versions": result.created_price_versions,
+        "active_count": result.active_count,
+        "rebuild_required_count": result.rebuild_required_count,
+        "no_eligible_evidence_count": result.no_eligible_evidence_count,
         "unit_conflict_count": result.unit_conflict_count,
         "exclusions": [asdict(issue) for issue in result.exclusions],
         "conflicts": [asdict(issue) for issue in result.conflicts],
@@ -474,6 +484,9 @@ def _reused_result(
         created_memberships=0,
         created_price_versions=0,
         reused_run_id=run.id,
+        active_count=count("active_count"),
+        rebuild_required_count=count("rebuild_required_count"),
+        no_eligible_evidence_count=count("no_eligible_evidence_count"),
     )
 
 
@@ -516,13 +529,17 @@ def _raise_membership_conflicts(
 def _successful_run(
     session: Session,
     *,
-    fingerprint: str,
+    input_fingerprint: str,
+    calculation_fingerprint: str,
+    code_fingerprint: str,
 ) -> StandardDatabaseBuildRun | None:
     return session.scalar(
         select(StandardDatabaseBuildRun)
         .where(
-            StandardDatabaseBuildRun.input_fingerprint == fingerprint,
-            StandardDatabaseBuildRun.rule_version == RULE_VERSION,
+            StandardDatabaseBuildRun.input_fingerprint == input_fingerprint,
+            StandardDatabaseBuildRun.calculation_fingerprint
+            == calculation_fingerprint,
+            StandardDatabaseBuildRun.code_fingerprint == code_fingerprint,
             StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED,
         )
         .order_by(StandardDatabaseBuildRun.id)
@@ -533,10 +550,11 @@ def _successful_run(
 def _is_success_unique_violation(error: IntegrityError) -> bool:
     detail = str(error.orig).casefold()
     return (
-        "uq_standard_database_build_success_input_rule" in detail
+        "uq_standard_database_build_success_provenance" in detail
         or (
             "standard_database_build_run.input_fingerprint" in detail
-            and "standard_database_build_run.rule_version" in detail
+            and "standard_database_build_run.calculation_fingerprint" in detail
+            and "standard_database_build_run.code_fingerprint" in detail
         )
     )
 
@@ -549,12 +567,22 @@ def build_standard_database(
 ) -> StandardDatabaseBuildResult:
     """Append standards, memberships, and captured prices in caller scope."""
 
-    from app.standard_database.fingerprint import standard_build_fingerprint
+    from app.standard_database.fingerprint import (
+        standard_build_calculation_fingerprint,
+        standard_build_code_fingerprint,
+        standard_build_fingerprint,
+    )
 
     session.flush()
     with session.no_autoflush:
         evidence_rows, initial_exclusions = _load_historical_rows(session)
-    fingerprint = standard_build_fingerprint(evidence_rows)
+    input_fingerprint = standard_build_fingerprint(evidence_rows)
+    calculation_fingerprint = standard_build_calculation_fingerprint(
+        rule_version=RULE_VERSION,
+        normalization_version=NORMALIZATION_VERSION,
+        calculation_version=CALCULATION_VERSION,
+    )
+    code_fingerprint = standard_build_code_fingerprint()
     exclusions = list(initial_exclusions)
     groups: dict[
         tuple[str, str, str], list[EligibleHistoricalRow]
@@ -587,7 +615,9 @@ def build_standard_database(
 
     succeeded_run = _successful_run(
         session,
-        fingerprint=fingerprint,
+        input_fingerprint=input_fingerprint,
+        calculation_fingerprint=calculation_fingerprint,
+        code_fingerprint=code_fingerprint,
     )
     if succeeded_run is not None:
         return _reused_result(succeeded_run)
@@ -596,7 +626,9 @@ def build_standard_database(
         with session.begin_nested():
             result = _execute_standard_build(
                 session,
-                fingerprint=fingerprint,
+                input_fingerprint=input_fingerprint,
+                calculation_fingerprint=calculation_fingerprint,
+                code_fingerprint=code_fingerprint,
                 groups=groups,
                 current_versions=current_versions,
                 exclusions=exclusions,
@@ -607,7 +639,12 @@ def build_standard_database(
     except IntegrityError as error:
         if not _is_success_unique_violation(error):
             raise
-        winner = _successful_run(session, fingerprint=fingerprint)
+        winner = _successful_run(
+            session,
+            input_fingerprint=input_fingerprint,
+            calculation_fingerprint=calculation_fingerprint,
+            code_fingerprint=code_fingerprint,
+        )
         if winner is not None:
             return _reused_result(winner)
         raise ConcurrentStandardBuild(
@@ -617,10 +654,94 @@ def build_standard_database(
     return result
 
 
+def _append_build_projections(
+    session: Session,
+    *,
+    run: StandardDatabaseBuildRun,
+) -> tuple[int, int, int, int, int]:
+    """Snapshot every standard item and its current operational state."""
+
+    from app.standard_database.operational import (
+        OperationalBuildContext,
+        operational_standard_price_states,
+    )
+
+    item_ids = list(
+        session.scalars(select(StandardItem.id).order_by(StandardItem.id))
+    )
+    latest_versions = _latest_id(
+        StandardItemVersion.standard_item_id,
+        StandardItemVersion.id,
+    )
+    versions = {
+        version.standard_item_id: version
+        for version in session.scalars(
+            select(StandardItemVersion).join(
+                latest_versions,
+                latest_versions.c.id == StandardItemVersion.id,
+            )
+        )
+    }
+    # The run is still RUNNING and has no projection row yet.  Classify the
+    # freshly approved immutable price versions directly, then persist the
+    # resulting snapshot; ordinary reads use successful matching projections.
+    states = operational_standard_price_states(
+        session,
+        item_ids,
+        context=OperationalBuildContext(
+            matching_build_run_id=None,
+            allow_latest_price_fallback=True,
+        ),
+    )
+    counts = {
+        StandardOperationalStatus.ACTIVE: 0,
+        StandardOperationalStatus.REBUILD_REQUIRED: 0,
+        StandardOperationalStatus.NO_ELIGIBLE_EVIDENCE: 0,
+    }
+    active_observation_count = 0
+    active_single_observation_count = 0
+    projections: list[StandardDatabaseBuildProjection] = []
+    for item_id in item_ids:
+        state = states[item_id]
+        counts[state.status] += 1
+        if state.current_price is not None:
+            active_observation_count += state.current_price.observation_count
+            active_single_observation_count += int(
+                state.current_price.observation_count == 1
+            )
+        version = versions.get(item_id)
+        projections.append(
+            StandardDatabaseBuildProjection(
+                build_run_id=run.id,
+                standard_item_id=item_id,
+                standard_item_version_id=(
+                    None if version is None else version.id
+                ),
+                standard_price_version_id=(
+                    None
+                    if state.captured_price is None
+                    else state.captured_price.id
+                ),
+                operational_status=state.status,
+            )
+        )
+    session.add_all(projections)
+    session.flush()
+    return (
+        counts[StandardOperationalStatus.ACTIVE],
+        counts[StandardOperationalStatus.REBUILD_REQUIRED],
+        counts[StandardOperationalStatus.NO_ELIGIBLE_EVIDENCE],
+        active_observation_count,
+        active_single_observation_count,
+    )
+
+
 def _execute_standard_build(
     session: Session,
     *,
-    fingerprint: str,
+    input_fingerprint: str,
+    calculation_fingerprint: str,
+    code_fingerprint: str,
     groups: dict[tuple[str, str, str], list[EligibleHistoricalRow]],
     current_versions: dict[
         tuple[str, str, str], list[StandardItemVersion]
@@ -631,7 +752,9 @@ def _execute_standard_build(
     report_path: str | None,
 ) -> StandardDatabaseBuildResult:
     run = StandardDatabaseBuildRun(
-        input_fingerprint=fingerprint,
+        input_fingerprint=input_fingerprint,
+        calculation_fingerprint=calculation_fingerprint,
+        code_fingerprint=code_fingerprint,
         rule_version=RULE_VERSION,
         report_path=report_path,
     )
@@ -642,9 +765,6 @@ def _execute_standard_build(
     created_price_versions = 0
     reused_count = 0
     changed_count = 0
-    standard_item_count = 0
-    observation_count = 0
-    single_observation_count = 0
 
     for key in sorted(groups):
         name, spec, unit = key
@@ -734,7 +854,7 @@ def _execute_standard_build(
         current_price = current_standard_price_version(session, item.id)
         if (
             current_price is None
-            or current_price.draft_fingerprint != draft.fingerprint
+            or not price_version_matches_draft(current_price, draft)
         ):
             approve_standard_price(
                 session,
@@ -746,16 +866,22 @@ def _execute_standard_build(
                 approved_by=actor,
             )
             created_price_versions += 1
-        standard_item_count += 1
-        observation_count += draft.observation_count
-        if draft.observation_count == 1:
-            single_observation_count += 1
-
+    (
+        active_count,
+        rebuild_required_count,
+        no_eligible_evidence_count,
+        active_observation_count,
+        active_single_observation_count,
+    ) = _append_build_projections(session, run=run)
     result = StandardDatabaseBuildResult(
         run_id=run.id,
-        standard_item_count=standard_item_count,
-        observation_count=observation_count,
-        single_observation_count=single_observation_count,
+        standard_item_count=(
+            active_count
+            + rebuild_required_count
+            + no_eligible_evidence_count
+        ),
+        observation_count=active_observation_count,
+        single_observation_count=active_single_observation_count,
         created_count=created_count,
         reused_count=reused_count,
         changed_count=changed_count,
@@ -766,6 +892,9 @@ def _execute_standard_build(
         conflicts=tuple(conflicts),
         created_memberships=created_memberships,
         created_price_versions=created_price_versions,
+        active_count=active_count,
+        rebuild_required_count=rebuild_required_count,
+        no_eligible_evidence_count=no_eligible_evidence_count,
     )
     run.status = StandardBuildStatus.SUCCEEDED
     run.counts_json = json.dumps(

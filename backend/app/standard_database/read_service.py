@@ -24,10 +24,11 @@ from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     StandardBuildStatus,
     StandardDatabaseBuildRun,
+    StandardOperationalStatus,
 )
 from app.standard_database.operational import (
     current_standard_member_counts_subquery,
-    operational_standard_prices,
+    operational_standard_price_states,
 )
 
 EXPLORER_SCAN_CHUNK_SIZE = 128
@@ -54,12 +55,17 @@ class StandardBuildProvenance:
     status: StandardBuildStatus
     built_at: datetime
     rule_version: str
+    input_fingerprint: str
+    calculation_fingerprint: str
+    code_fingerprint: str
 
 
 @dataclass(frozen=True)
 class StandardExplorerSummary:
     current_version: StandardItemVersion
     current_price: StandardPriceVersion | None
+    captured_price_version_id: int | None
+    operational_status: StandardOperationalStatus
     member_count: int
     supplier_summary: tuple[str, ...]
     maker_summary: tuple[str, ...]
@@ -122,6 +128,9 @@ def latest_build_provenance(
         status=run.status,
         built_at=run.finished_at,
         rule_version=run.rule_version,
+        input_fingerprint=run.input_fingerprint,
+        calculation_fingerprint=run.calculation_fingerprint,
+        code_fingerprint=run.code_fingerprint,
     )
 
 
@@ -159,13 +168,15 @@ def list_standard_explorer_items(
     base_statement = (
         select(
             StandardItemVersion,
-            member_counts.c.member_count,
+            func.coalesce(member_counts.c.member_count, 0).label(
+                "member_count"
+            ),
         )
         .join(
             latest_versions,
             latest_versions.c.row_id == StandardItemVersion.id,
         )
-        .join(
+        .outerjoin(
             member_counts,
             member_counts.c.standard_item_id
             == StandardItemVersion.standard_item_id,
@@ -189,6 +200,8 @@ def list_standard_explorer_items(
             StandardItemVersion,
             StandardPriceVersion | None,
             int,
+            StandardOperationalStatus,
+            int | None,
         ]
     ] = []
     scan_after = after_id
@@ -208,12 +221,13 @@ def list_standard_explorer_items(
         if not chunk:
             break
         scan_after = chunk[-1][0].standard_item_id
-        prices = operational_standard_prices(
+        states = operational_standard_price_states(
             session,
             (version.standard_item_id for version, _ in chunk),
         )
         for version, member_count in chunk:
-            price = prices.get(version.standard_item_id)
+            state = states[version.standard_item_id]
+            price = state.current_price
             if (
                 quality is EvidenceQuality.SINGLE_OBSERVATION
                 and (
@@ -230,7 +244,19 @@ def list_standard_explorer_items(
                 )
             ):
                 continue
-            page_candidates.append((version, price, member_count))
+            page_candidates.append(
+                (
+                    version,
+                    price,
+                    member_count,
+                    state.status,
+                    (
+                        None
+                        if state.captured_price is None
+                        else state.captured_price.id
+                    ),
+                )
+            )
             if len(page_candidates) == limit + 1:
                 break
         if len(chunk) < EXPLORER_SCAN_CHUNK_SIZE:
@@ -241,7 +267,9 @@ def list_standard_explorer_items(
     if not page:
         return [], None, latest_build_provenance(session)
 
-    price_ids = [price.id for _, price, _ in page if price is not None]
+    price_ids = [
+        price.id for _, price, _, _, _ in page if price is not None
+    ]
     suppliers: dict[int, set[str]] = defaultdict(set)
     makers: dict[int, set[str]] = defaultdict(set)
     dates: dict[int, list[tuple[date, QuoteDateQuality]]] = defaultdict(list)
@@ -302,6 +330,8 @@ def list_standard_explorer_items(
         StandardExplorerSummary(
             current_version=version,
             current_price=price,
+            captured_price_version_id=captured_price_version_id,
+            operational_status=operational_status,
             member_count=member_count,
             supplier_summary=(
                 () if price is None else tuple(sorted(suppliers[price.id]))
@@ -331,7 +361,13 @@ def list_standard_explorer_items(
             ),
             provenance=provenance,
         )
-        for version, price, member_count in page
+        for (
+            version,
+            price,
+            member_count,
+            operational_status,
+            captured_price_version_id,
+        ) in page
     ]
     next_cursor = (
         summaries[-1].current_version.standard_item_id if has_more else None
@@ -382,6 +418,22 @@ def _quote_date_quality(evidence_json: str | None) -> QuoteDateQuality:
     return QuoteDateQuality.CONFIRMED
 
 
+def _evidence_cells(
+    raw_cells: str | None,
+    reason_evidence_json: str | None,
+) -> str | None:
+    """Prefer a later, evidence-backed source range over the parser's old range."""
+    if not reason_evidence_json:
+        return raw_cells
+    try:
+        recovered_cells = json.loads(reason_evidence_json).get("cells")
+    except (json.JSONDecodeError, AttributeError):
+        return raw_cells
+    if isinstance(recovered_cells, str) and recovered_cells.strip():
+        return recovered_cells.strip()
+    return raw_cells
+
+
 def _latest_quote_date_quality(
     dates: list[tuple[date, QuoteDateQuality]],
 ) -> QuoteDateQuality:
@@ -422,6 +474,7 @@ def standard_item_evidence(
             CleanDecision.maker_norm,
             DocumentMetadataVersion.quote_date,
             DocumentMetadataVersion.evidence_json,
+            CleanDecision.reason_evidence_json,
             SourceDocument.id,
             SourceDocument.logical_name,
             SourceVariant.id,
@@ -475,14 +528,14 @@ def standard_item_evidence(
             quote_date_quality=(
                 None if row[4] is None else _quote_date_quality(row[5])
             ),
-            document_id=row[6],
-            logical_name=row[7],
-            variant_id=row[8],
-            path=row[9],
-            sheet=row[10],
-            page=row[11],
-            row=row[12],
-            cells=row[13],
+            document_id=row[7],
+            logical_name=row[8],
+            variant_id=row[9],
+            path=row[10],
+            sheet=row[11],
+            page=row[12],
+            row=row[13],
+            cells=_evidence_cells(row[14], row[6]),
         )
         for row in result
     ]

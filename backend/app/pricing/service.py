@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -26,6 +27,7 @@ from app.catalog.models import (
     StandardItem,
     StandardItemVersion,
     StandardPriceObservation,
+    StandardPriceObservationLineage,
     StandardPriceVersion,
 )
 from app.catalog.service import current_standard_item_version
@@ -40,7 +42,16 @@ from app.standard_database.models import (
 )
 
 
-CALCULATION_VERSION = "INTERNAL_STANDARD_PRICE_V1"
+CALCULATION_VERSION = "INTERNAL_STANDARD_PRICE_V4_LATEST_QUOTE_BUSINESS_SOURCE_DEDUP"
+_COMPATIBLE_PREVIOUS_CALCULATION_VERSIONS = frozenset(
+    {"INTERNAL_STANDARD_PRICE_V3_SEMANTIC_SOURCE_DEDUP"}
+)
+_EXPLICIT_REVISION_PATTERN = re.compile(
+    r"(?:^|[\s_.()\-])(?:rev(?:ision)?|ver(?:sion)?|개정|수정)"
+    r"[\s_.()\-]*(\d+(?:[._-]\d+)*)",
+    re.IGNORECASE,
+)
+_CONFIRMED_QUOTE_DATE_QUALITIES = frozenset({"SOURCE_CONFIRMED"})
 
 
 class PricingNotFound(LookupError):
@@ -95,6 +106,7 @@ class PriceObservationDraft:
     clean_decision: CleanDecision
     membership_decision: ItemMembershipDecision
     metadata_version: DocumentMetadataVersion | None
+    lineage_raw_item_ids: tuple[int, ...]
 
 
 ExclusionReason = Literal[
@@ -182,6 +194,8 @@ def _source(
         source_page=raw.source_page,
         source_row=raw.source_row,
     )
+
+
 def _same_unit(observation: str | None, canonical: str | None) -> bool:
     if canonical is None:
         return True
@@ -200,6 +214,278 @@ def _safe_positive_price(value: Decimal | None) -> bool:
         and value <= EXACT_DECIMAL_MAX
         and value.as_tuple().exponent >= -6
     )
+
+
+def _source_copy_key(
+    raw: RawQuoteItem,
+    clean: CleanDecision,
+    variant: SourceVariant,
+    document: SourceDocument,
+    metadata: DocumentMetadataVersion | None,
+    variant_signatures: dict[int, str],
+) -> tuple[object, ...]:
+    """Identify an exact business-source quote row across copied files.
+
+    A document's recorded source remains immutable even when it is an exact
+    copy.  A changed value remains part of an unrevisioned key; only an
+    explicit revision series may replace its predecessor's value.
+    """
+
+    semantic_identity = _semantic_source_identity(
+        variant,
+        document,
+        metadata,
+        variant_signatures,
+    )
+    row_identity: tuple[object, ...] = (
+        semantic_identity,
+        (raw.source_sheet or "").strip().casefold(),
+        raw.source_page,
+        raw.source_row,
+        (raw.source_cells or "").strip().casefold(),
+    )
+    # A confirmed revision means the business source itself has declared an
+    # ordered replacement series, so a changed value belongs to the same row
+    # lineage and is resolved by representative priority.  Without that
+    # declaration, value fields are deliberately part of the key: a changed
+    # value must remain an independent observation rather than an inferred
+    # revision.
+    if _explicit_revision(variant, document, metadata) is not None:
+        return (
+            _revision_series_identity(
+                variant,
+                document,
+                metadata,
+                variant_signatures,
+            ),
+            (raw.source_sheet or "").strip().casefold(),
+            raw.source_page,
+            raw.source_row,
+            (raw.source_cells or "").strip().casefold(),
+            normalize_search_text(clean.item_name_norm or raw.item_name_raw or ""),
+            normalize_search_text(clean.spec_norm or raw.spec_raw or ""),
+            normalize_search_text(clean.unit_norm or raw.unit_raw or ""),
+            normalize_search_text(clean.maker_norm or raw.maker_raw or ""),
+            "EXPLICIT_REVISION_SERIES",
+        )
+    return row_identity + (
+        normalize_search_text(clean.item_name_norm or raw.item_name_raw or ""),
+        normalize_search_text(clean.spec_norm or raw.spec_raw or ""),
+        normalize_search_text(clean.unit_norm or raw.unit_raw or ""),
+        str(clean.unit_price),
+        normalize_search_text(clean.maker_norm or raw.maker_raw or ""),
+    )
+
+
+def _metadata_evidence(metadata: DocumentMetadataVersion | None) -> dict:
+    if metadata is None:
+        return {}
+    try:
+        value = json.loads(metadata.evidence_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _revision_value(value: object) -> tuple[int, ...] | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    match = _EXPLICIT_REVISION_PATTERN.search(str(value))
+    if match is None:
+        return None
+    return tuple(int(part) for part in re.split(r"[._-]", match.group(1)))
+
+
+def _explicit_revision_value(value: object) -> tuple[int, ...] | None:
+    """Parse a revision field whose key already supplies the meaning."""
+
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return (value,)
+    if isinstance(value, float) and value.is_integer():
+        return (int(value),)
+    match = re.fullmatch(r"\s*(\d+(?:[._-]\d+)*)\s*", str(value))
+    if match is not None:
+        return tuple(int(part) for part in re.split(r"[._-]", match.group(1)))
+    return _revision_value(value)
+
+
+def _explicit_revision(
+    variant: SourceVariant,
+    document: SourceDocument,
+    metadata: DocumentMetadataVersion | None,
+) -> tuple[int, ...] | None:
+    evidence = _metadata_evidence(metadata)
+    for key in (
+        "revision",
+        "revision_number",
+        "quote_revision",
+        "document_revision",
+    ):
+        revision = _explicit_revision_value(evidence.get(key))
+        if revision is not None:
+            return revision
+    for value in (variant.path, document.logical_name):
+        revision = _revision_value(value)
+        if revision is not None:
+            return revision
+    return None
+
+
+def _revision_family(value: str) -> str:
+    return normalize_search_text(_EXPLICIT_REVISION_PATTERN.sub(" ", value))
+
+
+def _semantic_source_identity(
+    variant: SourceVariant,
+    document: SourceDocument,
+    metadata: DocumentMetadataVersion | None,
+    variant_signatures: dict[int, str],
+) -> tuple[object, ...]:
+    """Return the V3 semantic source identity used for duplicate grouping."""
+
+    supplier = normalize_search_text(
+        "" if metadata is None else metadata.supplier_name or ""
+    )
+    project = normalize_search_text(
+        "" if metadata is None else metadata.project_name or ""
+    )
+    if metadata is not None:
+        # This is the established semantic duplicate set: a reviewed metadata
+        # source (supplier, project, quote date) plus the parsed line identity.
+        # It deliberately does not split copies merely because their registry
+        # path or full parsed-document signature differs.
+        return ("METADATA_SOURCE", supplier, project, metadata.quote_date)
+    return (
+        "PARSED_DOCUMENT",
+        variant_signatures.get(variant.id, variant.sha256.casefold()),
+    )
+
+
+def _revision_series_identity(
+    variant: SourceVariant,
+    document: SourceDocument,
+    metadata: DocumentMetadataVersion | None,
+    variant_signatures: dict[int, str],
+) -> tuple[object, ...]:
+    """Identify a declared revision family without inferring one from value."""
+
+    supplier = normalize_search_text(
+        "" if metadata is None else metadata.supplier_name or ""
+    )
+    project = normalize_search_text(
+        "" if metadata is None else metadata.project_name or ""
+    )
+    family = _revision_family(document.logical_name or variant.path)
+    if supplier and project:
+        return ("BUSINESS_REVISION", supplier, project)
+    if family:
+        return ("EXPLICIT_REVISION_FAMILY", family)
+    return _semantic_source_identity(
+        variant,
+        document,
+        metadata,
+        variant_signatures,
+    )
+
+
+def _quote_date_rank(
+    metadata: DocumentMetadataVersion | None,
+) -> tuple[int, int]:
+    """Prefer a latest date only when it is source-confirmed."""
+
+    if metadata is None or metadata.quote_date is None:
+        return (0, 0)
+    evidence = _metadata_evidence(metadata)
+    quote_date = evidence.get("quote_date")
+    quality = quote_date.get("quality") if isinstance(quote_date, dict) else None
+    confirmed = quality in _CONFIRMED_QUOTE_DATE_QUALITIES
+    return (int(confirmed), metadata.quote_date.toordinal())
+
+
+def _variant_quality_rank(variant: SourceVariant) -> tuple[int, int]:
+    state = variant.security_state.strip().upper()
+    security_rank = {
+        "UNLOCKED": 3,
+        "OPEN": 2,
+        "UNKNOWN": 1,
+    }.get(state, 0)
+    return (security_rank, int(variant.selected_for_parsing_at_ingest))
+
+
+def _representative_priority(
+    row: tuple[
+        RawQuoteItem,
+        CleanDecision,
+        ItemMembershipDecision,
+        SourceVariant,
+        SourceDocument,
+        DocumentMetadataVersion | None,
+    ],
+) -> tuple[object, ...]:
+    raw, _, _, variant, document, metadata = row
+    revision = _explicit_revision(variant, document, metadata) or ()
+    registered_at = variant.registered_at
+    return (
+        _quote_date_rank(metadata),
+        (int(bool(revision)), revision),
+        _variant_quality_rank(variant),
+        registered_at,
+        variant.id,
+        document.id,
+        raw.id,
+    )
+
+
+def _parsed_variant_signatures(
+    session: Session,
+    variant_ids: Iterable[int],
+) -> dict[int, str]:
+    """Hash parsed quote content, excluding registry paths and file metadata."""
+
+    ids = tuple(dict.fromkeys(variant_ids))
+    if not ids:
+        return {}
+    columns = (
+        RawQuoteItem.source_sheet,
+        RawQuoteItem.source_page,
+        RawQuoteItem.source_row,
+        RawQuoteItem.source_cells,
+        RawQuoteItem.item_name_raw,
+        RawQuoteItem.spec_raw,
+        RawQuoteItem.unit_raw,
+        RawQuoteItem.quantity_raw,
+        RawQuoteItem.unit_price_raw,
+        RawQuoteItem.amount_raw,
+        RawQuoteItem.maker_raw,
+    )
+    digests = {variant_id: hashlib.sha256() for variant_id in ids}
+    statement = (
+        select(RawQuoteItem.source_variant_id, *columns)
+        .where(RawQuoteItem.source_variant_id.in_(ids))
+        .order_by(
+            RawQuoteItem.source_variant_id,
+            RawQuoteItem.source_sheet,
+            RawQuoteItem.source_page,
+            RawQuoteItem.source_row,
+            RawQuoteItem.source_cells,
+            RawQuoteItem.id,
+        )
+    )
+    for row in session.execute(statement):
+        variant_id = row[0]
+        payload = json.dumps(
+            list(row[1:]),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digests[variant_id].update(payload)
+        digests[variant_id].update(b"\n")
+    return {
+        variant_id: digest.hexdigest()
+        for variant_id, digest in digests.items()
+    }
 
 
 def _statistics(prices: list[Decimal]) -> PriceStatistics:
@@ -224,12 +510,27 @@ def _fingerprint(
     item_version_id: int,
     observations: list[PriceObservationDraft],
     exclusions: list[PriceExclusion],
+    *,
+    calculation_version: str = CALCULATION_VERSION,
+    include_lineage: bool = True,
 ) -> str:
     payload = {
-        "calculation_version": CALCULATION_VERSION,
+        "calculation_version": calculation_version,
         "standard_item_version_id": item_version_id,
         "evidence": sorted(
             (
+                row.raw_item_id,
+                row.clean_decision_id,
+                row.membership_decision_id,
+                row.metadata_version_id,
+                (
+                    row.lineage_raw_item_ids
+                    if include_lineage
+                    else ()
+                ),
+            )
+            if include_lineage
+            else (
                 row.raw_item_id,
                 row.clean_decision_id,
                 row.membership_decision_id,
@@ -251,6 +552,73 @@ def _fingerprint(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _captured_price_scalars_match_draft(
+    version: StandardPriceVersion,
+    draft: StandardPriceDraft,
+) -> bool:
+    """Compare a captured version with the draft at storage precision."""
+
+    return (
+        version.standard_item_version_id == draft.standard_item_version_id
+        and version.observation_count == draft.observation_count
+        and version.supplier_count == draft.supplier_count
+        and version.latest_quote_date == draft.latest_quote_date
+        and version.minimum_price
+        == draft.prices.minimum.quantize(
+            EXACT_DECIMAL_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        and version.median_price
+        == draft.prices.median.quantize(
+            EXACT_DECIMAL_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        and version.average_price
+        == draft.prices.average.quantize(
+            EXACT_DECIMAL_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        and version.maximum_price
+        == draft.prices.maximum.quantize(
+            EXACT_DECIMAL_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+
+def price_version_matches_draft(
+    version: StandardPriceVersion,
+    draft: StandardPriceDraft,
+) -> bool:
+    """Accept an unchanged V3 capture while V4 only changes copied sources.
+
+    V4 adds deterministic representative lineage.  A full version rewrite for
+    every unaffected item would create thousands of duplicate immutable price
+    records, so a V3 capture remains active only when its original V3 draft
+    hash exactly matches the current evidence without a copy-lineage change.
+    """
+
+    # The evidence fingerprint is intentionally compact and does not encode
+    # calculated statistics.  Always check the persisted scalar snapshot
+    # first, including ExactDecimal's six-place storage precision, so a stale
+    # price can never remain operational solely because raw evidence ids are
+    # unchanged.
+    if not _captured_price_scalars_match_draft(version, draft):
+        return False
+    if version.draft_fingerprint == draft.fingerprint:
+        return True
+    if version.calculation_version not in _COMPATIBLE_PREVIOUS_CALCULATION_VERSIONS:
+        return False
+    legacy_fingerprint = _fingerprint(
+        draft.standard_item_version_id,
+        list(draft.observations),
+        list(draft.exclusions),
+        calculation_version=version.calculation_version,
+        include_lineage=False,
+    )
+    return version.draft_fingerprint == legacy_fingerprint
 
 
 def _current_evidence_rows(
@@ -388,10 +756,25 @@ def _draft_from_evidence_rows(
             DocumentMetadataVersion | None,
         ]
     ],
+    *,
+    variant_signatures: dict[int, str],
 ) -> StandardPriceDraft:
     standard_item_id = item_version.standard_item_id
     observations: list[PriceObservationDraft] = []
     exclusions: list[PriceExclusion] = []
+    eligible_by_source_key: dict[
+        tuple[object, ...],
+        list[
+            tuple[
+                RawQuoteItem,
+                CleanDecision,
+                ItemMembershipDecision,
+                SourceVariant,
+                SourceDocument,
+                DocumentMetadataVersion | None,
+            ]
+        ],
+    ] = {}
     counts: dict[str, int] = {
         "EXCLUDED": 0,
         "REVIEW_REQUIRED": 0,
@@ -447,8 +830,27 @@ def _draft_from_evidence_rows(
                 )
             )
             continue
-        assert clean is not None and clean.unit_price is not None
+        assert clean is not None
         assert membership is not None
+        source_copy_key = _source_copy_key(
+            raw,
+            clean,
+            variant,
+            document,
+            metadata,
+            variant_signatures,
+        )
+        eligible_by_source_key.setdefault(source_copy_key, []).append(
+            (raw, clean, membership, variant, document, metadata)
+        )
+
+    for source_copy_key in sorted(eligible_by_source_key, key=repr):
+        candidates = eligible_by_source_key[source_copy_key]
+        raw, clean, membership, variant, document, metadata = max(
+            candidates,
+            key=_representative_priority,
+        )
+        assert clean.unit_price is not None
         observations.append(
             PriceObservationDraft(
                 raw_item_id=raw.id,
@@ -466,8 +868,12 @@ def _draft_from_evidence_rows(
                 clean_decision=clean,
                 membership_decision=membership,
                 metadata_version=metadata,
+                lineage_raw_item_ids=tuple(
+                    sorted(candidate[0].id for candidate in candidates)
+                ),
             )
         )
+    observations.sort(key=lambda row: row.raw_item_id)
     if not observations:
         raise NoEligiblePriceObservations(
             "standard item has no eligible positive price observations "
@@ -520,12 +926,17 @@ def _calculate_standard_price(
     """Calculate a deterministic draft without adding or changing rows."""
 
     item_version = _current_item_version(session, standard_item_id)
+    evidence_rows = _current_evidence_rows(
+        session,
+        standard_item_id,
+        raw_item_ids=raw_item_ids,
+    )
     return _draft_from_evidence_rows(
         item_version,
-        _current_evidence_rows(
+        evidence_rows,
+        variant_signatures=_parsed_variant_signatures(
             session,
-            standard_item_id,
-            raw_item_ids=raw_item_ids,
+            (row[3].id for row in evidence_rows),
         ),
     )
 
@@ -599,9 +1010,21 @@ def calculate_standard_prices(
         )
     }
     drafts: dict[int, StandardPriceDraft] = {}
+    variant_signature_cache: dict[int, str] = {}
     for offset in range(0, len(item_ids), chunk_size):
         chunk = item_ids[offset : offset + chunk_size]
         evidence = _current_evidence_rows_for_items(session, chunk)
+        evidence_variant_ids = {
+            row[3].id
+            for rows in evidence.values()
+            for row in rows
+        }
+        variant_signature_cache.update(
+            _parsed_variant_signatures(
+                session,
+                evidence_variant_ids - variant_signature_cache.keys(),
+            )
+        )
         for item_id in chunk:
             version = versions.get(item_id)
             if version is None:
@@ -610,6 +1033,7 @@ def calculate_standard_prices(
                 drafts[item_id] = _draft_from_evidence_rows(
                     version,
                     evidence.get(item_id, []),
+                    variant_signatures=variant_signature_cache,
                 )
             except NoEligiblePriceObservations:
                 continue
@@ -900,6 +1324,12 @@ def approve_standard_price(
             clean_decision=row.clean_decision,
             membership_decision=row.membership_decision,
             metadata_version=row.metadata_version,
+            lineage=[
+                StandardPriceObservationLineage(
+                    raw_item_id=raw_item_id,
+                )
+                for raw_item_id in row.lineage_raw_item_ids
+            ],
         )
         for row in draft.observations
     ]

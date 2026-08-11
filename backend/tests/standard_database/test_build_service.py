@@ -137,7 +137,10 @@ def test_build_groups_equal_historical_rows_and_captures_sources(
     session: Session,
 ) -> None:
     assert NORMALIZATION_VERSION == "match-v2"
-    assert RULE_VERSION == "STANDARD_DB_EXACT_V2"
+    assert (
+        RULE_VERSION
+        == "STANDARD_DB_EXACT_V6_LATEST_QUOTE_BUSINESS_SOURCE_DEDUP"
+    )
     variant = _source(
         session,
         name="quotes/bearings.xlsx",
@@ -859,19 +862,23 @@ def test_success_unique_race_rolls_back_savepoint_without_breaking_session(
             injected = True
             session.connection().exec_driver_sql(
                 """
-                INSERT INTO standard_database_build_run (
-                    input_fingerprint,
-                    rule_version,
+                    INSERT INTO standard_database_build_run (
+                        input_fingerprint,
+                        calculation_fingerprint,
+                        code_fingerprint,
+                        rule_version,
                     status,
                     counts_json,
                     started_at,
                     finished_at
-                ) VALUES (?, ?, 'SUCCEEDED', '{}', CURRENT_TIMESTAMP,
-                          CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, 'SUCCEEDED', '{}', CURRENT_TIMESTAMP,
+                              CURRENT_TIMESTAMP)
                 """,
                 (
-                    completing_run.input_fingerprint,
-                    completing_run.rule_version,
+                        completing_run.input_fingerprint,
+                        completing_run.calculation_fingerprint,
+                        completing_run.code_fingerprint,
+                        completing_run.rule_version,
                 ),
             )
         original_flush(*args, **kwargs)

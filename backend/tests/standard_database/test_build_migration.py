@@ -119,7 +119,7 @@ def test_0008_creates_only_standard_database_build_tables(
     environment = os.environ.copy()
     environment["DATABASE_FILE"] = str(database_path)
 
-    upgrade = _alembic(backend_path, environment, "upgrade", "head")
+    upgrade = _alembic(backend_path, environment, "upgrade", "0008")
     assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
@@ -239,6 +239,10 @@ def test_0008_creates_only_standard_database_build_tables(
                 ("a" * 64,),
             )
 
+    upgrade_head = _alembic(backend_path, environment, "upgrade", "head")
+    assert upgrade_head.returncode == 0, (
+        upgrade_head.stdout + upgrade_head.stderr
+    )
     check = _alembic(backend_path, environment, "check")
     assert check.returncode == 0, check.stdout + check.stderr
 

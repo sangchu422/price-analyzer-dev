@@ -32,12 +32,13 @@ from app.standard_database.models import (
 )
 
 
-AUDIT_RULE_VERSION = "document-metadata-v3"
+AUDIT_RULE_VERSION = "document-metadata-v4"
 AUTOMATED_METADATA_ACTORS = {
     "metadata-audit-v1",
     "metadata-audit-v2",
     "team-standard-date-backfill-v1",
     "metadata-audit-v3",
+    "metadata-audit-v4",
 }
 SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".pdf"}
 PLACEHOLDER_VALUES = {
@@ -134,6 +135,13 @@ NON_QUOTE_DATE_LABEL = re.compile(
 )
 QUOTE_TITLE = re.compile(
     r"(?i)(견\s*적\s*서|見\s*積\s*書|quotation|\bquote\b)"
+)
+COMPANY_NAME_MARKER = re.compile(
+    r"(?i)(?:주식회사|유한회사|㈜|\(\s*주\s*\)|（\s*주\s*）|"
+    r"\bco\.?\s*,?\s*ltd\.?\b|\bcorporation\b|\bcorp\.?\b)"
+)
+NON_SUPPLIER_HEADER_TEXT = re.compile(
+    r"(?i)(?:주소|대표|담당|전화|연락처|fax|견적일|견적번호|현대|기아|貴下)"
 )
 
 
@@ -477,7 +485,17 @@ def _xls_candidates(path: Path) -> tuple[list[ExtractedCandidate], bool]:
     try:
         for sheet in workbook.sheets()[:20]:
             rows = [
-                [sheet.cell_value(row, col) for col in range(min(sheet.ncols, 32))]
+                [
+                    (
+                        xlrd.xldate_as_datetime(
+                            sheet.cell_value(row, col),
+                            workbook.datemode,
+                        )
+                        if sheet.cell_type(row, col) == xlrd.XL_CELL_DATE
+                        else sheet.cell_value(row, col)
+                    )
+                    for col in range(min(sheet.ncols, 32))
+                ]
                 for row in range(min(sheet.nrows, 120))
             ]
             has_text = has_text or any(
@@ -554,6 +572,21 @@ def _grid_candidates(
             if raw_value is None:
                 continue
             text = str(raw_value).strip()
+            if row_index <= 15:
+                supplier = _quote_header_supplier(text)
+                if supplier is not None:
+                    candidates.append(
+                        ExtractedCandidate(
+                            field_name="supplier_name",
+                            value_text=supplier,
+                            source_kind="QUOTE_HEADER_COMPANY_NAME",
+                            confidence=94,
+                            sheet=sheet,
+                            cells=(
+                                f"{get_column_letter(col_index)}{row_index}"
+                            ),
+                        )
+                    )
             if isinstance(raw_value, (date, datetime)):
                 typed_date = (
                     raw_value.date()
@@ -607,6 +640,19 @@ def _grid_candidates(
                 )
             )
     return candidates
+
+
+def _quote_header_supplier(value: str) -> str | None:
+    """Accept an unlabeled legal company name in a quote cover header."""
+
+    cleaned = " ".join(value.split()).strip(" :：")
+    if not 2 <= len(cleaned) <= 100:
+        return None
+    if NON_SUPPLIER_HEADER_TEXT.search(cleaned):
+        return None
+    if COMPANY_NAME_MARKER.search(cleaned) is None:
+        return None
+    return _clean_candidate("supplier_name", cleaned)
 
 
 def _date_text_candidates(
@@ -1003,7 +1049,7 @@ def _append_auto_metadata(
             source_document_id=variant.document_id,
             version_number=1 if current is None else current.version_number + 1,
             **values,
-            decided_by="metadata-audit-v3",
+            decided_by="metadata-audit-v4",
             reason_detail="원본 견적서 본문·머리말에서 자동 확인",
             evidence_json=_json(evidence),
         )

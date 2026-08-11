@@ -30,19 +30,56 @@ from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
 
 
-KOSIS_ORG_ID = "301"
-KOSIS_TABLE_ID = "DT_404Y014"
-KOSIS_ITEM_ID = "13103134604999"
-KOSIS_CLASSIFIER_CODE = "13102134604ACC_CD.*AA"
-KOSIS_UNIT = "2020=100"
-KOSIS_SERIES_URL = (
+PPI_SERIES_KIND = "PPI_ALL"
+CPI_SERIES_KIND = "CPI_ALL"
+
+PPI_KOSIS_ORG_ID = "301"
+PPI_KOSIS_TABLE_ID = "DT_404Y014"
+PPI_KOSIS_ITEM_ID = "13103134604999"
+PPI_KOSIS_CLASSIFIER_CODE = "13102134604ACC_CD.*AA"
+PPI_KOSIS_UNIT = "2020=100"
+PPI_KOSIS_SERIES_URL = (
     "https://kosis.kr/statHtml/statHtml.do?orgId=301&tblId=DT_404Y014"
 )
+
+# Compatibility aliases for the read-only legacy PPI API and its stored runs.
+KOSIS_ORG_ID = PPI_KOSIS_ORG_ID
+KOSIS_TABLE_ID = PPI_KOSIS_TABLE_ID
+KOSIS_ITEM_ID = PPI_KOSIS_ITEM_ID
+KOSIS_CLASSIFIER_CODE = PPI_KOSIS_CLASSIFIER_CODE
+KOSIS_UNIT = PPI_KOSIS_UNIT
+KOSIS_SERIES_URL = PPI_KOSIS_SERIES_URL
+
+CPI_KOSIS_ORG_ID = "101"
+CPI_KOSIS_TABLE_ID = "DT_1J22041"
+CPI_KOSIS_ITEM_ID = "T"
+CPI_KOSIS_CLASSIFIER_CODE = "0"
+CPI_KOSIS_UNIT = "%"
+CPI_KOSIS_SERIES_URL = (
+    "https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_1J22041"
+)
+
 MONEY_QUANTUM = Decimal("0.000001")
+KRW_QUANTUM = Decimal("1")
 
 
 class InflationSeriesUnavailable(RuntimeError):
-    """No valid locally cached PPI series can support target calculation."""
+    """No valid locally cached inflation series can support a calculation."""
+
+
+@dataclass(frozen=True)
+class AnnualRateResult:
+    year: str
+    rate: Decimal
+
+
+@dataclass(frozen=True)
+class CpiInflationEvidenceResult:
+    sync_run_id: int
+    latest_confirmed_year: str
+    annual_rates: tuple[AnnualRateResult, ...]
+    factor: Decimal
+    cumulative_percent: Decimal
 
 
 @dataclass(frozen=True)
@@ -62,6 +99,7 @@ class TargetEvidenceResult:
     source_index_value: Decimal
     target_index_value: Decimal
     adjusted_unit_price: Decimal
+    inflation: CpiInflationEvidenceResult | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +120,8 @@ class TargetLineResult:
 class AnalysisRunResult:
     run_id: int
     analysis: DocumentAnalysis
+    inflation_sync_run_id: int | None
+    inflation_series_kind: str | None
     target_period: str | None
     target_index_value: Decimal | None
     inflation_source_url: str
@@ -142,6 +182,7 @@ def sync_ppi_series(session: Session, settings: Settings) -> InflationSyncRun:
         except ValueError:
             pass
     run = InflationSyncRun(
+        series_kind=PPI_SERIES_KIND,
         provider="KOSIS",
         org_id=KOSIS_ORG_ID,
         table_id=KOSIS_TABLE_ID,
@@ -168,10 +209,114 @@ def sync_ppi_series(session: Session, settings: Settings) -> InflationSyncRun:
 def latest_ppi_series(
     session: Session,
 ) -> tuple[InflationSyncRun | None, dict[str, Decimal]]:
-    run = session.scalar(select(InflationSyncRun).order_by(InflationSyncRun.id.desc()).limit(1))
+    return _latest_series(session, PPI_SERIES_KIND)
+
+
+def sync_cpi_series(session: Session, settings: Settings) -> InflationSyncRun:
+    """Fetch KOSIS annual all-items CPI change rates and append a snapshot."""
+
+    now = datetime.now()
+    params = {
+        "method": "getList",
+        "format": "json",
+        "jsonVD": "Y",
+        "orgId": CPI_KOSIS_ORG_ID,
+        "tblId": CPI_KOSIS_TABLE_ID,
+        "itmId": CPI_KOSIS_ITEM_ID,
+        "prdSe": "Y",
+        "startPrdDe": settings.kosis_cpi_start_period,
+        "endPrdDe": f"{now.year:04d}",
+        "objL1": CPI_KOSIS_CLASSIFIER_CODE,
+    }
+    endpoint = f"{settings.kosis_proxy_base_url.rstrip('/')}/v1/kosis/data"
+    try:
+        response = httpx.get(
+            endpoint,
+            params=params,
+            timeout=settings.kosis_request_timeout_seconds,
+            headers={"User-Agent": "price-analyzer/cpi-sync"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise InflationSeriesUnavailable(
+            "KOSIS 소비자물가 연간 등락률을 갱신하지 못했습니다. "
+            "기존 저장 자료는 변경되지 않았습니다."
+        ) from exc
+    rates = _validated_cpi_kosis_rates(payload)
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    existing = session.scalar(
+        select(InflationSyncRun).where(InflationSyncRun.response_sha256 == fingerprint)
+    )
+    if existing is not None:
+        return existing
+    run = InflationSyncRun(
+        series_kind=CPI_SERIES_KIND,
+        provider="KOSIS",
+        org_id=CPI_KOSIS_ORG_ID,
+        table_id=CPI_KOSIS_TABLE_ID,
+        item_id=CPI_KOSIS_ITEM_ID,
+        classifier_code=CPI_KOSIS_CLASSIFIER_CODE,
+        period_type="Y",
+        unit=CPI_KOSIS_UNIT,
+        source_url=CPI_KOSIS_SERIES_URL,
+        source_last_changed=_source_last_changed(payload),
+        response_sha256=fingerprint,
+        row_count=len(rates),
+        latest_period=max(rates),
+    )
+    session.add(run)
+    session.flush()
+    session.add_all(
+        InflationIndexPoint(sync_run_id=run.id, period=year, index_value=rate)
+        for year, rate in sorted(rates.items())
+    )
+    session.flush()
+    return run
+
+
+def latest_cpi_series(
+    session: Session,
+) -> tuple[InflationSyncRun | None, dict[str, Decimal]]:
+    return _latest_series(session, CPI_SERIES_KIND)
+
+
+def cpi_series_for_sync_run(
+    session: Session,
+    sync_run_id: int | None,
+) -> tuple[InflationSyncRun | None, dict[str, Decimal]]:
+    if sync_run_id is None:
+        return None, {}
+    run = session.get(InflationSyncRun, sync_run_id)
+    if run is None or run.series_kind != CPI_SERIES_KIND:
+        return None, {}
+    return run, _series_points(session, run)
+
+
+def _latest_series(
+    session: Session,
+    series_kind: str,
+) -> tuple[InflationSyncRun | None, dict[str, Decimal]]:
+    run = session.scalar(
+        select(InflationSyncRun)
+        .where(InflationSyncRun.series_kind == series_kind)
+        .order_by(
+            InflationSyncRun.fetched_at.desc(),
+            InflationSyncRun.id.desc(),
+        )
+        .limit(1)
+    )
     if run is None:
         return None, {}
-    points = {
+    return run, _series_points(session, run)
+
+
+def _series_points(
+    session: Session,
+    run: InflationSyncRun,
+) -> dict[str, Decimal]:
+    return {
         row.period: row.index_value
         for row in session.scalars(
             select(InflationIndexPoint)
@@ -179,7 +324,6 @@ def latest_ppi_series(
             .order_by(InflationIndexPoint.period)
         )
     }
-    return run, points
 
 
 def create_analysis_run(
@@ -201,9 +345,11 @@ def create_analysis_run(
         high_percent=high_percent,
         embedding_runtime=embedding_runtime,
     )
-    sync_run, points = latest_ppi_series(session)
+    # New analysis runs are CPI-only.  Legacy PPI snapshots remain readable
+    # through their existing run records and API, but must never become a
+    # fallback for a newly created purchase target.
+    sync_run, annual_rates = latest_cpi_series(session)
     target_period = None if sync_run is None else sync_run.latest_period
-    target_index = None if target_period is None else points.get(target_period)
     observations = _load_target_observations(
         session,
         {
@@ -213,7 +359,13 @@ def create_analysis_run(
         },
     )
     target_lines = tuple(
-        _target_line(line, observations.get(line.standard_price_version_id, ()), points, target_period, target_index)
+        _target_line_from_cpi(
+            line,
+            observations.get(line.standard_price_version_id, ()),
+            annual_rates,
+            target_period,
+            None if sync_run is None else sync_run.id,
+        )
         for line in analysis.lines
     )
     quote_amounts = [line.quote_amount for line in analysis.lines if line.quote_amount is not None]
@@ -228,7 +380,7 @@ def create_analysis_run(
         high_percent=high_percent,
         inflation_sync_run_id=None if sync_run is None else sync_run.id,
         target_period=target_period,
-        target_index_value=target_index,
+        target_index_value=None,
         total_line_count=len(analysis.lines),
         target_available_count=available,
         target_unavailable_count=len(target_lines) - available,
@@ -259,16 +411,21 @@ def create_analysis_run(
         session.add(stored_line)
         session.flush()
         session.add_all(
-            QuoteAnalysisTargetEvidence(line_result_id=stored_line.id, **evidence.__dict__)
+            QuoteAnalysisTargetEvidence(
+                line_result_id=stored_line.id,
+                **_stored_target_evidence_fields(evidence),
+            )
             for evidence in target.evidence
         )
     session.flush()
     return AnalysisRunResult(
         run_id=run.id,
         analysis=analysis,
+        inflation_sync_run_id=None if sync_run is None else sync_run.id,
+        inflation_series_kind=None if sync_run is None else sync_run.series_kind,
         target_period=target_period,
-        target_index_value=target_index,
-        inflation_source_url=KOSIS_SERIES_URL,
+        target_index_value=None,
+        inflation_source_url=CPI_KOSIS_SERIES_URL,
         inflation_source_last_changed=None if sync_run is None else sync_run.source_last_changed,
         quote_total_amount=quote_total,
         target_total_amount=target_total,
@@ -334,6 +491,140 @@ def _validated_kosis_points(payload: object) -> dict[str, Decimal]:
     if not points:
         raise InflationSeriesUnavailable("KOSIS 응답에 유효한 생산자물가지수가 없습니다.")
     return points
+
+
+def _validated_cpi_kosis_rates(payload: object) -> dict[str, Decimal]:
+    """Accept only KOSIS' annual all-items CPI change-rate series."""
+
+    if not isinstance(payload, list):
+        raise InflationSeriesUnavailable("KOSIS 소비자물가 응답 형식이 올바르지 않습니다.")
+    rates: dict[str, Decimal] = {}
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        if (
+            str(row.get("ORG_ID")) != CPI_KOSIS_ORG_ID
+            or str(row.get("TBL_ID")) != CPI_KOSIS_TABLE_ID
+            or str(row.get("ITM_ID")) != CPI_KOSIS_ITEM_ID
+            or str(row.get("C1")) != CPI_KOSIS_CLASSIFIER_CODE
+            # KOSIS accepts `Y` in the request but returns `A` for annual
+            # observations.  Keep `Y` for fixture/backward compatibility.
+            or str(row.get("PRD_SE")) not in {"A", "Y"}
+        ):
+            continue
+        year = str(row.get("PRD_DE", ""))
+        try:
+            rate = Decimal(str(row.get("DT"))).quantize(MONEY_QUANTUM)
+        except Exception:
+            continue
+        if (
+            len(year) == 4
+            and year.isdigit()
+            and rate.is_finite()
+            and rate > Decimal("-100")
+        ):
+            rates[year] = rate
+    if not rates:
+        raise InflationSeriesUnavailable(
+            "KOSIS 응답에 유효한 연간 총지수 등락률이 없습니다."
+        )
+    return rates
+
+
+def _source_last_changed(payload: object) -> date | None:
+    if not isinstance(payload, list):
+        return None
+    changed_values: list[date] = []
+    for row in payload:
+        if not isinstance(row, dict) or not row.get("LST_CHN_DE"):
+            continue
+        try:
+            changed_values.append(date.fromisoformat(str(row["LST_CHN_DE"])))
+        except ValueError:
+            continue
+    return max(changed_values) if changed_values else None
+
+
+def cpi_series_evidence(
+    sync_run: InflationSyncRun | None,
+    annual_rates: dict[str, Decimal],
+) -> CpiInflationEvidenceResult | None:
+    """Summarize the cached annual series from its first rate through latest."""
+
+    if sync_run is None or not annual_rates:
+        return None
+    first_rate_year = min(annual_rates)
+    return cpi_evidence_for_quote_year(
+        sync_run.id,
+        int(first_rate_year) - 1,
+        annual_rates,
+        sync_run.latest_period,
+    )
+
+
+def cpi_evidence_for_quote_year(
+    sync_run_id: int,
+    quote_year: int,
+    annual_rates: dict[str, Decimal],
+    latest_confirmed_year: str,
+) -> CpiInflationEvidenceResult | None:
+    """Return the exact CPI compounding inputs for one historic quote year."""
+
+    inputs = _cpi_compounding_inputs(
+        quote_year,
+        annual_rates,
+        latest_confirmed_year,
+    )
+    if inputs is None:
+        return None
+    applied_rates, factor = inputs
+    return _cpi_evidence_from_compounding(
+        sync_run_id,
+        latest_confirmed_year,
+        applied_rates,
+        factor,
+    )
+
+
+def _cpi_compounding_inputs(
+    quote_year: int,
+    annual_rates: dict[str, Decimal],
+    latest_confirmed_year: str,
+) -> tuple[tuple[AnnualRateResult, ...], Decimal] | None:
+    if (
+        len(latest_confirmed_year) != 4
+        or not latest_confirmed_year.isdigit()
+        or quote_year > int(latest_confirmed_year)
+    ):
+        return None
+    factor = Decimal("1")
+    applied_rates: list[AnnualRateResult] = []
+    for year_number in range(quote_year + 1, int(latest_confirmed_year) + 1):
+        year = str(year_number)
+        rate = annual_rates.get(year)
+        if rate is None or not rate.is_finite() or rate <= Decimal("-100"):
+            return None
+        factor *= Decimal("1") + (rate / Decimal("100"))
+        applied_rates.append(AnnualRateResult(year=year, rate=rate))
+    return tuple(applied_rates), factor
+
+
+def _cpi_evidence_from_compounding(
+    sync_run_id: int,
+    latest_confirmed_year: str,
+    applied_rates: tuple[AnnualRateResult, ...],
+    factor: Decimal,
+) -> CpiInflationEvidenceResult:
+    return CpiInflationEvidenceResult(
+        sync_run_id=sync_run_id,
+        latest_confirmed_year=latest_confirmed_year,
+        annual_rates=applied_rates,
+        factor=factor.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
+        cumulative_percent=((factor - Decimal("1")) * Decimal("100")).quantize(
+            MONEY_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        ),
+    )
 
 
 def _load_target_observations(session: Session, price_ids: set[int]) -> dict[int, tuple[tuple, ...]]:
@@ -406,6 +697,203 @@ def _target_line(
     if len(evidence) == 1:
         reason += " 근거가 1건이므로 신뢰도가 낮습니다."
     return TargetLineResult(line.raw_item_id, "AVAILABLE", target_unit, target_amount, variance_amount, variance_percent, len(evidence), excluded, reason, tuple(evidence))
+
+
+def _target_line_from_cpi(
+    line: AnalysisLine,
+    rows: tuple[tuple, ...],
+    annual_rates: dict[str, Decimal],
+    latest_confirmed_year: str | None,
+    sync_run_id: int | None,
+) -> TargetLineResult:
+    """Create a CPI-backed target without consulting the legacy PPI series."""
+
+    if line.match_status != "MATCHED" or line.standard_price_version_id is None:
+        status = (
+            "MARKET_REFERENCE_REQUIRED"
+            if line.market_price_lookup_required
+            else "NOT_APPLICABLE"
+        )
+        reason = (
+            "표준 DB에 기준 가격이 없어 시장가를 확인한 뒤 구매 목표가를 검토해야 합니다."
+            if status == "MARKET_REFERENCE_REQUIRED"
+            else "구매 목표가 산정 대상이 아닙니다."
+        )
+        return TargetLineResult(
+            line.raw_item_id,
+            status,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            reason,
+            (),
+        )
+    if latest_confirmed_year is None or sync_run_id is None:
+        return TargetLineResult(
+            line.raw_item_id,
+            "INDEX_UNAVAILABLE",
+            None,
+            None,
+            None,
+            None,
+            0,
+            len(rows),
+            "저장된 확정 소비자물가 연간 자료가 없어 목표가를 계산할 수 없습니다.",
+            (),
+        )
+
+    evidence: list[TargetEvidenceResult] = []
+    rate_gap_count = 0
+    target_year = int(latest_confirmed_year)
+    for row in rows:
+        (
+            raw_id,
+            metadata_id,
+            unit_price,
+            quote_date,
+            evidence_json,
+            document_id,
+            logical_name,
+            variant_id,
+            sheet,
+            page,
+            source_row,
+            cells,
+        ) = row
+        if (
+            metadata_id is None
+            or unit_price is None
+            or quote_date is None
+            or not _is_source_confirmed(evidence_json)
+            or quote_date.year > target_year
+        ):
+            continue
+        inputs = _cpi_compounding_inputs(
+            quote_date.year,
+            annual_rates,
+            latest_confirmed_year,
+        )
+        if inputs is None:
+            rate_gap_count += 1
+            continue
+        applied_rates, exact_factor = inputs
+        inflation = _cpi_evidence_from_compounding(
+            sync_run_id,
+            latest_confirmed_year,
+            applied_rates,
+            exact_factor,
+        )
+        adjusted = (unit_price * exact_factor).quantize(
+            KRW_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        evidence.append(
+            TargetEvidenceResult(
+                raw_item_id=raw_id,
+                metadata_version_id=metadata_id,
+                source_document_id=document_id,
+                source_variant_id=variant_id,
+                source_logical_name=logical_name,
+                source_sheet=sheet,
+                source_page=page,
+                source_row=source_row,
+                source_cells=cells,
+                quote_date=quote_date,
+                source_period=str(quote_date.year),
+                original_unit_price=unit_price,
+                # These retained columns encode the baseline and final factor
+                # for persistence compatibility with legacy PPI evidence.
+                source_index_value=Decimal("1"),
+                target_index_value=inflation.factor,
+                adjusted_unit_price=adjusted,
+                inflation=inflation,
+            )
+        )
+
+    excluded = len(rows) - len(evidence)
+    if not evidence:
+        if rate_gap_count:
+            return TargetLineResult(
+                line.raw_item_id,
+                "RATE_GAP",
+                None,
+                None,
+                None,
+                None,
+                0,
+                excluded,
+                "필요한 연도의 소비자물가 등락률이 일부 누락되어 목표가를 계산할 수 없습니다.",
+                (),
+            )
+        return TargetLineResult(
+            line.raw_item_id,
+            "DATE_UNAVAILABLE",
+            None,
+            None,
+            None,
+            None,
+            0,
+            excluded,
+            "원본 본문·머리말에서 확인된 과거 견적일이 없어 목표가를 계산할 수 없습니다.",
+            (),
+        )
+
+    target_unit = Decimal(str(median([item.adjusted_unit_price for item in evidence]))).quantize(
+        KRW_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
+    target_amount = (
+        None
+        if line.quantity is None
+        else (target_unit * line.quantity).quantize(
+            KRW_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+    )
+    variance_amount = None
+    variance_percent = None
+    if line.quote_unit_price is not None:
+        variance_amount = (line.quote_unit_price - target_unit).quantize(
+            KRW_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        if target_unit != 0:
+            variance_percent = (
+                variance_amount / target_unit * Decimal("100")
+            ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+    reason = (
+        f"원본 날짜가 확인된 과거 단가 {len(evidence)}건에 "
+        f"{latest_confirmed_year}년까지의 소비자물가 등락률을 복리로 적용했습니다."
+    )
+    if rate_gap_count:
+        reason += " 필요한 연간 등락률이 누락된 과거 근거는 계산에서 제외했습니다."
+    return TargetLineResult(
+        line.raw_item_id,
+        "AVAILABLE",
+        target_unit,
+        target_amount,
+        variance_amount,
+        variance_percent,
+        len(evidence),
+        excluded,
+        reason,
+        tuple(evidence),
+    )
+
+
+def _stored_target_evidence_fields(
+    evidence: TargetEvidenceResult,
+) -> dict[str, object]:
+    """Exclude response-only CPI detail from the legacy immutable table shape."""
+
+    return {
+        key: value
+        for key, value in evidence.__dict__.items()
+        if key != "inflation"
+    }
 
 
 def _is_source_confirmed(evidence_json: str | None) -> bool:

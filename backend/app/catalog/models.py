@@ -621,6 +621,47 @@ class StandardPriceObservation(_ImmutableCatalogRow, Base):
         "DocumentMetadataVersion",
         foreign_keys=[metadata_version_id],
     )
+    lineage: Mapped[list[StandardPriceObservationLineage]] = relationship(
+        "StandardPriceObservationLineage",
+        back_populates="standard_price_observation",
+    )
+
+
+class StandardPriceObservationLineage(_ImmutableCatalogRow, Base):
+    """All exact-copy raw rows represented by one counted observation."""
+
+    __tablename__ = "standard_price_observation_lineage"
+    __session_core_insert_forbidden__: ClassVar[bool] = True
+    __table_args__ = (
+        UniqueConstraint(
+            "standard_price_observation_id",
+            "raw_item_id",
+            name="uq_standard_price_observation_lineage_raw",
+        ),
+        {
+            "info": {
+                "evidence_immutable": True,
+                "session_core_insert_forbidden": True,
+            }
+        },
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    standard_price_observation_id: Mapped[int] = mapped_column(
+        ForeignKey("standard_price_observation.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    raw_item_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_quote_item.id", ondelete="RESTRICT"),
+        index=True,
+    )
+
+    standard_price_observation: Mapped[StandardPriceObservation] = (
+        relationship(
+            "StandardPriceObservation",
+            back_populates="lineage",
+        )
+    )
 
 
 @event.listens_for(Session, "before_flush")
@@ -678,6 +719,24 @@ def validate_new_standard_price_evidence(
                     "captured standard item version must belong to "
                     "the priced standard item"
                 )
+            for observation in row.observations:
+                lineage_raw_item_ids = {
+                    lineage.raw_item_id
+                    for lineage in observation.lineage
+                }
+                representative_raw_item_id = observation.raw_item_id
+                if (
+                    representative_raw_item_id is None
+                    and observation.clean_decision is not None
+                ):
+                    representative_raw_item_id = (
+                        observation.clean_decision.raw_item_id
+                    )
+                if representative_raw_item_id not in lineage_raw_item_ids:
+                    raise CatalogIntegrityError(
+                        "a captured price observation must retain its "
+                        "representative raw-item lineage"
+                    )
         elif isinstance(row, StandardPriceObservation):
             if row.standard_price_version not in new_rows:
                 raise CatalogIntegrityError(
@@ -721,3 +780,10 @@ def validate_new_standard_price_evidence(
                         "observation metadata must belong to its "
                         "source document"
                     )
+        elif isinstance(row, StandardPriceObservationLineage):
+            observation = row.standard_price_observation
+            if observation not in new_rows:
+                raise CatalogIntegrityError(
+                    "price-observation lineage may only be created "
+                    "atomically with a new standard price observation"
+                )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,11 +9,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_session
+from app.analysis.service import market_lookup_eligibilities
 from app.market.adapters import DeviceMartAdapter, MouserAdapter
 from app.market.evidence import EvidenceStore
 from app.market.models import MarketPriceObservation
 from app.market.screenshot import PlaywrightScreenshotter
 from app.market.schemas import (
+    MarketBatchItemResponse,
+    MarketBatchLookupRequest,
+    MarketBatchLookupResponse,
     MarketLookupResponse,
     MarketPrecollectRequest,
     MarketPrecollectResponse,
@@ -21,6 +26,13 @@ from app.market.service import MarketLookupError, MarketLookupService
 
 
 router = APIRouter()
+
+
+def _market_worker_count(bind: object, eligible_count: int) -> int:
+    if eligible_count <= 0:
+        return 0
+    dialect = getattr(getattr(bind, "dialect", None), "name", "")
+    return 1 if dialect == "sqlite" else min(4, eligible_count)
 
 
 def _service(session: Session) -> MarketLookupService:
@@ -65,6 +77,104 @@ def lookup_market_price(
         )
     except MarketLookupError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _automatic_lookup(
+    raw_item_id: int,
+    force_refresh: bool,
+    bind: object,
+) -> MarketBatchItemResponse:
+    with Session(
+        bind=bind,
+        autoflush=False,
+        expire_on_commit=False,
+    ) as worker_session:
+        try:
+            result = _service(worker_session).lookup_raw_item(
+                raw_item_id,
+                force_refresh=force_refresh,
+                automatic=True,
+            )
+        except MarketLookupError as exc:
+            return MarketBatchItemResponse(
+                raw_item_id=raw_item_id,
+                status="SOURCE_UNAVAILABLE",
+                detail=str(exc),
+            )
+        detail_by_outcome = {
+            "CACHE_HIT": "저장된 시장가 근거를 적용했습니다.",
+            "LIVE_HIT": "DeviceMart·Mouser에서 시장가 근거를 수집했습니다.",
+            "REFERENCE_ONLY": "유사 상품은 찾았지만 자동 판정 조건을 충족하지 못했습니다.",
+            "NO_REFERENCE": "두 출처에서 일치하는 시장가 근거를 찾지 못했습니다.",
+            "SOURCE_UNAVAILABLE": "사용 가능한 시장가 출처가 없거나 조회에 실패했습니다.",
+        }
+        return MarketBatchItemResponse(
+            raw_item_id=raw_item_id,
+            status=result.outcome,
+            detail=detail_by_outcome[result.outcome],
+            result=result,
+        )
+
+
+@router.post("/lookup-batch", response_model=MarketBatchLookupResponse)
+def lookup_market_prices_automatically(
+    request: MarketBatchLookupRequest,
+    session: Session = Depends(get_session),
+) -> MarketBatchLookupResponse:
+    raw_ids = list(dict.fromkeys(request.raw_item_ids))
+    eligibility = market_lookup_eligibilities(session, raw_ids)
+    by_id: dict[int, MarketBatchItemResponse] = {}
+    eligible_ids: list[int] = []
+    for item in eligibility:
+        if item.status == "ELIGIBLE":
+            eligible_ids.append(item.raw_item_id)
+            continue
+        by_id[item.raw_item_id] = MarketBatchItemResponse(
+            raw_item_id=item.raw_item_id,
+            status=item.status,
+            detail=item.detail,
+        )
+    if eligible_ids:
+        # Each automatic lookup persists its own cache/evidence transaction. SQLite
+        # only permits one writer at a time, so using multiple worker sessions can
+        # turn an otherwise valid source lookup into ``database is locked``. Keep
+        # the four-worker path for server databases and serialize local SQLite
+        # writes; one worker still satisfies the "up to four" concurrency limit.
+        bind = session.get_bind()
+        max_workers = _market_worker_count(bind, len(eligible_ids))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _automatic_lookup,
+                    raw_id,
+                    request.force_refresh,
+                    bind,
+                ): raw_id
+                for raw_id in eligible_ids
+            }
+            for future in as_completed(futures):
+                raw_id = futures[future]
+                try:
+                    by_id[raw_id] = future.result()
+                except Exception as exc:
+                    by_id[raw_id] = MarketBatchItemResponse(
+                        raw_item_id=raw_id,
+                        status="SOURCE_UNAVAILABLE",
+                        detail="시장가 조회 중 일시적인 저장 오류가 발생했습니다. 다시 조회해 주세요.",
+                    )
+    items = [by_id[raw_id] for raw_id in raw_ids]
+    unavailable_statuses = {
+        "NO_REFERENCE",
+        "SOURCE_UNAVAILABLE",
+        "CLEANING_REQUIRED",
+        "EXCLUDED",
+        "NOT_FOUND",
+    }
+    return MarketBatchLookupResponse(
+        items=items,
+        completed=sum(item.status not in unavailable_statuses for item in items),
+        unavailable=sum(item.status in unavailable_statuses for item in items),
+    )
 
 
 @router.post("/precollect", response_model=MarketPrecollectResponse)

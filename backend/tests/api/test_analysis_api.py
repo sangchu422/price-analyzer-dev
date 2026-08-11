@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import app.analysis.target_price as target_price
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import ItemMembershipDecision, StandardPriceVersion
-from app.analysis.models import QuoteAnalysisLineResult, QuoteAnalysisRun
+from app.analysis.models import (
+    InflationIndexPoint,
+    InflationSyncRun,
+    QuoteAnalysisLineResult,
+    QuoteAnalysisRun,
+)
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
@@ -361,3 +367,222 @@ def test_analysis_api_rejects_missing_documents_and_bad_page_bounds(
         client.get("/api/analysis/documents?offset=-1").status_code
         == 422
     )
+
+
+def test_cpi_sync_api_returns_confirmed_annual_rate_evidence(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    rates = {
+        "2017": "1.9",
+        "2018": "1.5",
+        "2019": "0.4",
+        "2020": "0.5",
+        "2021": "2.5",
+        "2022": "5.1",
+        "2023": "3.6",
+        "2024": "2.3",
+        "2025": "2.1",
+    }
+    payload = [
+        {
+            "ORG_ID": "101",
+            "TBL_ID": "DT_1J22041",
+            "ITM_ID": "T",
+            "C1": "0",
+            "PRD_SE": "A",
+            "PRD_DE": year,
+            "DT": rate,
+            "LST_CHN_DE": "2026-01-15",
+        }
+        for year, rate in rates.items()
+    ]
+    request_params: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, str]]:
+            return payload
+
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        assert url.endswith("/v1/kosis/data")
+        request_params.update(kwargs["params"])
+        assert kwargs["headers"] == {"User-Agent": "price-analyzer/cpi-sync"}
+        return FakeResponse()
+
+    monkeypatch.setattr(target_price.httpx, "get", fake_get)
+
+    response = client.post("/api/analysis/inflation/series/cpi-all/sync")
+
+    assert response.status_code == 200, response.text
+    assert request_params["orgId"] == "101"
+    assert request_params["tblId"] == "DT_1J22041"
+    assert request_params["itmId"] == "T"
+    assert request_params["objL1"] == "0"
+    assert request_params["prdSe"] == "Y"
+    body = response.json()
+    assert body["available"] is True
+    assert body["latest_period"] == "2025"
+    assert body["latest_annual_rate"] == "2.100000"
+    assert body["factor"] == "1.216544"
+    assert body["cumulative_percent"] == "21.654370"
+    assert body["source_url"] == (
+        "https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_1J22041"
+    )
+    assert body["sync_run_id"] is not None
+    assert body["annual_rates"] == [
+        {"year": year, "rate": f"{Decimal(rate):.6f}"}
+        for year, rate in rates.items()
+    ]
+
+    cached = client.get("/api/analysis/inflation/series/cpi-all")
+    assert cached.status_code == 200
+    assert cached.json()["sync_run_id"] == body["sync_run_id"]
+    assert cached.json()["latest_period"] == "2025"
+
+    legacy_ppi = client.get("/api/analysis/inflation/series/ppi-all")
+    assert legacy_ppi.status_code == 200
+    assert legacy_ppi.json()["available"] is False
+
+
+def test_cpi_and_legacy_ppi_caches_remain_separate(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    ppi = InflationSyncRun(
+        series_kind="PPI_ALL",
+        provider="KOSIS",
+        org_id="301",
+        table_id="DT_404Y014",
+        item_id="13103134604999",
+        classifier_code="13102134604ACC_CD.*AA",
+        period_type="M",
+        unit="2020=100",
+        source_url="https://example.test/ppi",
+        source_last_changed=None,
+        response_sha256="p" * 64,
+        row_count=1,
+        latest_period="202606",
+    )
+    api_session.add(ppi)
+    api_session.flush()
+    api_session.add(
+        InflationIndexPoint(
+            sync_run_id=ppi.id,
+            period="202606",
+            index_value=Decimal("130.03"),
+        )
+    )
+    cpi = InflationSyncRun(
+        series_kind="CPI_ALL",
+        provider="KOSIS",
+        org_id="101",
+        table_id="DT_1J22041",
+        item_id="T",
+        classifier_code="0",
+        period_type="Y",
+        unit="%",
+        source_url="https://example.test/cpi",
+        source_last_changed=None,
+        response_sha256="c" * 64,
+        row_count=2,
+        latest_period="2025",
+    )
+    api_session.add(cpi)
+    api_session.flush()
+    api_session.add_all(
+        [
+            InflationIndexPoint(
+                sync_run_id=cpi.id,
+                period="2024",
+                index_value=Decimal("2.3"),
+            ),
+            InflationIndexPoint(
+                sync_run_id=cpi.id,
+                period="2025",
+                index_value=Decimal("2.1"),
+            ),
+        ]
+    )
+    api_session.commit()
+
+    ppi_response = client.get("/api/analysis/inflation/series/ppi-all")
+    cpi_response = client.get("/api/analysis/inflation/series/cpi-all")
+
+    assert ppi_response.status_code == 200
+    assert ppi_response.json()["sync_run_id"] == ppi.id
+    assert ppi_response.json()["latest_period"] == "202606"
+    assert cpi_response.status_code == 200
+    assert cpi_response.json()["sync_run_id"] == cpi.id
+    assert cpi_response.json()["latest_period"] == "2025"
+
+
+def test_new_analysis_run_uses_cpi_and_never_falls_back_to_ppi(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document = _document(api_session, rows=1)
+    cpi = InflationSyncRun(
+        series_kind="CPI_ALL",
+        provider="KOSIS",
+        org_id="101",
+        table_id="DT_1J22041",
+        item_id="T",
+        classifier_code="0",
+        period_type="Y",
+        unit="%",
+        source_url="https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_1J22041",
+        source_last_changed=None,
+        response_sha256="a" * 64,
+        row_count=1,
+        latest_period="2025",
+    )
+    api_session.add(cpi)
+    api_session.flush()
+    api_session.add(
+        InflationIndexPoint(
+            sync_run_id=cpi.id,
+            period="2025",
+            index_value=Decimal("2.1"),
+        )
+    )
+    # This newer PPI snapshot must not alter a new analysis run's CPI basis.
+    ppi = InflationSyncRun(
+        series_kind="PPI_ALL",
+        provider="KOSIS",
+        org_id="301",
+        table_id="DT_404Y014",
+        item_id="13103134604999",
+        classifier_code="13102134604ACC_CD.*AA",
+        period_type="M",
+        unit="2020=100",
+        source_url="https://example.test/ppi",
+        source_last_changed=None,
+        response_sha256="b" * 64,
+        row_count=1,
+        latest_period="202606",
+    )
+    api_session.add(ppi)
+    api_session.flush()
+    api_session.add(
+        InflationIndexPoint(
+            sync_run_id=ppi.id,
+            period="202606",
+            index_value=Decimal("130.03"),
+        )
+    )
+    api_session.commit()
+
+    response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={"created_by": "buyer-01"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["inflation_sync_run_id"] == cpi.id
+    assert body["inflation_series_kind"] == "CPI_ALL"
+    assert body["target_period"] == "2025"
+    assert body["inflation_source_url"] == cpi.source_url

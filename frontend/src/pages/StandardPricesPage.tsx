@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
@@ -155,6 +155,7 @@ export function StandardPricesPage() {
   const versions = uniqueById(
     history.data?.pages.flatMap((page) => page.versions) ?? [],
   );
+  const versionGroups = useMemo(() => compactPriceVersions(versions), [versions]);
   const sourceCoverageData = sourceCoverage.data;
   const hasSourceCoverage = Boolean(
     sourceCoverageData &&
@@ -183,36 +184,52 @@ export function StandardPricesPage() {
       </header>
 
       {hasSourceCoverage && sourceCoverageData && (
-        <section className="source-coverage" aria-label="원본 견적 활용 현황">
-          <div>
-            <span>3차 원본</span>
-            <strong>{sourceCoverageData.scanned_files.toLocaleString("ko-KR")}개</strong>
-          </div>
-          <div className="is-complete">
-            <span>품목 추출 완료</span>
-            <strong>{sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개</strong>
-          </div>
-          <div>
-            <span>추가 파서 대상</span>
-            <strong>{sourceCoverageData.parser_required_files.toLocaleString("ko-KR")}개</strong>
-          </div>
-          <div>
-            <span>OCR 대상</span>
-            <strong>{sourceCoverageData.ocr_required_files.toLocaleString("ko-KR")}개</strong>
-          </div>
-          <div className="is-warning">
-            <span>복구본 반영</span>
-            <strong>{sourceCoverageData.recovered_copy_files.toLocaleString("ko-KR")}개</strong>
-          </div>
-          <div className="is-warning">
-            <span>보안해제·정상본 필요</span>
-            <strong>{sourceCoverageData.security_release_required_files.toLocaleString("ko-KR")}개</strong>
-          </div>
-          <p>
-            품목 추출이 완료된 원본만 표준단가 계산 후보가 됩니다. 나머지는
-            OCR·양식 보완 또는 보안해제본 재수집 후 다시 반영합니다.
-          </p>
-        </section>
+        <details
+          className="source-coverage-disclosure"
+          aria-label="데이터 구축 현황"
+        >
+          <summary>
+            <span>데이터 구축 현황</span>
+            <small>
+              활용 {sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개 · 확인 필요{" "}
+              {(
+                sourceCoverageData.parser_required_files +
+                sourceCoverageData.ocr_required_files +
+                sourceCoverageData.security_release_required_files
+              ).toLocaleString("ko-KR")}개
+            </small>
+          </summary>
+          <section className="source-coverage" aria-label="원본 견적 활용 현황">
+            <div>
+              <span>3차 원본</span>
+              <strong>{sourceCoverageData.scanned_files.toLocaleString("ko-KR")}개</strong>
+            </div>
+            <div className="is-complete">
+              <span>품목 추출 완료</span>
+              <strong>{sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개</strong>
+            </div>
+            <div>
+              <span>추가 파서 대상</span>
+              <strong>{sourceCoverageData.parser_required_files.toLocaleString("ko-KR")}개</strong>
+            </div>
+            <div>
+              <span>OCR 대상</span>
+              <strong>{sourceCoverageData.ocr_required_files.toLocaleString("ko-KR")}개</strong>
+            </div>
+            <div className="is-warning">
+              <span>복구본 반영</span>
+              <strong>{sourceCoverageData.recovered_copy_files.toLocaleString("ko-KR")}개</strong>
+            </div>
+            <div className="is-warning">
+              <span>보안해제·정상본 필요</span>
+              <strong>{sourceCoverageData.security_release_required_files.toLocaleString("ko-KR")}개</strong>
+            </div>
+            <p>
+              품목 추출이 완료된 원본만 표준단가 계산 후보가 됩니다. 나머지는
+              OCR·양식 보완 또는 보안해제본 재수집 후 다시 반영합니다.
+            </p>
+          </section>
+        </details>
       )}
 
       <form
@@ -297,9 +314,9 @@ export function StandardPricesPage() {
                     <th className="numeric">평균</th>
                     <th className="numeric">최고</th>
                     <th className="numeric">근거</th>
-                    <th>주요 제조사</th>
+                    <th>제품 제조사</th>
                     <th>최근 견적일</th>
-                    <th>공급사</th>
+                    <th>견적 제출사</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -361,7 +378,7 @@ export function StandardPricesPage() {
               hasMoreEvidence={Boolean(evidence.hasNextPage)}
               loadMoreEvidence={() => void evidence.fetchNextPage()}
               evidenceLoadingMore={evidence.isFetchingNextPage}
-              versions={versions}
+              versionGroups={versionGroups}
               historyPending={history.isPending}
               historyError={history.isError}
               historyNextError={history.isFetchNextPageError}
@@ -413,7 +430,7 @@ function StandardItemTableRow({
       <td className="numeric is-emphasis">{formatWon(price?.median ?? null)}</td>
       <td className="numeric">{formatWon(price?.average ?? null)}</td>
       <td className="numeric">{formatWon(price?.maximum ?? null)}</td>
-      <td className="numeric">{item.observation_count.toLocaleString("ko-KR")}건</td>
+      <td className="numeric">{formatObservationCount(item)}</td>
       <td>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</td>
       <td>{formatQuoteDate(item.quote_date_end, item.quote_date_end_quality)}</td>
       <td>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</td>
@@ -435,7 +452,7 @@ function StandardItemDetail({
   hasMoreEvidence,
   loadMoreEvidence,
   evidenceLoadingMore,
-  versions,
+  versionGroups,
   historyPending,
   historyError,
   historyNextError,
@@ -474,7 +491,7 @@ function StandardItemDetail({
   hasMoreEvidence: boolean;
   loadMoreEvidence: () => void;
   evidenceLoadingMore: boolean;
-  versions: PriceVersion[];
+  versionGroups: PriceVersionGroup[];
   historyPending: boolean;
   historyError: boolean;
   historyNextError: boolean;
@@ -491,7 +508,7 @@ function StandardItemDetail({
     : item.evidence_quality;
   const observationCount = pinned
     ? snapshotVersion?.observation_count ?? 0
-    : item.observation_count;
+    : item.observation_count ?? 0;
   return (
     <div className="standard-db-detail-content">
       {snapshotPending && (
@@ -539,8 +556,8 @@ function StandardItemDetail({
       )}
 
       <dl className="standard-context-strip">
-        <div><dt>공급사</dt><dd>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
-        <div><dt>제조사</dt><dd>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
+        <div><dt>견적 제출사</dt><dd>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
+        <div><dt>제품 제조사</dt><dd>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</dd></div>
         <div>
           <dt>견적일 범위</dt>
           <dd>
@@ -584,8 +601,8 @@ function StandardItemDetail({
             <table className="data-table standard-evidence-table">
               <thead>
                 <tr>
-                  <th>공급사</th>
-                  <th>제조사</th>
+                  <th>견적 제출사</th>
+                  <th>제품 제조사</th>
                   <th>단가</th>
                   <th>견적일</th>
                   <th>원본 위치</th>
@@ -631,10 +648,10 @@ function StandardItemDetail({
       <section className="standard-history-section">
         <div className="section-heading">
           <div>
-            <p className="section-kicker">변경 이력</p>
-            <h2>표준단가 변경 이력</h2>
+            <p className="section-kicker">업데이트 로그</p>
+            <h2>업데이트 로그</h2>
           </div>
-          <span>{versions.length}개 버전</span>
+          <span>{versionGroups.length}건</span>
         </div>
         {historyPending && <p className="inline-state">이력을 불러오는 중…</p>}
         {historyError && !historyNextError && (
@@ -651,15 +668,25 @@ function StandardItemDetail({
             </button>
           </div>
         )}
-        {!historyPending && !historyError && versions.length === 0 && (
+        {!historyPending && !historyError && versionGroups.length === 0 && (
           <p className="inline-state">저장된 가격 버전이 없습니다.</p>
         )}
         <ol className="standard-version-ledger">
-          {versions.map((version) => (
+          {versionGroups.map((group) => {
+            const version = group.versions.at(-1)!;
+            const first = group.versions[0];
+            return (
             <li key={version.id}>
               <div>
-                <strong>v{version.version_number}</strong>
+                <strong>
+                  {group.versions.length === 1
+                    ? `v${version.version_number}`
+                    : `v${first.version_number}–v${version.version_number}`}
+                </strong>
                 <span>{formatDateTime(version.approved_at)}</span>
+                {group.versions.length > 1 && (
+                  <small>동일 단가 재계산 {group.versions.length}회</small>
+                )}
               </div>
               <EvidenceBadge
                 quality={version.evidence_quality}
@@ -667,10 +694,10 @@ function StandardItemDetail({
               />
               <dl>
                 <div><dt>중앙값</dt><dd>{formatWon(version.prices.median)}</dd></div>
-                <div><dt>범위</dt><dd>{formatWon(version.prices.minimum)}–{formatWon(version.prices.maximum)}</dd></div>
+                <div><dt>범위</dt><dd>{formatWon(version.prices.minimum)} – {formatWon(version.prices.maximum)}</dd></div>
               </dl>
             </li>
-          ))}
+          );})}
         </ol>
         {hasMoreHistory && (
           <button
@@ -703,6 +730,15 @@ function displaySpec(item: StandardItemSummary) {
     default:
       return "원본에서 확인되지 않음";
   }
+}
+
+function formatObservationCount(item: StandardItemSummary) {
+  if (item.observation_count !== null) {
+    return `${item.observation_count.toLocaleString("ko-KR")}건`;
+  }
+  return item.operational_status === "NO_ELIGIBLE_EVIDENCE"
+    ? "근거 없음"
+    : "재구축 필요";
 }
 
 function formatWon(value: string | null) {
@@ -746,6 +782,7 @@ function formatDateRange(
 
 function sourceLocation(source: {
   logical_name: string;
+  path?: string;
   sheet: string | null;
   page: number | null;
   row: number | null;
@@ -757,7 +794,48 @@ function sourceLocation(source: {
     source.row === null ? null : `${source.row}행`,
     source.cells,
   ].filter(Boolean);
-  return `${source.logical_name}${location.length ? ` · ${location.join(" · ")}` : ""}`;
+  const name = conciseSourceName(source.logical_name, source.path);
+  return `${name}${location.length ? ` · ${location.join(" · ")}` : ""}`;
+}
+
+function conciseSourceName(logicalName: string, sourcePath?: string) {
+  const basename = (value: string) => value.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? value;
+  const logicalBase = basename(logicalName);
+  const pathBase = sourcePath ? basename(sourcePath) : logicalBase;
+  const candidate = /\.[a-z0-9]{2,5}$/i.test(logicalBase) ? logicalBase : pathBase;
+  const stem = candidate.replace(/\.[^.]+$/, "");
+  const extension = candidate.match(/\.(?:xlsx?|pdf|jpe?g|png|zip|ecml)$/i)?.[0] ?? "";
+  const looksGenerated =
+    stem.length > 48 &&
+    (/^[0-9]{14,}/.test(stem) || /[A-Za-z0-9+/=]{30,}/.test(stem));
+  return looksGenerated ? `수집 원본 견적서${extension}` : candidate;
+}
+
+type PriceVersionGroup = { versions: PriceVersion[] };
+
+function compactPriceVersions(versions: PriceVersion[]): PriceVersionGroup[] {
+  const groups: PriceVersionGroup[] = [];
+  for (const version of versions) {
+    const latest = groups.at(-1);
+    const previous = latest?.versions.at(-1);
+    if (latest && previous && sameDisplayedPrice(previous, version)) {
+      latest.versions.push(version);
+    } else {
+      groups.push({ versions: [version] });
+    }
+  }
+  return groups;
+}
+
+function sameDisplayedPrice(left: PriceVersion, right: PriceVersion) {
+  return (
+    left.observation_count === right.observation_count &&
+    left.evidence_quality === right.evidence_quality &&
+    left.prices.minimum === right.prices.minimum &&
+    left.prices.median === right.prices.median &&
+    left.prices.average === right.prices.average &&
+    left.prices.maximum === right.prices.maximum
+  );
 }
 
 function safeNextCursor<T extends { next_cursor: number | null }>(

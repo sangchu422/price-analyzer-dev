@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -341,7 +341,7 @@ def _review_item(
         },
         "reason_code": decision.reason_code,
         "reason_detail": decision.reason_detail,
-        "reason_evidence": _reason_evidence(session, decision),
+        "reason_evidence": _reason_evidence(session, decision, raw),
         "spec_source_status": _spec_source_status(raw.spec_raw, warnings),
         "decision": _decision_summary(decision),
         "source": {
@@ -381,7 +381,12 @@ def _spec_source_status(spec_raw: str | None, warnings: list[object]) -> str:
 def _reason_evidence(
     session: Session,
     decision: CleanDecision,
+    raw: RawQuoteItem,
 ) -> dict[str, Any] | None:
+    if decision.reason_code == "AMOUNT_MISMATCH":
+        mismatch_evidence = _amount_mismatch_evidence(raw, decision)
+        if mismatch_evidence is not None:
+            return mismatch_evidence
     try:
         payload = json.loads(decision.reason_evidence_json)
     except (json.JSONDecodeError, TypeError):
@@ -425,6 +430,51 @@ def _reason_evidence(
             }
         enriched.append(enriched_row)
     return {**payload, "observations": enriched}
+
+
+def _amount_mismatch_evidence(
+    raw: RawQuoteItem,
+    decision: CleanDecision,
+) -> dict[str, object] | None:
+    if (
+        decision.quantity is None
+        or decision.unit_price is None
+        or decision.amount is None
+    ):
+        return None
+    with localcontext() as context:
+        context.prec = 64
+        calculated_amount = decision.quantity * decision.unit_price
+        difference_amount = calculated_amount - decision.amount
+        tolerance_amount = max(
+            Decimal("1"),
+            abs(decision.amount) * Decimal("0.01"),
+        )
+        difference_percent = (
+            None
+            if decision.amount == 0
+            else _calculation_decimal_text(
+                (difference_amount / decision.amount * Decimal("100")).quantize(
+                    Decimal("0.0001")
+                )
+            )
+        )
+    return {
+        "kind": "AMOUNT_MISMATCH",
+        "original_quantity": raw.quantity_raw,
+        "original_unit": raw.unit_raw,
+        "original_unit_price": raw.unit_price_raw,
+        "displayed_amount": raw.amount_raw,
+        "calculated_amount": _calculation_decimal_text(calculated_amount),
+        "difference_amount": _calculation_decimal_text(difference_amount),
+        "difference_percent": difference_percent,
+        "tolerance_amount": _calculation_decimal_text(tolerance_amount),
+        "comparison": "CALCULATED_MINUS_DISPLAYED",
+    }
+
+
+def _calculation_decimal_text(value: Decimal) -> str:
+    return format(value.normalize(), "f")
 
 
 def _decision_summary(decision: CleanDecision) -> dict[str, object]:

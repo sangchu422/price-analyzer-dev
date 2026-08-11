@@ -24,6 +24,19 @@ function formatPercent(value: string | null | undefined) {
   })}%`;
 }
 
+function formatSignedWon(value: string | null | undefined) {
+  if (!value) return "금액 정보 없음";
+  const amount = Number(value.replaceAll(",", "").replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(amount)) return value;
+  return (amount > 0 ? "+" : "") + amount.toLocaleString("ko-KR", {
+    maximumFractionDigits: 0,
+  }) + "원";
+}
+
+function rawValue(value: string | null | undefined) {
+  return value?.trim() || "원본에 없음";
+}
+
 function reasonSummary(item: ReviewQueueItem) {
   const evidence = item.reason_evidence;
   switch (item.reason_code) {
@@ -102,6 +115,9 @@ export function ItemInspector({
       {item.reason_evidence?.kind === "UNIT_PRICE_DISTRIBUTION" && (
         <PriceDistribution item={item} />
       )}
+      {item.reason_evidence?.kind === "AMOUNT_MISMATCH" && (
+        <AmountMismatchEvidence evidence={item.reason_evidence} />
+      )}
 
       <section className="evidence source-preview-section" aria-labelledby="evidence-title">
         <div className="section-title">
@@ -127,6 +143,20 @@ export function ItemInspector({
         {preview.data?.kind === "SPREADSHEET" && (
           <div className="source-grid-scroll" tabIndex={0} aria-label="원본 견적서 셀 미리보기">
             <table className="source-grid">
+              {preview.data.header_rows?.length ? (
+                <thead>
+                  {preview.data.header_rows.map((row) => (
+                    <tr key={"header-" + row.row_number}>
+                      <th scope="col">{row.row_number}행</th>
+                      {row.cells.map((cell) => (
+                        <th key={cell.coordinate} scope="col" title={cell.coordinate}>
+                          {cell.value ?? cell.coordinate}
+                        </th>
+                      ))}
+                    </tr>
+                  ))}
+                </thead>
+              ) : null}
               <tbody>
                 {preview.data.rows.map((row) => (
                   <tr key={row.row_number}>
@@ -154,6 +184,54 @@ export function ItemInspector({
           />
         )}
       </section>
+    </section>
+  );
+}
+
+function AmountMismatchEvidence({
+  evidence,
+}: {
+  evidence: NonNullable<ReviewQueueItem["reason_evidence"]>;
+}) {
+  const differencePercent = formatPercent(evidence.difference_percent);
+  const tolerance = formatWon(evidence.tolerance_amount);
+  return (
+    <section className="amount-mismatch-evidence" aria-labelledby="amount-mismatch-title">
+      <div className="section-title">
+        <p className="section-kicker">계산 근거</p>
+        <h2 id="amount-mismatch-title">표시 금액 대 계산 금액</h2>
+      </div>
+      <dl>
+        <div>
+          <dt>원본 수량</dt>
+          <dd>{rawValue(evidence.original_quantity)}</dd>
+        </div>
+        <div>
+          <dt>원본 단위</dt>
+          <dd>{rawValue(evidence.original_unit)}</dd>
+        </div>
+        <div>
+          <dt>원본 단가</dt>
+          <dd>{rawValue(evidence.original_unit_price)}</dd>
+        </div>
+        <div>
+          <dt>표시 금액</dt>
+          <dd>{rawValue(evidence.displayed_amount)}</dd>
+        </div>
+        <div>
+          <dt>계산 금액</dt>
+          <dd>{formatWon(evidence.calculated_amount)}</dd>
+        </div>
+        <div className="is-difference">
+          <dt>차액</dt>
+          <dd>{formatSignedWon(evidence.difference_amount)}</dd>
+        </div>
+      </dl>
+      <p>
+        계산 금액 − 표시 금액
+        {differencePercent ? <> · 차이율 {differencePercent}</> : null}
+        {evidence.tolerance_amount ? <> · 허용오차 ±{tolerance}</> : null}
+      </p>
     </section>
   );
 }

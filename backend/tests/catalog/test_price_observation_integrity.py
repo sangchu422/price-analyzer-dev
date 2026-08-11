@@ -15,6 +15,7 @@ from app.catalog.models import (
     StandardItem,
     StandardItemVersion,
     StandardPriceObservation,
+    StandardPriceObservationLineage,
     StandardPriceVersion,
     DocumentMetadataVersion,
 )
@@ -78,6 +79,7 @@ def _graph():
         selected_for_parsing_at_ingest=True,
     )
     raw_item = _raw(variant, 2, "BEARING")
+    raw_item.id = 1
     clean = _decision(raw_item, "120")
     item = StandardItem()
     item_version = StandardItemVersion(
@@ -107,7 +109,11 @@ def _graph():
         standard_price_version=price,
         clean_decision=clean,
         membership_decision=membership,
+        raw_item_id=raw_item.id,
     )
+    observation.lineage = [
+        StandardPriceObservationLineage(raw_item_id=raw_item.id)
+    ]
     return document, item, raw_item, clean, membership, price, observation
 
 
@@ -136,6 +142,7 @@ def test_captured_price_rejects_id_only_version_from_other_item() -> None:
         selected_for_parsing_at_ingest=True,
     )
     raw = _raw(variant, 1, "BEARING")
+    raw.id = 1
     clean = _decision(raw, "100")
     target = StandardItem()
     target_version = StandardItemVersion(
@@ -180,11 +187,15 @@ def test_captured_price_rejects_id_only_version_from_other_item() -> None:
             draft_fingerprint="b" * 64,
             approved_by="buyer",
         )
-        StandardPriceObservation(
+        observation = StandardPriceObservation(
             standard_price_version=price,
             clean_decision=clean,
             membership_decision=membership,
+            raw_item_id=raw.id,
         )
+        observation.lineage = [
+            StandardPriceObservationLineage(raw_item_id=raw.id)
+        ]
         session.add(price)
         with pytest.raises(CatalogIntegrityError):
             session.flush()

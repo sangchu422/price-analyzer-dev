@@ -63,6 +63,7 @@ class MarketLookupService:
         raw_item_id: int,
         *,
         force_refresh: bool = False,
+        automatic: bool = False,
     ) -> MarketLookupResponse:
         raw_item = self.session.get(RawQuoteItem, raw_item_id)
         if raw_item is None:
@@ -87,6 +88,8 @@ class MarketLookupService:
             quantity=decision.quantity,
             force_refresh=force_refresh,
             raw_item_id=raw_item_id,
+            automatic=automatic,
+            required_manufacturer=decision.maker_norm,
         )
 
     def lookup(
@@ -97,6 +100,8 @@ class MarketLookupService:
         quantity: Decimal | None = None,
         force_refresh: bool = False,
         raw_item_id: int = 0,
+        automatic: bool = False,
+        required_manufacturer: str | None = None,
     ) -> MarketLookupResponse:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         ttl = timedelta(hours=self.settings.market_price_ttl_hours)
@@ -153,12 +158,25 @@ class MarketLookupService:
                 )
         self.session.commit()
         products = [
-            self._product_response(observation, quantity, now)
+            self._product_response(
+                observation,
+                quantity,
+                now,
+                query=query,
+                required_manufacturer=required_manufacturer,
+            )
             for run in runs
             for observation in run.observations
             if observation.currency.upper() == "KRW"
         ]
-        prices = sorted(product.applicable_unit_price for product in products)
+        priced_products = (
+            [product for product in products if product.automatic_price_eligible]
+            if automatic
+            else products
+        )
+        prices = sorted(
+            product.applicable_unit_price for product in priced_products
+        )
         minimum = prices[0] if prices else None
         maximum = prices[-1] if prices else None
         middle = Decimal(str(median(prices))) if prices else None
@@ -189,6 +207,14 @@ class MarketLookupService:
             state = "CACHE"
         else:
             state = "UNAVAILABLE"
+        if priced_products:
+            outcome = "LIVE_HIT" if live_count else "CACHE_HIT"
+        elif products:
+            outcome = "REFERENCE_ONLY"
+        elif runs:
+            outcome = "NO_REFERENCE"
+        else:
+            outcome = "SOURCE_UNAVAILABLE"
         return MarketLookupResponse(
             raw_item_id=raw_item_id,
             query=query,
@@ -202,6 +228,8 @@ class MarketLookupService:
             variance_percent=variance,
             products=products,
             source_failures=failures,
+            outcome=outcome,
+            automatic_price_product_count=len(priced_products),
         )
 
     @staticmethod
@@ -239,10 +267,23 @@ class MarketLookupService:
         observation: MarketPriceObservation,
         quantity: Decimal | None,
         now: datetime,
+        *,
+        query: str,
+        required_manufacturer: str | None,
     ) -> MarketProductResponse:
         product = observation.product
         run = observation.collection_run
         base = f"/api/market/evidence/{observation.id}"
+        exclusion_reasons = _automatic_exclusion_reasons(
+            query=query,
+            product_title=product.title,
+            product_manufacturer=product.manufacturer,
+            product_model_number=product.model_number,
+            required_manufacturer=required_manufacturer,
+            quantity=quantity,
+            moq=observation.moq,
+            stock_quantity=observation.stock_quantity,
+        )
         return MarketProductResponse(
             observation_id=observation.id,
             source=product.source,
@@ -281,6 +322,8 @@ class MarketLookupService:
                 if observation.screenshot_evidence_path
                 else None
             ),
+            automatic_price_eligible=not exclusion_reasons,
+            automatic_price_exclusion_reasons=exclusion_reasons,
         )
 
 
@@ -320,3 +363,64 @@ def _relevant_products(
         ):
             accepted.append(product)
     return accepted
+
+
+def _automatic_exclusion_reasons(
+    *,
+    query: str,
+    product_title: str,
+    product_manufacturer: str | None,
+    product_model_number: str | None,
+    required_manufacturer: str | None,
+    quantity: Decimal | None,
+    moq: int | None,
+    stock_quantity: int | None,
+) -> list[str]:
+    """Return conservative reasons a market result cannot drive a verdict."""
+
+    reasons: list[str] = []
+    model_tokens = market_model_tokens(normalize_query(query))
+    product_tokens = re.findall(
+        r"[0-9A-Z][0-9A-Z_./-]+",
+        normalize_query(
+            " ".join(
+                value
+                for value in (product_model_number, product_title)
+                if value
+            )
+        ),
+    )
+    canonical_product_tokens = {
+        re.sub(r"[^0-9A-Z]", "", token) for token in product_tokens
+    }
+    if not model_tokens:
+        reasons.append("MODEL_NUMBER_REQUIRED")
+    elif not any(
+        re.sub(r"[^0-9A-Z]", "", token) in canonical_product_tokens
+        for token in model_tokens
+    ):
+        reasons.append("MODEL_NUMBER_NOT_EXACT")
+
+    maker = normalize_query(required_manufacturer or "")
+    maker_haystack = normalize_query(
+        " ".join(
+            value
+            for value in (product_manufacturer, product_title)
+            if value
+        )
+    )
+    if not maker:
+        reasons.append("MANUFACTURER_REQUIRED")
+    elif maker not in maker_haystack:
+        reasons.append("MANUFACTURER_MISMATCH")
+
+    requested = int(quantity or 0)
+    if requested <= 0:
+        reasons.append("QUANTITY_REQUIRED")
+    if moq is not None and requested < moq:
+        reasons.append("MOQ_NOT_MET")
+    if stock_quantity is None:
+        reasons.append("STOCK_UNCONFIRMED")
+    elif stock_quantity < max(requested, 1):
+        reasons.append("INSUFFICIENT_STOCK")
+    return reasons

@@ -6,7 +6,16 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -22,10 +31,24 @@ class InflationSyncRun(_ImmutableAnalysisRow, Base):
     __tablename__ = "inflation_sync_run"
     __table_args__ = (
         UniqueConstraint("response_sha256", name="uq_inflation_sync_response"),
+        Index(
+            "ix_inflation_sync_run_series_latest",
+            "series_kind",
+            "fetched_at",
+            "id",
+        ),
         {"info": {"evidence_immutable": True}},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Existing snapshots predate series discrimination and are PPI snapshots.
+    # The server default keeps create_all fixtures and migrated SQLite databases
+    # compatible while CPI snapshots are explicitly marked by the sync service.
+    series_kind: Mapped[str] = mapped_column(
+        String(32),
+        default="PPI_ALL",
+        server_default=text("'PPI_ALL'"),
+    )
     provider: Mapped[str] = mapped_column(String(32), default="KOSIS")
     org_id: Mapped[str] = mapped_column(String(32))
     table_id: Mapped[str] = mapped_column(String(64))
@@ -47,8 +70,16 @@ class InflationIndexPoint(_ImmutableAnalysisRow, Base):
     __tablename__ = "inflation_index_point"
     __table_args__ = (
         UniqueConstraint("sync_run_id", "period", name="uq_inflation_point_run_period"),
-        CheckConstraint("length(period) = 6", name="ck_inflation_point_month"),
-        CheckConstraint("index_value > 0", name="ck_inflation_point_positive"),
+        CheckConstraint(
+            "length(period) IN (4, 6)",
+            name="ck_inflation_point_month",
+        ),
+        # ExactDecimal values are persisted as six-place scaled integers, so
+        # -100 percent is represented by -100000000 at the database layer.
+        CheckConstraint(
+            "index_value > -100000000",
+            name="ck_inflation_point_positive",
+        ),
         {"info": {"evidence_immutable": True}},
     )
 

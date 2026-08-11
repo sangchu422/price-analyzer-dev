@@ -19,18 +19,32 @@ from app.analysis.service import (
     list_analysis_documents,
 )
 from app.analysis.target_price import (
+    CPI_KOSIS_CLASSIFIER_CODE,
+    CPI_KOSIS_ITEM_ID,
+    CPI_KOSIS_ORG_ID,
+    CPI_KOSIS_SERIES_URL,
+    CPI_KOSIS_TABLE_ID,
+    CPI_KOSIS_UNIT,
     KOSIS_CLASSIFIER_CODE,
     KOSIS_ITEM_ID,
     KOSIS_ORG_ID,
     KOSIS_SERIES_URL,
     KOSIS_TABLE_ID,
     AnalysisRunResult,
+    CpiInflationEvidenceResult,
     InflationSeriesUnavailable,
+    TargetEvidenceResult,
+    cpi_evidence_for_quote_year,
+    cpi_series_evidence,
+    cpi_series_for_sync_run,
     create_analysis_run,
+    latest_cpi_series,
     latest_ppi_series,
+    sync_cpi_series,
     sync_ppi_series,
 )
 from app.analysis.models import (
+    InflationSyncRun,
     QuoteAnalysisLineResult,
     QuoteAnalysisRun,
     QuoteAnalysisTargetEvidence,
@@ -168,6 +182,19 @@ class AnalysisRunCreateRequest(BaseModel):
     high_percent: Decimal = Field(default=Decimal("20"), ge=0)
 
 
+class AnnualRateResponse(BaseModel):
+    year: str
+    rate: Decimal
+
+
+class CpiInflationEvidenceResponse(BaseModel):
+    sync_run_id: int
+    latest_confirmed_year: str
+    annual_rates: list[AnnualRateResponse]
+    factor: Decimal
+    cumulative_percent: Decimal
+
+
 class TargetEvidenceResponse(BaseModel):
     raw_item_id: int
     metadata_version_id: int
@@ -184,6 +211,7 @@ class TargetEvidenceResponse(BaseModel):
     source_index_value: Decimal
     target_index_value: Decimal
     adjusted_unit_price: Decimal
+    inflation: CpiInflationEvidenceResponse | None = None
 
 
 class TargetLineResponse(BaseModel):
@@ -192,6 +220,7 @@ class TargetLineResponse(BaseModel):
         "AVAILABLE",
         "DATE_UNAVAILABLE",
         "INDEX_UNAVAILABLE",
+        "RATE_GAP",
         "MARKET_REFERENCE_REQUIRED",
         "NOT_APPLICABLE",
     ]
@@ -220,10 +249,32 @@ class InflationSeriesResponse(BaseModel):
     source_url: str
 
 
+class CpiInflationSeriesResponse(BaseModel):
+    available: bool
+    sync_run_id: int | None
+    latest_period: str | None
+    latest_annual_rate: Decimal | None
+    source_last_changed: str | None
+    point_count: int
+    org_id: str
+    table_id: str
+    item_id: str
+    classifier_code: str
+    unit: str
+    source_url: str
+    annual_rates: list[AnnualRateResponse]
+    factor: Decimal | None
+    cumulative_percent: Decimal | None
+
+
 class AnalysisRunResponse(DocumentAnalysisResponse):
     run_id: int
+    inflation_sync_run_id: int | None
+    inflation_series_kind: str | None
     target_period: str | None
     target_index_value: Decimal | None
+    inflation_source_url: str | None
+    inflation_source_last_changed: str | None
     inflation_source_url: str
     inflation_source_last_changed: str | None
     quote_total_amount: Decimal | None
@@ -240,6 +291,8 @@ class StoredAnalysisRunResponse(BaseModel):
     created_at: str
     review_percent: Decimal
     high_percent: Decimal
+    inflation_sync_run_id: int | None
+    inflation_series_kind: str | None
     target_period: str | None
     target_index_value: Decimal | None
     quote_total_amount: Decimal | None
@@ -347,6 +400,15 @@ def get_analysis_run(
             .order_by(QuoteAnalysisLineResult.raw_item_id)
         )
     )
+    inflation_run = (
+        None
+        if run.inflation_sync_run_id is None
+        else session.get(InflationSyncRun, run.inflation_sync_run_id)
+    )
+    cpi_run, annual_rates = cpi_series_for_sync_run(
+        session,
+        run.inflation_sync_run_id,
+    )
     evidence_rows = list(
         session.scalars(
             select(QuoteAnalysisTargetEvidence)
@@ -363,6 +425,16 @@ def get_analysis_run(
     ) if lines else []
     evidence_by_line: dict[int, list[dict[str, object]]] = {}
     for evidence in evidence_rows:
+        cpi_evidence = (
+            None
+            if cpi_run is None
+            else cpi_evidence_for_quote_year(
+                cpi_run.id,
+                evidence.quote_date.year,
+                annual_rates,
+                cpi_run.latest_period,
+            )
+        )
         evidence_by_line.setdefault(evidence.line_result_id, []).append(
             {
                 "raw_item_id": evidence.raw_item_id,
@@ -380,6 +452,7 @@ def get_analysis_run(
                 "source_index_value": evidence.source_index_value,
                 "target_index_value": evidence.target_index_value,
                 "adjusted_unit_price": evidence.adjusted_unit_price,
+                "inflation": _cpi_evidence_payload(cpi_evidence),
             }
         )
     return {
@@ -389,8 +462,20 @@ def get_analysis_run(
         "created_at": run.created_at.isoformat(),
         "review_percent": run.review_percent,
         "high_percent": run.high_percent,
+        "inflation_sync_run_id": run.inflation_sync_run_id,
+        "inflation_series_kind": (
+            None if inflation_run is None else inflation_run.series_kind
+        ),
         "target_period": run.target_period,
         "target_index_value": run.target_index_value,
+        "inflation_source_url": (
+            None if inflation_run is None else inflation_run.source_url
+        ),
+        "inflation_source_last_changed": (
+            None
+            if inflation_run is None or inflation_run.source_last_changed is None
+            else inflation_run.source_last_changed.isoformat()
+        ),
         "quote_total_amount": run.quote_total_amount,
         "target_total_amount": run.target_total_amount,
         "target_available_count": run.target_available_count,
@@ -429,6 +514,30 @@ def post_ppi_sync(session: Session = Depends(get_session)) -> dict[str, object]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     _, points = latest_ppi_series(session)
     return _inflation_payload(run, points)
+
+
+@router.get(
+    "/inflation/series/cpi-all",
+    response_model=CpiInflationSeriesResponse,
+)
+def get_cpi_series(session: Session = Depends(get_session)) -> dict[str, object]:
+    run, annual_rates = latest_cpi_series(session)
+    return _cpi_inflation_payload(run, annual_rates)
+
+
+@router.post(
+    "/inflation/series/cpi-all/sync",
+    response_model=CpiInflationSeriesResponse,
+)
+def post_cpi_sync(session: Session = Depends(get_session)) -> dict[str, object]:
+    try:
+        run = sync_cpi_series(session, settings)
+        session.commit()
+    except InflationSeriesUnavailable as exc:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _, annual_rates = cpi_series_for_sync_run(session, run.id)
+    return _cpi_inflation_payload(run, annual_rates)
 
 
 @router.post(
@@ -525,6 +634,8 @@ def _analysis_run_payload(
     payload.update(
         {
             "run_id": result.run_id,
+            "inflation_sync_run_id": result.inflation_sync_run_id,
+            "inflation_series_kind": result.inflation_series_kind,
             "target_period": result.target_period,
             "target_index_value": result.target_index_value,
             "inflation_source_url": result.inflation_source_url,
@@ -545,10 +656,7 @@ def _analysis_run_payload(
                         if key != "evidence"
                     },
                     "evidence": [
-                        {
-                            **evidence.__dict__,
-                            "quote_date": evidence.quote_date.isoformat(),
-                        }
+                        _target_evidence_payload(evidence)
                         for evidence in line.evidence
                     ],
                 }
@@ -578,6 +686,73 @@ def _inflation_payload(run: object, points: dict[str, Decimal]) -> dict[str, obj
         "classifier_code": KOSIS_CLASSIFIER_CODE,
         "unit": "2020=100",
         "source_url": KOSIS_SERIES_URL,
+    }
+
+
+def _cpi_inflation_payload(
+    run: InflationSyncRun | None,
+    annual_rates: dict[str, Decimal],
+) -> dict[str, object]:
+    evidence = cpi_series_evidence(run, annual_rates)
+    latest_period = None if run is None else run.latest_period
+    return {
+        "available": run is not None and latest_period in annual_rates,
+        "sync_run_id": None if run is None else run.id,
+        "latest_period": latest_period,
+        "latest_annual_rate": (
+            None if latest_period is None else annual_rates.get(latest_period)
+        ),
+        "source_last_changed": (
+            None
+            if run is None or run.source_last_changed is None
+            else run.source_last_changed.isoformat()
+        ),
+        "point_count": len(annual_rates),
+        "org_id": CPI_KOSIS_ORG_ID,
+        "table_id": CPI_KOSIS_TABLE_ID,
+        "item_id": CPI_KOSIS_ITEM_ID,
+        "classifier_code": CPI_KOSIS_CLASSIFIER_CODE,
+        "unit": CPI_KOSIS_UNIT,
+        "source_url": CPI_KOSIS_SERIES_URL,
+        "annual_rates": [
+            {"year": year, "rate": rate}
+            for year, rate in sorted(annual_rates.items())
+        ],
+        "factor": None if evidence is None else evidence.factor,
+        "cumulative_percent": (
+            None if evidence is None else evidence.cumulative_percent
+        ),
+    }
+
+
+def _cpi_evidence_payload(
+    evidence: CpiInflationEvidenceResult | None,
+) -> dict[str, object] | None:
+    if evidence is None:
+        return None
+    return {
+        "sync_run_id": evidence.sync_run_id,
+        "latest_confirmed_year": evidence.latest_confirmed_year,
+        "annual_rates": [
+            {"year": rate.year, "rate": rate.rate}
+            for rate in evidence.annual_rates
+        ],
+        "factor": evidence.factor,
+        "cumulative_percent": evidence.cumulative_percent,
+    }
+
+
+def _target_evidence_payload(
+    evidence: TargetEvidenceResult,
+) -> dict[str, object]:
+    return {
+        **{
+            key: value
+            for key, value in evidence.__dict__.items()
+            if key not in {"quote_date", "inflation"}
+        },
+        "quote_date": evidence.quote_date.isoformat(),
+        "inflation": _cpi_evidence_payload(evidence.inflation),
     }
 
 

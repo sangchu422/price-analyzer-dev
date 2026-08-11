@@ -11,6 +11,24 @@ from app.market.models import MarketSource
 
 MarketAssessment = Literal["LOW", "WITHIN_RANGE", "HIGH", "REVIEW_REQUIRED"]
 MarketCacheState = Literal["CACHE", "LIVE", "PARTIAL", "UNAVAILABLE"]
+MarketLookupOutcome = Literal[
+    "CACHE_HIT",
+    "LIVE_HIT",
+    "REFERENCE_ONLY",
+    "NO_REFERENCE",
+    "SOURCE_UNAVAILABLE",
+]
+MarketBatchStatus = Literal[
+    "STANDARD_APPLIED",
+    "CACHE_HIT",
+    "LIVE_HIT",
+    "REFERENCE_ONLY",
+    "NO_REFERENCE",
+    "SOURCE_UNAVAILABLE",
+    "CLEANING_REQUIRED",
+    "EXCLUDED",
+    "NOT_FOUND",
+]
 
 
 class MarketTierResponse(BaseModel):
@@ -41,6 +59,8 @@ class MarketProductResponse(BaseModel):
     image_evidence_url: str | None
     raw_evidence_url: str
     screenshot_evidence_url: str | None
+    automatic_price_eligible: bool = False
+    automatic_price_exclusion_reasons: list[str] = Field(default_factory=list)
 
 
 class MarketSourceFailure(BaseModel):
@@ -61,6 +81,26 @@ class MarketLookupResponse(BaseModel):
     variance_percent: Decimal | None
     products: list[MarketProductResponse]
     source_failures: list[MarketSourceFailure]
+    outcome: MarketLookupOutcome
+    automatic_price_product_count: int = 0
+
+
+class MarketBatchLookupRequest(BaseModel):
+    raw_item_ids: list[int] = Field(min_length=1, max_length=100)
+    force_refresh: bool = False
+
+
+class MarketBatchItemResponse(BaseModel):
+    raw_item_id: int
+    status: MarketBatchStatus
+    detail: str
+    result: MarketLookupResponse | None = None
+
+
+class MarketBatchLookupResponse(BaseModel):
+    items: list[MarketBatchItemResponse]
+    completed: int
+    unavailable: int
 
 
 class MarketPrecollectRequest(BaseModel):

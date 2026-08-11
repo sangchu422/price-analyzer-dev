@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar
@@ -32,6 +33,28 @@ class StandardBuildStatus(StrEnum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+
+
+class StandardOperationalStatus(StrEnum):
+    """Whether a standard item's captured price is usable right now."""
+
+    ACTIVE = "ACTIVE"
+    REBUILD_REQUIRED = "REBUILD_REQUIRED"
+    NO_ELIGIBLE_EVIDENCE = "NO_ELIGIBLE_EVIDENCE"
+
+
+def _legacy_build_fingerprint(label: str) -> str:
+    """Stable migration fallback for builds created before provenance hashes."""
+
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+LEGACY_BUILD_CALCULATION_FINGERPRINT = _legacy_build_fingerprint(
+    "STANDARD_DATABASE_BUILD_LEGACY_CALCULATION"
+)
+LEGACY_BUILD_CODE_FINGERPRINT = _legacy_build_fingerprint(
+    "STANDARD_DATABASE_BUILD_LEGACY_CODE"
+)
 
 
 class _ImmutableStandardDatabaseRow:
@@ -93,10 +116,19 @@ class StandardDatabaseBuildRun(_ImmutableStandardDatabaseRow, Base):
             "length(input_fingerprint) = 64",
             name="ck_standard_database_build_input_fingerprint",
         ),
+        CheckConstraint(
+            "length(calculation_fingerprint) = 64",
+            name="ck_standard_database_build_calculation_fingerprint",
+        ),
+        CheckConstraint(
+            "length(code_fingerprint) = 64",
+            name="ck_standard_database_build_code_fingerprint",
+        ),
         Index(
-            "uq_standard_database_build_success_input_rule",
+            "uq_standard_database_build_success_provenance",
             "input_fingerprint",
-            "rule_version",
+            "calculation_fingerprint",
+            "code_fingerprint",
             unique=True,
             sqlite_where=text("status = 'SUCCEEDED'"),
         ),
@@ -105,6 +137,18 @@ class StandardDatabaseBuildRun(_ImmutableStandardDatabaseRow, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     input_fingerprint: Mapped[str] = mapped_column(String(64))
+    calculation_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        default=LEGACY_BUILD_CALCULATION_FINGERPRINT,
+        server_default=text(
+            f"'{LEGACY_BUILD_CALCULATION_FINGERPRINT}'"
+        ),
+    )
+    code_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        default=LEGACY_BUILD_CODE_FINGERPRINT,
+        server_default=text(f"'{LEGACY_BUILD_CODE_FINGERPRINT}'"),
+    )
     rule_version: Mapped[str] = mapped_column(String(100))
     status: Mapped[StandardBuildStatus] = mapped_column(
         Enum(
@@ -163,3 +207,68 @@ class StandardDatabaseBuildRun(_ImmutableStandardDatabaseRow, Base):
         }:
             return False
         return bool(finished_history.added and self.finished_at is not None)
+
+
+class StandardDatabaseBuildProjection(_ImmutableStandardDatabaseRow, Base):
+    """Immutable item-to-price snapshot emitted by a successful build."""
+
+    __tablename__ = "standard_database_build_projection"
+    __table_args__ = (
+        UniqueConstraint(
+            "build_run_id",
+            "standard_item_id",
+            name="uq_standard_database_build_projection_item",
+        ),
+        CheckConstraint(
+            "(operational_status = 'NO_ELIGIBLE_EVIDENCE' "
+            "AND standard_price_version_id IS NULL) OR "
+            "(operational_status IN ('ACTIVE', 'REBUILD_REQUIRED') "
+            "AND standard_price_version_id IS NOT NULL)",
+            name="ck_standard_database_projection_price_status",
+        ),
+        ForeignKeyConstraint(
+            ["standard_item_version_id", "standard_item_id"],
+            [
+                "standard_item_version.id",
+                "standard_item_version.standard_item_id",
+            ],
+            name="fk_standard_database_projection_item_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["standard_price_version_id", "standard_item_id"],
+            [
+                "standard_price_version.id",
+                "standard_price_version.standard_item_id",
+            ],
+            name="fk_standard_database_projection_price_version",
+            ondelete="RESTRICT",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    build_run_id: Mapped[int] = mapped_column(
+        ForeignKey("standard_database_build_run.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    standard_item_id: Mapped[int] = mapped_column(
+        ForeignKey("standard_item.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    standard_item_version_id: Mapped[int | None] = mapped_column(index=True)
+    standard_price_version_id: Mapped[int | None] = mapped_column(index=True)
+    operational_status: Mapped[StandardOperationalStatus] = mapped_column(
+        Enum(
+            StandardOperationalStatus,
+            name="standard_operational_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+        )
+    )
+    projected_at: Mapped[datetime] = mapped_column(
+        NaiveUTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )

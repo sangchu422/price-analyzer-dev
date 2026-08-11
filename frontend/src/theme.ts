@@ -4,11 +4,11 @@ export type AppTheme = "dark" | "light";
 
 export function getStoredTheme(): AppTheme {
   try {
-    return window.localStorage.getItem(THEME_STORAGE_KEY) === "light"
-      ? "light"
-      : "dark";
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === "dark"
+      ? "dark"
+      : "light";
   } catch {
-    return "dark";
+    return "light";
   }
 }
 

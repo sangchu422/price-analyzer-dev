@@ -16,17 +16,17 @@ it("switches themes with an accessible control and persists the selection", asyn
   const user = userEvent.setup();
   renderApp("/unknown");
 
-  expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-  const toLight = screen.getByRole("button", { name: "라이트 모드로 전환" });
-  expect(toLight).toHaveAttribute("aria-pressed", "false");
-
-  await user.click(toLight);
-
   expect(document.documentElement).toHaveAttribute("data-theme", "light");
-  expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+  const toDark = screen.getByRole("button", { name: "다크 모드로 전환" });
+  expect(toDark).toHaveAttribute("aria-pressed", "true");
+
+  await user.click(toDark);
+
+  expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+  expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
   expect(
-    screen.getByRole("button", { name: "다크 모드로 전환" }),
-  ).toHaveAttribute("aria-pressed", "true");
+    screen.getByRole("button", { name: "라이트 모드로 전환" }),
+  ).toHaveAttribute("aria-pressed", "false");
 });
 
 it("restores the saved theme when the app renders", () => {

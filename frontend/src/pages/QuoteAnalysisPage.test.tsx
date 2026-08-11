@@ -102,11 +102,13 @@ const analysis = {
       "표준 대비 ±10% 이내 적정, ±10% 초과~±20% 주의, ±20% 초과 고가·저가",
   },
   run_id: 14,
-  target_period: "202606",
-  target_index_value: "130.030000",
+  target_period: "2025",
+  target_index_value: null,
+  inflation_sync_run_id: 22,
+  inflation_series_kind: "CPI_ALL",
   inflation_source_url:
-    "https://kosis.kr/statHtml/statHtml.do?orgId=301&tblId=DT_404Y014",
-  inflation_source_last_changed: "2026-08-11",
+    "https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_1J22041",
+  inflation_source_last_changed: "2025-12-31",
   quote_total_amount: "2080.000000",
   target_total_amount: "1260.000000",
   target_available_count: 7,
@@ -123,7 +125,37 @@ const analysis = {
     reason: index < 7
       ? "원본 날짜가 확인된 과거 단가 2건을 보정했습니다."
       : "원본 본문·머리말에서 확인된 견적일이 없습니다.",
-    evidence: [],
+    evidence: index === 0
+      ? [
+          {
+            raw_item_id: 1,
+            metadata_version_id: 11,
+            source_document_id: 3,
+            source_variant_id: 8,
+            source_logical_name: "과거견적/원본.xlsx",
+            source_sheet: "Sheet1",
+            source_page: null,
+            source_row: 12,
+            source_cells: "A12:G12",
+            quote_date: "2025-06-15",
+            source_period: "2016",
+            original_unit_price: "80.000000",
+            source_index_value: null,
+            target_index_value: null,
+            adjusted_unit_price: "86.686667",
+            inflation: {
+              sync_run_id: 22,
+              latest_confirmed_year: "2025",
+              annual_rates: [
+                { year: "2017", rate: "1.900000" },
+                { year: "2018", rate: "1.500000" },
+              ],
+              factor: "1.034285",
+              cumulative_percent: "3.428500",
+            },
+          },
+        ]
+      : [],
   })),
 };
 
@@ -155,6 +187,20 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
       if (url.includes("/api/analysis/documents/91")) {
         return jsonResponse(analysis);
       }
+      if (url === "/api/market/lookup-batch") {
+        return jsonResponse({
+          items: [
+            {
+              raw_item_id: 8,
+              status: "NO_REFERENCE",
+              detail: "검색 가능한 시장가가 없습니다.",
+              result: null,
+            },
+          ],
+          completed: 0,
+          unavailable: 1,
+        });
+      }
       throw new Error(`unexpected request: ${url}`);
     }),
   );
@@ -165,6 +211,8 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
     screen.getByRole("heading", { name: "신규 견적 분석" }),
   ).toBeVisible();
   expect(screen.queryByLabelText("기존 견적 선택")).not.toBeInTheDocument();
+  expect(screen.getByPlaceholderText("예: 홍길동")).toBeVisible();
+  expect(screen.getByText("미입력 시 익명으로 기록됩니다.")).toBeVisible();
   await user.upload(
     screen.getByLabelText("신규 견적서"),
     new File(["quote"], "신규견적.xlsx", {
@@ -177,10 +225,19 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(
     await screen.findByRole("heading", { name: "신규견적.xlsx" }),
   ).toBeVisible();
+  expect(
+    await screen.findByText("시장가 자동 조회 완료 0건 · 불가 1건"),
+  ).toBeVisible();
   expect(calls.map((call) => call.url)).toEqual([
     "/api/submissions",
     "/api/analysis/documents/91/runs",
+    "/api/market/lookup-batch",
   ]);
+  const batch = calls.find((call) => call.url === "/api/market/lookup-batch");
+  expect(JSON.parse(String(batch?.init?.body))).toEqual({
+    raw_item_ids: [8],
+    force_refresh: false,
+  });
   const upload = calls[0];
   expect(upload.init?.method).toBe("POST");
   expect(upload.init?.body).toBeInstanceOf(FormData);
@@ -193,17 +250,31 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(screen.getByText("주의 1건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 1건")).toBeVisible();
   expect(screen.getByText("DeviceMart·Mouser 캐시 우선 조회")).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "개당 단가" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "구매 금액" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "참조 최저·기준·최고" })).toBeVisible();
+  expect(screen.getAllByText("EA 2").length).toBeGreaterThan(0);
+  expect(screen.queryByText("EA · —")).not.toBeInTheDocument();
   const servo = screen.getByRole("row", { name: /SERVO MOTOR/ });
   expect(within(servo).getByText("시장가 확인 필요")).toBeVisible();
+  expect(within(servo).getByText(/시장가 근거 없음/)).toBeVisible();
   expect(within(servo).getByText("판정 대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
-  expect(screen.getByText("2026년 6월 생산자물가지수 130.030000")).toBeVisible();
+  expect(screen.getByText("2025년 확정 소비자물가 기준")).toBeVisible();
+  expect(document.querySelector(".inflation-basis-card small")).toHaveTextContent(
+    "연간 총지수 등락률을 견적 다음 연도부터 복리로 적용",
+  );
   expect(screen.getByText("전체 품목의 77.8%")).toBeVisible();
   expect(screen.getByRole("link", { name: "KOSIS 공식 통계 보기" })).toHaveAttribute(
     "href",
-    expect.stringContaining("DT_404Y014"),
+    expect.stringContaining("DT_1J22041"),
+  );
+  await user.click(screen.getAllByText("원본 2건")[0]);
+  expect(screen.getByText(/보정계수 ×1.034285/)).toBeVisible();
+  expect(document.querySelector(".inflation-evidence-detail")).toHaveTextContent(
+    "2017년 1.9% · 2018년 1.5% · 누적 +3.43%",
   );
 });
 
@@ -383,9 +454,42 @@ it("validates required inputs before making a request", async () => {
   await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "견적서 파일과 접수자를 모두 입력해 주세요.",
+    "견적서 파일을 선택해 주세요.",
   );
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("uses 익명 when the submitter is left blank", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url === "/api/submissions") {
+        return jsonResponse(successfulSubmission(), { status: 201 });
+      }
+      if (url === "/api/analysis/documents/91/runs") {
+        return jsonResponse(analysis);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  const user = userEvent.setup();
+  renderApp("/analysis");
+
+  await user.upload(
+    screen.getByLabelText("신규 견적서"),
+    new File(["quote"], "anonymous.xlsx"),
+  );
+  await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+
+  await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  const uploadBody = calls[0].init?.body as FormData;
+  expect(uploadBody.get("submitted_by")).toBe("익명");
+  expect(JSON.parse(String(calls[1].init?.body))).toMatchObject({
+    created_by: "익명",
+  });
 });
 
 it("shows a structured upload error and retries without clearing inputs", async () => {

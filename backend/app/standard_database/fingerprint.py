@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import asdict
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -50,3 +51,52 @@ def standard_build_fingerprint(
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def standard_build_calculation_fingerprint(
+    *,
+    rule_version: str,
+    normalization_version: str,
+    calculation_version: str,
+) -> str:
+    """Fingerprint the declared deterministic build calculation contract."""
+
+    payload = {
+        "rule_version": rule_version,
+        "normalization_version": normalization_version,
+        "calculation_version": calculation_version,
+        "representative_order": [
+            "CONFIRMED_LATEST_QUOTE_DATE",
+            "EXPLICIT_REVISION",
+            "UNLOCKED_SOURCE_QUALITY",
+            "NEWEST_INGEST",
+        ],
+        "copy_policy": "EXACT_VALUES_ONLY_WITH_LINEAGE",
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def standard_build_code_fingerprint() -> str:
+    """Hash the source modules whose code determines a standard build."""
+
+    backend_root = Path(__file__).resolve().parents[2]
+    paths = (
+        backend_root / "app" / "standard_database" / "fingerprint.py",
+        backend_root / "app" / "standard_database" / "operational.py",
+        backend_root / "app" / "standard_database" / "service.py",
+        backend_root / "app" / "pricing" / "service.py",
+        backend_root / "app" / "catalog" / "models.py",
+    )
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.relative_to(backend_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+        digest.update(b"\0")
+    return digest.hexdigest()

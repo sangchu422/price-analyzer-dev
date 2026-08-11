@@ -28,7 +28,18 @@ const firstItem: ReviewQueueItem = {
   },
   reason_code: "AMOUNT_MISMATCH",
   reason_detail: "수량 × 단가와 금액을 확인해 주세요.",
-  reason_evidence: null,
+  reason_evidence: {
+    kind: "AMOUNT_MISMATCH",
+    original_quantity: "2",
+    original_unit: "EA",
+    original_unit_price: "3,000",
+    displayed_amount: "5,600",
+    calculated_amount: "6000",
+    difference_amount: "400",
+    difference_percent: "7.1429",
+    tolerance_amount: "56",
+    comparison: "CALCULATED_MINUS_DISPLAYED",
+  },
   spec_source_status: "PRESENT",
   decision: {
     id: 41,
@@ -66,6 +77,16 @@ const sourcePreview = {
   page: null,
   target_row: 12,
   target_cells: ["A12", "B12", "C12", "D12", "E12", "F12", "G12"],
+  header_rows: [
+    {
+      row_number: 6,
+      cells: [
+        { coordinate: "A6", value: "품명", highlighted: false },
+        { coordinate: "B6", value: "규격", highlighted: false },
+        { coordinate: "E6", value: "단가", highlighted: false },
+      ],
+    },
+  ],
   rows: [
     {
       row_number: 12,
@@ -138,10 +159,22 @@ describe("CleansingReviewPage", () => {
     expect(await screen.findByLabelText("원본 견적서 셀 미리보기")).toBeVisible();
     expect(screen.getByTitle("A12")).toHaveClass("is-source-target");
     expect(screen.getByTitle("E12")).toHaveTextContent("2,800");
+    expect(screen.getByRole("columnheader", { name: "품명" })).toBeVisible();
     expect(screen.getByText("260707_러닝랩_견적_보안해제.xlsx")).toBeVisible();
     expect(screen.getByText("견적서 · 12행 · A12:G12")).toBeVisible();
     expect(screen.getByRole("heading", { name: "금액 불일치" })).toBeVisible();
     expect(screen.getByText("수량 × 단가로 계산한 값과 견적서 금액이 일치하지 않습니다.")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "표시 금액 대 계산 금액" })).toBeVisible();
+    expect(screen.getByText("3,000")).toBeVisible();
+    expect(screen.getByText("5,600")).toBeVisible();
+    expect(screen.getByText("6,000원")).toBeVisible();
+    expect(screen.getByText("+400원")).toBeVisible();
+    expect(document.querySelector(".amount-mismatch-evidence > p")).toHaveTextContent(
+      "차이율 +7.1%",
+    );
+    expect(document.querySelector(".amount-mismatch-evidence > p")).toHaveTextContent(
+      "허용오차 ±56원",
+    );
     expect(screen.getByRole("link", { name: "원본 전체 열기" })).toHaveAttribute(
       "href",
       "/api/documents/variants/8/file",

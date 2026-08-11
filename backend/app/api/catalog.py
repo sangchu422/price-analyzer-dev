@@ -246,8 +246,10 @@ class StandardItemResponse(BaseModel):
 
 class StandardItemSummaryResponse(StandardItemResponse):
     member_count: int
-    observation_count: int
+    observation_count: int | None
     current_price_version_id: int | None
+    captured_price_version_id: int | None
+    operational_status: str
     evidence_quality: EvidenceQuality | None
     current_price: "ExplorerPriceResponse | None"
     supplier_summary: list[str]
@@ -271,6 +273,9 @@ class BuildProvenanceResponse(BaseModel):
     status: str
     built_at: datetime
     rule_version: str
+    input_fingerprint: str
+    calculation_fingerprint: str
+    code_fingerprint: str
 
 
 class StandardItemListResponse(BaseModel):
@@ -622,6 +627,9 @@ def _build_provenance_payload(
         "status": provenance.status.value,
         "built_at": provenance.built_at,
         "rule_version": provenance.rule_version,
+        "input_fingerprint": provenance.input_fingerprint,
+        "calculation_fingerprint": provenance.calculation_fingerprint,
+        "code_fingerprint": provenance.code_fingerprint,
     }
 
 
@@ -643,13 +651,15 @@ def _explorer_summary_payload(
     summary: StandardExplorerSummary,
 ) -> dict[str, object]:
     price = summary.current_price
-    observation_count = 0 if price is None else price.observation_count
+    observation_count = None if price is None else price.observation_count
     return {
         "id": summary.current_version.standard_item_id,
         "current_version": _version_payload(summary.current_version),
         "member_count": summary.member_count,
         "observation_count": observation_count,
         "current_price_version_id": None if price is None else price.id,
+        "captured_price_version_id": summary.captured_price_version_id,
+        "operational_status": summary.operational_status.value,
         "evidence_quality": (
             None
             if summary.evidence_quality is None

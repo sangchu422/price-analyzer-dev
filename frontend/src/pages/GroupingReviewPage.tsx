@@ -590,7 +590,7 @@ function MetadataForm({
         <span>{metadata ? `v${metadata.version_number}` : "미등록"}</span>
       </div>
       <div className="form-grid">
-        <label><span>공급사</span><input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label>
+        <label><span>견적 제출사</span><input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label>
         <label><span>견적일</span><input type="date" value={quoteDate} onChange={(event) => setQuoteDate(event.target.value)} /></label>
         <label><span>프로젝트</span><input value={project} onChange={(event) => setProject(event.target.value)} /></label>
         <label><span>검토자</span><input aria-label="메타데이터 검토자" value={actor} onChange={(event) => setActor(event.target.value)} /></label>

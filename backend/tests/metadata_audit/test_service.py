@@ -76,6 +76,43 @@ def test_audit_uses_labeled_source_values_not_collection_folder(tmp_path: Path) 
         assert rows[0]["supplier_name"] == "실제공급사"
 
 
+def test_audit_reads_unlabeled_legal_company_name_from_quote_cover(
+    tmp_path: Path,
+) -> None:
+    quote_root = tmp_path / "견적서"
+    quote = quote_root / "3차 학습" / "cover-company.xlsx"
+    quote.parent.mkdir(parents=True)
+    workbook = Workbook()
+    cover = workbook.active
+    cover.title = "갑지"
+    cover["B2"] = "견 적 서"
+    cover["G4"] = "한로기술(주)"
+    cover["B5"] = "견적일자"
+    cover["D5"] = "2025-11-15"
+    detail = workbook.create_sheet("단위장비4")
+    detail.append(["품명", "규격", "단위", "수량", "단가", "금액"])
+    detail.append(["2분력계", "5000NM/10000N", "SET", 2, 47000000, 94000000])
+    workbook.save(quote)
+    engine = configure_sqlite(create_engine("sqlite:///:memory:"))
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        ingest_path(session, quote, root=quote_root)
+        report = audit_quote_metadata(
+            session,
+            quote_root=quote_root,
+            report_path=tmp_path / "cover-audit.csv",
+        )
+        session.commit()
+
+        metadata = session.scalar(select(DocumentMetadataVersion))
+        assert report.auto_confirmed_files == 1
+        assert metadata is not None
+        assert metadata.supplier_name == "한로기술(주)"
+        assert metadata.quote_date.isoformat() == "2025-11-15"
+        assert '"cells":"G4"' in metadata.evidence_json
+
+
 def test_audit_rejects_collection_labels_and_placeholder_dates(tmp_path: Path) -> None:
     quote_root = tmp_path / "견적서"
     quote = quote_root / "3차 학습" / "바츠 추출 견적서" / "placeholder.xlsx"

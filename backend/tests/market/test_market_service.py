@@ -16,7 +16,11 @@ from app.market.models import (
     MarketPriceObservation,
     MarketSource,
 )
-from app.market.service import MarketLookupService, _relevant_products
+from app.market.service import (
+    MarketLookupService,
+    _automatic_exclusion_reasons,
+    _relevant_products,
+)
 from app.quotes.models import RawQuoteItem
 
 
@@ -44,6 +48,14 @@ class FakeAdapter:
                 ),
             )
         ]
+
+
+class FailingAdapter:
+    def __init__(self, source: MarketSource) -> None:
+        self.source = source
+
+    def search(self, query: str) -> list[CollectedProduct]:
+        raise RuntimeError(f"{self.source.value} unavailable")
 
 
 def _raw_item(session: Session) -> RawQuoteItem:
@@ -237,3 +249,77 @@ def test_generic_family_search_remains_review_required(tmp_path) -> None:
     assert result.median_price == Decimal("100")
     assert result.variance_percent is None
     assert result.assessment == "REVIEW_REQUIRED"
+
+
+def test_automatic_market_price_requires_exact_part_maker_stock_and_moq() -> None:
+    assert _automatic_exclusion_reasons(
+        query="OMRON PHOTO SENSOR E3Z-D61",
+        product_title="OMRON PHOTO SENSOR E3Z-D61",
+        product_manufacturer="OMRON",
+        product_model_number="E3Z-D61",
+        required_manufacturer="OMRON",
+        quantity=Decimal("2"),
+        moq=1,
+        stock_quantity=10,
+    ) == []
+
+    reasons = _automatic_exclusion_reasons(
+        query="OMRON PHOTO SENSOR E3Z-D61",
+        product_title="OMRON PHOTO SENSOR E3ZG-D61",
+        product_manufacturer="OMRON",
+        product_model_number="E3ZG-D61",
+        required_manufacturer="OMRON",
+        quantity=Decimal("2"),
+        moq=5,
+        stock_quantity=None,
+    )
+
+    assert "MODEL_NUMBER_NOT_EXACT" in reasons
+    assert "MOQ_NOT_MET" in reasons
+    assert "STOCK_UNCONFIRMED" in reasons
+
+
+def test_missing_mouser_adapter_keeps_devicemart_reference_and_reports_setup(
+    tmp_path,
+) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(project_root=tmp_path, market_evidence_folder="evidence")
+
+    with Session(engine, expire_on_commit=False) as session:
+        raw = _raw_item(session)
+        result = MarketLookupService(
+            session,
+            settings,
+            [FakeAdapter(MarketSource.DEVICEMART, "100")],
+        ).lookup_raw_item(raw.id, automatic=True)
+
+    assert result.outcome == "REFERENCE_ONLY"
+    assert [failure.source for failure in result.source_failures] == [
+        MarketSource.MOUSER
+    ]
+    assert "API 키" in result.source_failures[0].detail
+
+
+def test_both_market_sources_failing_remains_source_unavailable(tmp_path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(project_root=tmp_path, market_evidence_folder="evidence")
+
+    with Session(engine, expire_on_commit=False) as session:
+        raw = _raw_item(session)
+        result = MarketLookupService(
+            session,
+            settings,
+            [
+                FailingAdapter(MarketSource.DEVICEMART),
+                FailingAdapter(MarketSource.MOUSER),
+            ],
+        ).lookup_raw_item(raw.id, automatic=True)
+
+    assert result.outcome == "SOURCE_UNAVAILABLE"
+    assert result.assessment == "REVIEW_REQUIRED"
+    assert {failure.source for failure in result.source_failures} == {
+        MarketSource.DEVICEMART,
+        MarketSource.MOUSER,
+    }

@@ -20,6 +20,7 @@ from app.catalog.models import (
     StandardItem,
     StandardItemVersion,
     StandardPriceObservation,
+    StandardPriceObservationLineage,
     StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
@@ -46,6 +47,7 @@ def _source_graph() -> tuple[SourceDocument, RawQuoteItem]:
         selected_for_parsing_at_ingest=True,
     )
     raw_item = RawQuoteItem(
+        id=1,
         source_variant=variant,
         source_sheet="Sheet1",
         source_row=2,
@@ -122,11 +124,15 @@ def _catalog_graph() -> tuple[
         draft_fingerprint="a" * 64,
         approved_by="buyer-1",
     )
-    StandardPriceObservation(
+    observation = StandardPriceObservation(
         standard_price_version=price,
         clean_decision=clean,
         membership_decision=membership,
+        raw_item_id=raw_item.id,
     )
+    observation.lineage = [
+        StandardPriceObservationLineage(raw_item_id=raw_item.id)
+    ]
     return (
         document,
         raw_item,

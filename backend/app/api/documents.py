@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import re
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -23,6 +24,7 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.ingestion.corpus import ingest_corpus
+from app.ingestion.readers import _find_header
 from app.ingestion.service import preferred_variant_for
 from app.quotes.models import RawQuoteItem
 
@@ -111,6 +113,7 @@ class VariantPreviewResponse(BaseModel):
     sheet: str | None = None
     page: int | None = None
     target_cells: str | None = None
+    header_rows: list[PreviewRowResponse] = Field(default_factory=list)
     rows: list[PreviewRowResponse] = Field(default_factory=list)
 
 
@@ -221,6 +224,7 @@ def get_variant_preview(
             "file_name": path.name,
             "page": raw.source_page or 1,
             "target_cells": None,
+            "header_rows": [],
             "rows": [],
         }
     if extension not in {".xlsx", ".xls"}:
@@ -230,10 +234,11 @@ def get_variant_preview(
             "file_name": path.name,
             "page": raw.source_page,
             "target_cells": raw.source_cells,
+            "header_rows": [],
             "rows": [],
         }
     try:
-        rows = (
+        rows, header_rows = (
             _xlsx_preview(path, raw)
             if extension == ".xlsx"
             else _xls_preview(path, raw)
@@ -250,6 +255,7 @@ def get_variant_preview(
         "sheet": raw.source_sheet,
         "page": None,
         "target_cells": raw.source_cells,
+        "header_rows": header_rows,
         "rows": rows,
     }
 
@@ -372,6 +378,11 @@ def _preview_bounds(raw: RawQuoteItem) -> tuple[int, int, int, int]:
     return max(1, target_row - 3), target_row + 3, first_col, last_col
 
 
+_PREVIEW_ROW_LIMIT = 50
+_PREVIEW_HEADER_SCAN_LIMIT = 50
+_PREVIEW_HEADER_MAX_ROWS = 4
+
+
 def _target_coordinates(raw: RawQuoteItem) -> set[str]:
     if not raw.source_cells:
         return set()
@@ -389,7 +400,10 @@ def _target_coordinates(raw: RawQuoteItem) -> set[str]:
     }
 
 
-def _xlsx_preview(path: Path, raw: RawQuoteItem) -> list[dict[str, object]]:
+def _xlsx_preview(
+    path: Path,
+    raw: RawQuoteItem,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         sheet = (
@@ -397,30 +411,20 @@ def _xlsx_preview(path: Path, raw: RawQuoteItem) -> list[dict[str, object]]:
             if raw.source_sheet in workbook.sheetnames
             else workbook.worksheets[0]
         )
-        first_row, last_row, first_col, last_col = _preview_bounds(raw)
-        target = _target_coordinates(raw)
-        return [
-            {
-                "row_number": row_index,
-                "cells": [
-                    {
-                        "coordinate": f"{get_column_letter(column_index)}{row_index}",
-                        "value": _preview_text(sheet.cell(row_index, column_index).value),
-                        "highlighted": (
-                            f"{get_column_letter(column_index)}{row_index}" in target
-                            or (not target and row_index == raw.source_row)
-                        ),
-                    }
-                    for column_index in range(first_col, last_col + 1)
-                ],
-            }
-            for row_index in range(first_row, min(last_row, sheet.max_row) + 1)
-        ]
+        return _spreadsheet_preview(
+            raw,
+            max_row=sheet.max_row,
+            max_column=sheet.max_column,
+            cell_value=lambda row, column: sheet.cell(row, column).value,
+        )
     finally:
         workbook.close()
 
 
-def _xls_preview(path: Path, raw: RawQuoteItem) -> list[dict[str, object]]:
+def _xls_preview(
+    path: Path,
+    raw: RawQuoteItem,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     workbook = xlrd.open_workbook(path, on_demand=True)
     try:
         sheet = (
@@ -428,29 +432,131 @@ def _xls_preview(path: Path, raw: RawQuoteItem) -> list[dict[str, object]]:
             if raw.source_sheet in workbook.sheet_names()
             else workbook.sheet_by_index(0)
         )
-        first_row, last_row, first_col, last_col = _preview_bounds(raw)
-        target = _target_coordinates(raw)
-        rows: list[dict[str, object]] = []
-        for row_index in range(first_row, min(last_row, sheet.nrows) + 1):
-            cells = []
-            for column_index in range(first_col, min(last_col, sheet.ncols) + 1):
-                coordinate = f"{get_column_letter(column_index)}{row_index}"
-                cells.append(
-                    {
-                        "coordinate": coordinate,
-                        "value": _preview_text(
-                            sheet.cell_value(row_index - 1, column_index - 1)
-                        ),
-                        "highlighted": (
-                            coordinate in target
-                            or (not target and row_index == raw.source_row)
-                        ),
-                    }
-                )
-            rows.append({"row_number": row_index, "cells": cells})
-        return rows
+        return _spreadsheet_preview(
+            raw,
+            max_row=sheet.nrows,
+            max_column=sheet.ncols,
+            cell_value=lambda row, column: sheet.cell_value(row - 1, column - 1),
+        )
     finally:
         workbook.release_resources()
+
+
+def _spreadsheet_preview(
+    raw: RawQuoteItem,
+    *,
+    max_row: int,
+    max_column: int,
+    cell_value: Callable[[int, int], object],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    first_row, last_row, first_column, last_column = _preview_bounds(raw)
+    last_column = min(last_column, max_column)
+    if first_column > last_column or max_row < 1:
+        return [], []
+    header_numbers = _preview_header_numbers(
+        raw,
+        max_row=max_row,
+        first_column=first_column,
+        last_column=last_column,
+        cell_value=cell_value,
+    )
+    header_set = set(header_numbers)
+    target = _target_coordinates(raw)
+    rows = [
+        _preview_row(
+            row_index,
+            first_column=first_column,
+            last_column=last_column,
+            target=target,
+            target_row=raw.source_row,
+            cell_value=cell_value,
+            highlight_target=True,
+        )
+        for row_index in range(first_row, min(last_row, max_row) + 1)
+        if row_index not in header_set
+    ][: _PREVIEW_ROW_LIMIT - len(header_numbers)]
+    header_rows = [
+        _preview_row(
+            row_index,
+            first_column=first_column,
+            last_column=last_column,
+            target=set(),
+            target_row=None,
+            cell_value=cell_value,
+            highlight_target=False,
+        )
+        for row_index in header_numbers
+    ]
+    return rows, header_rows
+
+
+def _preview_header_numbers(
+    raw: RawQuoteItem,
+    *,
+    max_row: int,
+    first_column: int,
+    last_column: int,
+    cell_value: Callable[[int, int], object],
+) -> list[int]:
+    if raw.source_row is None or raw.source_row <= 1:
+        return []
+    last_scan_row = min(raw.source_row - 1, max_row)
+    first_scan_row = max(1, last_scan_row - _PREVIEW_HEADER_SCAN_LIMIT + 1)
+    values = [
+        [
+            cell_value(row_index, column_index)
+            for column_index in range(first_column, last_column + 1)
+        ]
+        for row_index in range(first_scan_row, last_scan_row + 1)
+    ]
+    header_end, _ = _find_header(values)
+    if header_end is None:
+        return []
+    header_start = _preview_header_start(values, header_end)
+    return list(
+        range(
+            first_scan_row + header_start,
+            first_scan_row + header_end + 1,
+        )
+    )
+
+
+def _preview_header_start(rows: list[list[object]], header_end: int) -> int:
+    first_candidate = max(0, header_end - _PREVIEW_HEADER_MAX_ROWS + 1)
+    for start in range(first_candidate, header_end + 1):
+        candidate_end, _ = _find_header(rows[start : header_end + 1])
+        if candidate_end == header_end - start:
+            return start
+    return header_end
+
+
+def _preview_row(
+    row_index: int,
+    *,
+    first_column: int,
+    last_column: int,
+    target: set[str],
+    target_row: int | None,
+    cell_value: Callable[[int, int], object],
+    highlight_target: bool,
+) -> dict[str, object]:
+    return {
+        "row_number": row_index,
+        "cells": [
+            {
+                "coordinate": f"{get_column_letter(column_index)}{row_index}",
+                "value": _preview_text(cell_value(row_index, column_index)),
+                "highlighted": (
+                    highlight_target
+                    and (
+                        f"{get_column_letter(column_index)}{row_index}" in target
+                        or (not target and row_index == target_row)
+                    )
+                ),
+            }
+            for column_index in range(first_column, last_column + 1)
+        ],
+    }
 
 
 def _preview_text(value: object) -> str | None:

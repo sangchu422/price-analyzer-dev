@@ -176,7 +176,16 @@ _FIELD_ALIASES = {
         "合計金額",
         "合計金额",
     ),
-    "maker": ("메이커", "제조사", "브랜드", "maker", "manufacturer"),
+    "maker": (
+        "메이커",
+        "제조사",
+        "브랜드",
+        "원maker",
+        "原maker",
+        "maker사",
+        "maker",
+        "manufacturer",
+    ),
 }
 _HEADER_SEPARATORS = re.compile(r"[\s_\-./()\[\]:]+")
 _PDF_COLUMNS = re.compile(r"\t+|\s{2,}")

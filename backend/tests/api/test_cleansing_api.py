@@ -89,7 +89,18 @@ def test_review_queue_returns_current_decision_and_exact_provenance(
     assert row["normalized"]["item_name"] == "BEARING"
     assert row["normalized"]["unit_price"] == "1000"
     assert row["reason_code"] == "AMOUNT_MISMATCH"
-    assert row["reason_evidence"] is None
+    assert row["reason_evidence"] == {
+        "kind": "AMOUNT_MISMATCH",
+        "original_quantity": "2",
+        "original_unit": " ea ",
+        "original_unit_price": "1000",
+        "displayed_amount": "9000",
+        "calculated_amount": "2000",
+        "difference_amount": "-7000",
+        "difference_percent": "-77.7778",
+        "tolerance_amount": "90",
+        "comparison": "CALCULATED_MINUS_DISPLAYED",
+    }
     assert row["spec_source_status"] == "PRESENT"
     assert row["decision"]["id"] > 0
     assert row["decision"]["rule_version"] == "clean-v1"

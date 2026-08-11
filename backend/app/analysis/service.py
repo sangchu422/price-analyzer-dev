@@ -56,6 +56,13 @@ Assessment = Literal[
     "HIGH",
 ]
 MarketLookupStatus = Literal["NOT_REQUIRED", "FUTURE_MARKET_LOOKUP"]
+MarketEligibilityStatus = Literal[
+    "ELIGIBLE",
+    "STANDARD_APPLIED",
+    "CLEANING_REQUIRED",
+    "EXCLUDED",
+    "NOT_FOUND",
+]
 
 PERCENT_QUANTUM = Decimal("0.000001")
 
@@ -156,6 +163,13 @@ class AnalysisDocumentPage:
     limit: int
     offset: int
     next_cursor: int | None
+
+
+@dataclass(frozen=True)
+class MarketLookupEligibility:
+    raw_item_id: int
+    status: MarketEligibilityStatus
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -503,6 +517,96 @@ def _catalog_projection(session: Session) -> _CatalogProjection:
             for key, candidates in exact_candidates.items()
             if len(candidates) == 1 and key[0]
         },
+    )
+
+
+def market_lookup_eligibility(
+    session: Session,
+    raw_item_id: int,
+) -> MarketLookupEligibility:
+    """Apply the same cleansing/exact-standard gate used by quote analysis."""
+
+    return _market_lookup_eligibility(
+        session,
+        raw_item_id,
+        projection=_catalog_projection(session),
+    )
+
+
+def market_lookup_eligibilities(
+    session: Session,
+    raw_item_ids: Collection[int],
+) -> tuple[MarketLookupEligibility, ...]:
+    """Evaluate a market batch against one consistent catalog projection."""
+
+    projection = _catalog_projection(session)
+    return tuple(
+        _market_lookup_eligibility(session, raw_id, projection=projection)
+        for raw_id in dict.fromkeys(raw_item_ids)
+    )
+
+
+def _market_lookup_eligibility(
+    session: Session,
+    raw_item_id: int,
+    *,
+    projection: _CatalogProjection,
+) -> MarketLookupEligibility:
+
+    raw = session.get(RawQuoteItem, raw_item_id)
+    if raw is None:
+        return MarketLookupEligibility(
+            raw_item_id,
+            "NOT_FOUND",
+            "견적 품목을 찾을 수 없습니다.",
+        )
+    clean = session.scalar(
+        select(CleanDecision)
+        .where(CleanDecision.raw_item_id == raw_item_id)
+        .order_by(CleanDecision.id.desc())
+    )
+    if clean is None or clean.status is CleanStatus.REVIEW_REQUIRED:
+        return MarketLookupEligibility(
+            raw_item_id,
+            "CLEANING_REQUIRED",
+            "정제 검토를 완료한 뒤 시장가를 조회할 수 있습니다.",
+        )
+    if clean.status is CleanStatus.EXCLUDED:
+        return MarketLookupEligibility(
+            raw_item_id,
+            "EXCLUDED",
+            "가격 판정에서 제외된 품목입니다.",
+        )
+    membership = session.scalar(
+        select(ItemMembershipDecision)
+        .where(ItemMembershipDecision.raw_item_id == raw_item_id)
+        .order_by(ItemMembershipDecision.id.desc())
+    )
+    matched = None
+    if (
+        membership is not None
+        and membership.status is MembershipStatus.MATCHED
+        and membership.standard_item_id is not None
+    ):
+        matched = projection.versions.get(membership.standard_item_id)
+    elif membership is None:
+        matched = projection.exact_versions.get(
+            (
+                normalize_search_text(clean.item_name_norm),
+                normalize_search_text(clean.spec_norm),
+                normalize_search_text(clean.unit_norm),
+            )
+        )
+    if matched is not None and matched.standard_item_id in projection.prices:
+        return MarketLookupEligibility(
+            raw_item_id,
+            "STANDARD_APPLIED",
+            "활성 표준 단가가 있어 시장가를 조회하지 않았습니다.",
+        )
+    return MarketLookupEligibility(
+        raw_item_id,
+        "ELIGIBLE",
+        "표준 단가가 없어 시장가 자동 보완 대상입니다.",
     )
 
 

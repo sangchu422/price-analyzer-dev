@@ -294,8 +294,7 @@ body {
 }
 
 .page-heading,
-.analysis-page-heading,
-.standard-db-heading {
+.analysis-page-heading {
   min-height: 116px;
   align-items: end;
   padding: 26px clamp(20px, 3vw, 42px) 24px;
@@ -340,6 +339,14 @@ textarea {
 
 button {
   transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.standard-db-heading {
+  min-height: 116px;
+  align-items: end;
+  padding: 26px var(--standard-section-gutter) 24px;
+  border-color: var(--line);
+  background: var(--paper);
 }
 
 button:not(:disabled):active {
@@ -1040,6 +1047,11 @@ textarea::placeholder {
   color: var(--accent);
 }
 
+.inflation-source-unavailable {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* Source-first review surfaces */
 .standard-db-heading .section-kicker {
   color: var(--accent-strong);
@@ -1050,8 +1062,49 @@ textarea::placeholder {
 }
 
 .price-distribution,
+.amount-mismatch-evidence,
 .source-preview-section {
   padding-top: 30px;
+}
+
+.amount-mismatch-evidence dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 18px 0 0;
+  border-top: 1px solid var(--ink);
+}
+
+.amount-mismatch-evidence dl > div {
+  min-height: 76px;
+  padding: 11px 14px;
+  border-right: 1px solid var(--soft-line);
+  border-bottom: 1px solid var(--soft-line);
+}
+
+.amount-mismatch-evidence dl > div:nth-child(3n) {
+  border-right: 0;
+}
+
+.amount-mismatch-evidence dt {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.amount-mismatch-evidence dd {
+  margin: 0;
+  color: var(--ink);
+  font: 650 14px/1.35 var(--font-sans);
+}
+
+.amount-mismatch-evidence .is-difference dd {
+  color: var(--danger);
+}
+
+.amount-mismatch-evidence > p {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .distribution-summary {
@@ -1206,6 +1259,22 @@ textarea::placeholder {
   min-width: 48px;
   color: var(--muted);
   background: var(--table-heading);
+}
+
+.source-grid thead th {
+  top: 0;
+  left: auto;
+  z-index: 2;
+  text-align: center;
+}
+
+.source-grid thead th:first-child {
+  left: 0;
+  z-index: 3;
+}
+
+.source-grid tbody th {
+  text-align: center;
 }
 
 .source-grid td.is-source-target {

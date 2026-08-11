@@ -374,7 +374,7 @@ describe("GroupingReviewPage", () => {
     );
 
     const metadata = screen.getByRole("region", { name: "문서 메타데이터" });
-    await user.type(within(metadata).getByLabelText("공급사"), "KBC");
+    await user.type(within(metadata).getByLabelText("견적 제출사"), "KBC");
     await user.type(within(metadata).getByLabelText("견적일"), "2026-07-01");
     await user.type(within(metadata).getByLabelText("메타데이터 검토자"), "buyer-2");
     await user.type(

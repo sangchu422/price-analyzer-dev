@@ -23,7 +23,10 @@ from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
+    StandardOperationalStatus,
 )
+from app.standard_database.operational import OperationalStandardPriceState
+from app.pricing.service import approve_standard_price, calculate_standard_price
 from app.standard_database.service import build_standard_database
 
 
@@ -38,6 +41,7 @@ def _historical_row(
     supplier: str,
     maker: str,
     date_quality: str | None = None,
+    decision_cells: str | None = None,
 ) -> None:
     document = SourceDocument(logical_name=f"quotes/vendor-{row}.xlsx")
     variant = SourceVariant(
@@ -73,6 +77,11 @@ def _historical_row(
                 unit_price=Decimal(price),
                 maker_norm=maker,
                 rule_version="clean-v1",
+                reason_evidence_json=(
+                    "{}"
+                    if decision_cells is None
+                    else json.dumps({"cells": decision_cells})
+                ),
             ),
             DocumentMetadataVersion(
                 source_document=document,
@@ -131,6 +140,7 @@ def _built_catalog(session: Session) -> int:
         supplier="SUPPLIER C",
         maker="OMRON",
         date_quality="FILE_DATE_INFERRED",
+        decision_cells="A3:H3",
     )
     session.flush()
     result = build_standard_database(session)
@@ -278,7 +288,10 @@ def test_standard_catalog_explorer_exposes_current_price_and_provenance(
         "build_run_id": run_id,
         "status": "SUCCEEDED",
         "built_at": payload["latest_build"]["built_at"],
-        "rule_version": "STANDARD_DB_EXACT_V2",
+        "rule_version": "STANDARD_DB_EXACT_V6_LATEST_QUOTE_BUSINESS_SOURCE_DEDUP",
+        "input_fingerprint": payload["latest_build"]["input_fingerprint"],
+        "calculation_fingerprint": payload["latest_build"]["calculation_fingerprint"],
+        "code_fingerprint": payload["latest_build"]["code_fingerprint"],
     }
     assert len(payload["items"]) == 1
     item = payload["items"][0]
@@ -299,6 +312,40 @@ def test_standard_catalog_explorer_exposes_current_price_and_provenance(
     assert item["provenance"]["build_run_id"] == run_id
     assert "legacy_codes" not in item
     assert "reconciliation_run_id" not in item
+
+
+def test_matching_build_projection_beats_newer_unprojected_price_version(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _built_catalog(api_session)
+    bearing = api_session.query(StandardItemVersion).filter_by(
+        canonical_name="BEARING"
+    ).one()
+    captured = (
+        api_session.query(StandardPriceVersion)
+        .filter_by(standard_item_id=bearing.standard_item_id)
+        .one()
+    )
+    draft = calculate_standard_price(api_session, bearing.standard_item_id)
+    appended = approve_standard_price(
+        api_session,
+        bearing.standard_item_id,
+        expected_fingerprint=draft.fingerprint,
+        expected_current_version_id=captured.id,
+        approved_by="buyer",
+    )
+    api_session.commit()
+
+    item = client.get(
+        "/api/catalog/standard-items",
+        params={"search": "BEARING"},
+    ).json()["items"][0]
+
+    assert appended.id > captured.id
+    assert item["current_price_version_id"] == captured.id
+    assert item["captured_price_version_id"] == captured.id
+    assert item["operational_status"] == "ACTIVE"
 
 
 def test_standard_catalog_explorer_returns_single_observation_evidence_links(
@@ -341,7 +388,7 @@ def test_standard_catalog_explorer_returns_single_observation_evidence_links(
                 "sheet": "견적",
                 "page": None,
                 "row": 3,
-                "cells": "A3:G3",
+                "cells": "A3:H3",
             },
         }
     ]
@@ -378,7 +425,9 @@ def test_standard_catalog_list_query_count_is_bounded(
     # The projection uses a fixed set of batched reads for current evidence,
     # price observations, summaries, and build provenance. The bound must not
     # grow with the number of catalog items.
-    assert statements <= 8
+    # One extra bounded lookup verifies that a successful projection has the
+    # same input/calculation/code provenance before exposing its evidence.
+    assert statements <= 9
 
 
 def test_standard_catalog_materializes_only_a_fixed_page_chunk(
@@ -400,13 +449,20 @@ def test_standard_catalog_materializes_only_a_fixed_page_chunk(
     def no_prices(
         session: Session,
         standard_item_ids: object,
-    ) -> dict[int, StandardPriceVersion]:
+    ) -> dict[int, OperationalStandardPriceState]:
         item_ids = list(standard_item_ids)
         price_batch_sizes.append(len(item_ids))
-        return {}
+        return {
+            item_id: OperationalStandardPriceState(
+                status=StandardOperationalStatus.NO_ELIGIBLE_EVIDENCE,
+                current_price=None,
+                captured_price=None,
+            )
+            for item_id in item_ids
+        }
 
     monkeypatch.setattr(
-        "app.standard_database.read_service.operational_standard_prices",
+        "app.standard_database.read_service.operational_standard_price_states",
         no_prices,
     )
     event.listen(StandardItemVersion, "load", record_load)
@@ -423,7 +479,7 @@ def test_standard_catalog_materializes_only_a_fixed_page_chunk(
     assert price_batch_sizes and max(price_batch_sizes) <= 128
 
 
-def test_single_quality_pagination_skips_stale_chunks_without_gaps(
+def test_quality_filter_does_not_expose_prices_after_build_provenance_stales(
     client: TestClient,
     api_session: Session,
 ) -> None:
@@ -448,31 +504,11 @@ def test_single_quality_pagination_skips_stale_chunks_without_gaps(
         params={"limit": 2, "evidence_quality": "SINGLE_OBSERVATION"},
     )
     assert first.status_code == 200, first.text
-    first_payload = first.json()
-    first_names = [
-        row["current_version"]["canonical_name"]
-        for row in first_payload["items"]
-    ]
-    assert first_names == ["FILTER-0140", "FILTER-0141"]
-    assert first_payload["next_cursor"] is not None
-
-    second = client.get(
-        "/api/catalog/standard-items",
-        params={
-            "limit": 2,
-            "evidence_quality": "SINGLE_OBSERVATION",
-            "after_id": first_payload["next_cursor"],
-        },
-    )
-    assert second.status_code == 200, second.text
-    second_payload = second.json()
-    second_names = [
-        row["current_version"]["canonical_name"]
-        for row in second_payload["items"]
-    ]
-    assert second_names == ["FILTER-0142"]
-    assert second_payload["next_cursor"] is None
-    assert not set(first_names) & set(second_names)
+    # A changed input invalidates the full build provenance.  The three
+    # untouched rows may not be presented as independently current through a
+    # max(price.id) fallback after projections have been established.
+    assert first.json()["items"] == []
+    assert first.json()["next_cursor"] is None
 
 
 def test_member_count_includes_current_matched_rows_without_price_observation(
@@ -540,8 +576,10 @@ def test_member_count_includes_current_matched_rows_without_price_observation(
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
     assert item["member_count"] == 3
-    assert item["observation_count"] == 0
+    assert item["observation_count"] is None
     assert item["current_price_version_id"] is None
+    assert item["captured_price_version_id"] is not None
+    assert item["operational_status"] == "REBUILD_REQUIRED"
 
     result = build_standard_database(api_session)
     api_session.commit()
@@ -592,7 +630,12 @@ def test_catalog_hides_stale_standard_when_all_current_members_are_excluded(
     )
 
     assert response.status_code == 200
-    assert response.json()["items"] == []
+    item = response.json()["items"][0]
+    assert item["member_count"] == 0
+    assert item["observation_count"] is None
+    assert item["current_price_version_id"] is None
+    assert item["captured_price_version_id"] is not None
+    assert item["operational_status"] == "NO_ELIGIBLE_EVIDENCE"
 
 
 def test_catalog_keeps_included_member_without_current_price(
@@ -665,10 +708,12 @@ def test_catalog_keeps_included_member_without_current_price(
     assert response.status_code == 200
     payload = response.json()["items"][0]
     assert payload["member_count"] == 1
-    assert payload["observation_count"] == 0
+    assert payload["observation_count"] is None
     assert payload["current_price_version_id"] is None
+    assert payload["captured_price_version_id"] is None
     assert payload["current_price"] is None
     assert payload["evidence_quality"] is None
+    assert payload["operational_status"] == "NO_ELIGIBLE_EVIDENCE"
 
 
 @pytest.mark.parametrize(
@@ -711,7 +756,12 @@ def test_single_evidence_standard_is_hidden_when_latest_clean_is_not_included(
     )
 
     assert response.status_code == 200
-    assert response.json()["items"] == []
+    item = response.json()["items"][0]
+    assert item["member_count"] == 0
+    assert item["observation_count"] is None
+    assert item["current_price_version_id"] is None
+    assert item["captured_price_version_id"] is not None
+    assert item["operational_status"] == "NO_ELIGIBLE_EVIDENCE"
     assert (
         api_session.query(StandardPriceVersion)
         .filter_by(standard_item_id=sensor.standard_item_id)
@@ -761,7 +811,12 @@ def test_standard_is_hidden_when_latest_document_role_becomes_incoming(
     )
 
     assert response.status_code == 200
-    assert response.json()["items"] == []
+    item = response.json()["items"][0]
+    assert item["member_count"] == 0
+    assert item["observation_count"] is None
+    assert item["current_price_version_id"] is None
+    assert item["captured_price_version_id"] is not None
+    assert item["operational_status"] == "NO_ELIGIBLE_EVIDENCE"
 
 
 def test_price_is_inactive_until_rebuild_matches_remaining_evidence(
@@ -805,8 +860,11 @@ def test_price_is_inactive_until_rebuild_matches_remaining_evidence(
     ).json()["items"][0]
 
     assert stale["member_count"] == 1
+    assert stale["observation_count"] is None
     assert stale["current_price_version_id"] is None
+    assert stale["captured_price_version_id"] == old_price.id
     assert stale["current_price"] is None
+    assert stale["operational_status"] == "REBUILD_REQUIRED"
     assert (
         api_session.query(StandardPriceVersion)
         .filter_by(standard_item_id=bearing.standard_item_id)
@@ -879,8 +937,11 @@ def test_clean_value_change_hides_explorer_price_until_rebuild(
         params={"search": "BEARING"},
     ).json()["items"][0]
     assert stale["member_count"] == 2
+    assert stale["observation_count"] is None
     assert stale["current_price_version_id"] is None
+    assert stale["captured_price_version_id"] == old_price.id
     assert stale["current_price"] is None
+    assert stale["operational_status"] == "REBUILD_REQUIRED"
 
     result = build_standard_database(api_session)
     api_session.commit()

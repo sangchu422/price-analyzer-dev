@@ -171,6 +171,19 @@ def test_variant_preview_returns_nearby_rows_and_highlights_source_cells(
     assert payload["kind"] == "SPREADSHEET"
     assert payload["sheet"] == "내역"
     assert payload["target_cells"] == "A2:F2"
+    assert payload["header_rows"] == [
+        {
+            "row_number": 1,
+            "cells": [
+                {"coordinate": "A1", "value": "품명", "highlighted": False},
+                {"coordinate": "B1", "value": "규격", "highlighted": False},
+                {"coordinate": "C1", "value": "단위", "highlighted": False},
+                {"coordinate": "D1", "value": "수량", "highlighted": False},
+                {"coordinate": "E1", "value": "단가", "highlighted": False},
+                {"coordinate": "F1", "value": "금액", "highlighted": False},
+            ],
+        }
+    ]
     highlighted = [
         cell
         for row in payload["rows"]

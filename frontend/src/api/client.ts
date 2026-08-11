@@ -73,6 +73,24 @@ export interface ReasonEvidence {
   variance_percent?: string | null;
   observation_count?: number;
   observations?: ReasonEvidenceObservation[];
+  original_quantity?: string | null;
+  original_unit?: string | null;
+  original_unit_price?: string | null;
+  displayed_amount?: string | null;
+  calculated_amount?: string | null;
+  difference_amount?: string | null;
+  difference_percent?: string | null;
+  tolerance_amount?: string | null;
+  comparison?: "CALCULATED_MINUS_DISPLAYED" | string;
+}
+
+export interface SourcePreviewRow {
+  row_number: number;
+  cells: Array<{
+    coordinate: string;
+    value: string | null;
+    highlighted: boolean;
+  }>;
 }
 
 export interface SourcePreview {
@@ -82,14 +100,8 @@ export interface SourcePreview {
   sheet: string | null;
   page: number | null;
   target_cells: string | null;
-  rows: Array<{
-    row_number: number;
-    cells: Array<{
-      coordinate: string;
-      value: string | null;
-      highlighted: boolean;
-    }>;
-  }>;
+  header_rows?: SourcePreviewRow[];
+  rows: SourcePreviewRow[];
 }
 
 export interface ReviewQueueResponse {
@@ -124,9 +136,14 @@ export interface StandardItemVersion {
 export interface StandardItemSummary {
   id: number;
   current_price_version_id: number | null;
+  captured_price_version_id?: number | null;
+  operational_status?:
+    | "ACTIVE"
+    | "REBUILD_REQUIRED"
+    | "NO_ELIGIBLE_EVIDENCE";
   current_version: StandardItemVersion;
   member_count: number;
-  observation_count: number;
+  observation_count: number | null;
   evidence_quality: EvidenceQuality | null;
   current_price: PriceStatistics | null;
   supplier_summary: string[];
@@ -494,6 +511,8 @@ export interface MarketProductResult {
   image_evidence_url: string | null;
   raw_evidence_url: string;
   screenshot_evidence_url: string | null;
+  automatic_price_eligible?: boolean;
+  automatic_price_exclusion_reasons?: string[];
 }
 
 export interface MarketLookupResult {
@@ -512,6 +531,37 @@ export interface MarketLookupResult {
     source: "DEVICEMART" | "MOUSER";
     detail: string;
   }>;
+  outcome?:
+    | "CACHE_HIT"
+    | "LIVE_HIT"
+    | "REFERENCE_ONLY"
+    | "NO_REFERENCE"
+    | "SOURCE_UNAVAILABLE";
+  automatic_price_product_count?: number;
+}
+
+export type MarketBatchLookupStatus =
+  | "STANDARD_APPLIED"
+  | "CACHE_HIT"
+  | "LIVE_HIT"
+  | "REFERENCE_ONLY"
+  | "NO_REFERENCE"
+  | "SOURCE_UNAVAILABLE"
+  | "CLEANING_REQUIRED"
+  | "EXCLUDED"
+  | "NOT_FOUND";
+
+export interface MarketBatchLookupItem {
+  raw_item_id: number;
+  status: MarketBatchLookupStatus;
+  detail: string | null;
+  result?: MarketLookupResult | null;
+}
+
+export interface MarketBatchLookupResponse {
+  items: MarketBatchLookupItem[];
+  completed: number;
+  unavailable: number;
 }
 
 export interface DocumentAnalysis {
@@ -542,11 +592,18 @@ export interface TargetPriceEvidence {
   source_row: number | null;
   source_cells: string | null;
   quote_date: string;
-  source_period: string;
+  source_period?: string | null;
   original_unit_price: string;
-  source_index_value: string;
-  target_index_value: string;
+  source_index_value?: string | null;
+  target_index_value?: string | null;
   adjusted_unit_price: string;
+  inflation?: {
+    sync_run_id: number;
+    latest_confirmed_year: string;
+    annual_rates: Array<{ year: string; rate: string }>;
+    factor: string;
+    cumulative_percent: string;
+  } | null;
 }
 
 export interface TargetPriceLine {
@@ -555,6 +612,7 @@ export interface TargetPriceLine {
     | "AVAILABLE"
     | "DATE_UNAVAILABLE"
     | "INDEX_UNAVAILABLE"
+    | "RATE_GAP"
     | "MARKET_REFERENCE_REQUIRED"
     | "NOT_APPLICABLE";
   target_unit_price: string | null;
@@ -569,10 +627,12 @@ export interface TargetPriceLine {
 
 export interface QuoteAnalysisRun extends DocumentAnalysis {
   run_id: number;
+  inflation_sync_run_id?: number | null;
+  inflation_series_kind?: string | null;
   target_period: string | null;
   target_index_value: string | null;
-  inflation_source_url: string;
-  inflation_source_last_changed: string | null;
+  inflation_source_url?: string | null;
+  inflation_source_last_changed?: string | null;
   quote_total_amount: string | null;
   target_total_amount: string | null;
   target_available_count: number;
@@ -956,6 +1016,21 @@ export function lookupMarketPrice(
     `/api/market/lookup/${rawItemId}?${params.toString()}`,
     { method: "POST", signal },
   );
+}
+
+export function lookupMarketPriceBatch(
+  rawItemIds: number[],
+  forceRefresh = false,
+  signal?: AbortSignal,
+) {
+  return requestJson<MarketBatchLookupResponse>("/api/market/lookup-batch", {
+    method: "POST",
+    body: JSON.stringify({
+      raw_item_ids: rawItemIds,
+      force_refresh: forceRefresh,
+    }),
+    signal,
+  });
 }
 
 export async function getCompleteDocumentAnalysis(

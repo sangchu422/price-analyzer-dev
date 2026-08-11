@@ -143,12 +143,17 @@ def test_catalog_workspace_lists_current_items_and_cas_context(
     )
 
     assert listing.status_code == 200
-    assert listing.json() == {
-        "items": [],
-        "next_cursor": None,
-        "limit": 20,
-        "latest_build": None,
-    }
+    listing_payload = listing.json()
+    assert listing_payload["next_cursor"] is None
+    assert listing_payload["limit"] == 20
+    assert listing_payload["latest_build"] is None
+    assert len(listing_payload["items"]) == 1
+    assert listing_payload["items"][0]["id"] == item["id"]
+    assert listing_payload["items"][0]["observation_count"] is None
+    assert (
+        listing_payload["items"][0]["operational_status"]
+        == "NO_ELIGIBLE_EVIDENCE"
+    )
     assert unmatched.status_code == 200
     assert unmatched.json()["items"][0][
         "current_membership_decision_id"

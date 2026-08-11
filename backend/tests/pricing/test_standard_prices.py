@@ -14,6 +14,7 @@ from app.catalog.models import (
     MembershipStatus,
     StandardItem,
     StandardItemVersion,
+    StandardPriceObservationLineage,
     StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
@@ -26,6 +27,7 @@ from app.pricing.service import (
     PriceStatistics,
     approve_standard_price,
     calculate_standard_price,
+    price_version_matches_draft,
 )
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
@@ -67,22 +69,27 @@ def _observation(
     membership_item: StandardItem | None = None,
     unit: str | None = "EA",
     supplier: str | None = None,
+    project: str | None = None,
     quote_date: date | None = None,
+    metadata_evidence: dict[str, object] | None = None,
     purpose: QuoteDocumentPurpose = QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    source_sha256: str | None = None,
+    source_row: int | None = None,
+    security_state: str = "UNLOCKED",
 ) -> tuple[RawQuoteItem, CleanDecision, ItemMembershipDecision]:
     document = SourceDocument(logical_name=f"quote-{row}.xlsx")
     variant = SourceVariant(
         document=document,
         path=f"quote-{row}.xlsx",
-        sha256=f"{row:064x}",
+        sha256=source_sha256 or f"{row:064x}",
         extension=".xlsx",
-        security_state="UNLOCKED",
+        security_state=security_state,
         selected_for_parsing_at_ingest=True,
     )
     raw = RawQuoteItem(
         source_variant=variant,
         source_sheet="Sheet1",
-        source_row=row,
+        source_row=row if source_row is None else source_row,
         item_name_raw="BEARING",
         parser_name="xlsx",
         parser_version="1",
@@ -107,14 +114,20 @@ def _observation(
         evidence_json="{}",
         decided_by="buyer",
     )
-    if supplier is not None or quote_date is not None:
+    if (
+        supplier is not None
+        or project is not None
+        or quote_date is not None
+        or metadata_evidence is not None
+    ):
         document_metadata = DocumentMetadataVersion(
             source_document=document,
             version_number=1,
             supplier_name=supplier,
             quote_date=quote_date,
-            project_name=None,
+            project_name=project,
             decided_by="buyer",
+            evidence_json=json.dumps(metadata_evidence or {}),
         )
         session.add(document_metadata)
     session.add_all([document, clean, membership])
@@ -168,6 +181,329 @@ def test_price_draft_uses_exact_statistics_and_current_metadata() -> None:
             "quote-2.xlsx",
             "quote-3.xlsx",
         ]
+
+
+def test_identical_file_row_at_different_paths_counts_once() -> None:
+    with _session() as session:
+        item = _item(session)
+        first, _, _ = _observation(session, item, row=1, price="100")
+        copied, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            price="100",
+            source_sha256=first.source_variant.sha256,
+            source_row=first.source_row,
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        assert tuple(row.raw_item_id for row in draft.observations) == (
+            copied.id,
+        )
+        assert draft.observations[0].lineage_raw_item_ids == (
+            first.id,
+            copied.id,
+        )
+        assert draft.prices == PriceStatistics(
+            minimum=Decimal("100"),
+            median=Decimal("100"),
+            average=Decimal("100"),
+            maximum=Decimal("100"),
+        )
+
+
+def test_semantically_identical_quotes_with_different_file_hashes_count_once() -> None:
+    with _session() as session:
+        item = _item(session)
+        first, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            price="47000000",
+            source_sha256="1" * 64,
+            source_row=44,
+            supplier="HANRO",
+            quote_date=date(2025, 11, 15),
+        )
+        session.add(
+            RawQuoteItem(
+                source_variant=first.source_variant,
+                source_sheet="Cover",
+                source_row=1,
+                item_name_raw="PROJECT SUMMARY",
+                parser_name="xlsx",
+                parser_version="1",
+            )
+        )
+        copied, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            price="47000000",
+            source_sha256="2" * 64,
+            source_row=44,
+            supplier="HANRO",
+            quote_date=date(2025, 11, 15),
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert first.source_variant.sha256 != copied.source_variant.sha256
+        assert draft.observation_count == 1
+        assert tuple(row.raw_item_id for row in draft.observations) == (
+            copied.id,
+        )
+        assert draft.observations[0].lineage_raw_item_ids == (
+            first.id,
+            copied.id,
+        )
+
+
+def test_same_row_from_distinct_quote_dates_counts_twice() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(
+            session,
+            item,
+            row=1,
+            price="47000000",
+            source_sha256="1" * 64,
+            source_row=44,
+            supplier="HANRO",
+            quote_date=date(2025, 11, 15),
+        )
+        _observation(
+            session,
+            item,
+            row=2,
+            price="47000000",
+            source_sha256="2" * 64,
+            source_row=44,
+            supplier="HANRO",
+            quote_date=date(2025, 11, 16),
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 2
+
+
+def test_latest_confirmed_quote_date_wins_within_explicit_revision_series() -> None:
+    with _session() as session:
+        item = _item(session)
+        older, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            quote_date=date(2025, 11, 15),
+            metadata_evidence={
+                "quote_date": {"quality": "SOURCE_CONFIRMED"},
+                "revision": "1",
+            },
+        )
+        newer, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            quote_date=date(2025, 11, 16),
+            metadata_evidence={
+                "quote_date": {"quality": "SOURCE_CONFIRMED"},
+                "revision": "2",
+            },
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        assert draft.observations[0].raw_item_id == newer.id
+        assert draft.observations[0].lineage_raw_item_ids == (
+            older.id,
+            newer.id,
+        )
+
+
+def test_unconfirmed_quote_date_cannot_outrank_source_confirmed_date() -> None:
+    with _session() as session:
+        item = _item(session)
+        confirmed, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            quote_date=date(2025, 11, 15),
+            metadata_evidence={
+                "quote_date": {"quality": "SOURCE_CONFIRMED"},
+                "revision": "1",
+            },
+        )
+        unconfirmed_newer, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            quote_date=date(2025, 11, 16),
+            metadata_evidence={
+                "quote_date": {"quality": "FILE_DATE_INFERRED"},
+                "revision": "2",
+            },
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        assert draft.observations[0].raw_item_id == confirmed.id
+        assert draft.observations[0].lineage_raw_item_ids == (
+            confirmed.id,
+            unconfirmed_newer.id,
+        )
+
+
+def test_explicit_revision_breaks_business_source_tie() -> None:
+    with _session() as session:
+        item = _item(session)
+        revision_one, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            metadata_evidence={"revision": "1"},
+        )
+        revision_two, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            source_row=44,
+            price="110",
+            supplier="HANRO",
+            project="LINE-A",
+            metadata_evidence={"revision": 2},
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        assert draft.observations[0].raw_item_id == revision_two.id
+        assert draft.observations[0].unit_price == Decimal("110")
+        assert draft.observations[0].lineage_raw_item_ids == (
+            revision_one.id,
+            revision_two.id,
+        )
+
+
+def test_unlocked_source_quality_breaks_a_business_source_tie() -> None:
+    with _session() as session:
+        item = _item(session)
+        locked, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            security_state="UNKNOWN",
+        )
+        unlocked, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+            security_state="UNLOCKED",
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        assert draft.observations[0].raw_item_id == unlocked.id
+        assert draft.observations[0].lineage_raw_item_ids == (
+            locked.id,
+            unlocked.id,
+        )
+
+
+def test_value_changes_are_not_merged_without_an_explicit_revision() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(
+            session,
+            item,
+            row=1,
+            source_row=44,
+            price="100",
+            supplier="HANRO",
+            project="LINE-A",
+        )
+        _observation(
+            session,
+            item,
+            row=2,
+            source_row=44,
+            price="110",
+            supplier="HANRO",
+            project="LINE-A",
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 2
+        assert [row.unit_price for row in draft.observations] == [
+            Decimal("100"),
+            Decimal("110"),
+        ]
+
+
+def test_approved_copy_lineage_retains_each_exact_source_row() -> None:
+    with _session() as session:
+        item = _item(session)
+        first, _, _ = _observation(session, item, row=1, price="100")
+        copied, _, _ = _observation(
+            session,
+            item,
+            row=2,
+            price="100",
+            source_sha256=first.source_variant.sha256,
+            source_row=first.source_row,
+        )
+        draft = calculate_standard_price(session, item.id)
+
+        version = approve_standard_price(
+            session,
+            item.id,
+            expected_fingerprint=draft.fingerprint,
+            expected_current_version_id=None,
+            approved_by="buyer",
+        )
+        session.flush()
+
+        assert version.observation_count == 1
+        observation = version.observations[0]
+        assert [row.raw_item_id for row in observation.lineage] == [
+            first.id,
+            copied.id,
+        ]
+        assert session.query(StandardPriceObservationLineage).count() == 2
 
 
 def test_draft_uses_only_latest_included_and_latest_matched_target() -> None:
@@ -323,6 +659,28 @@ def test_repeating_average_is_rounded_only_when_persisted() -> None:
             approved_by="buyer",
         )
         assert version.average_price == Decimal("1.333333")
+
+
+def test_price_version_match_requires_current_quantized_statistics() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(session, item, row=1, price="1")
+        _observation(session, item, row=2, price="1")
+        _observation(session, item, row=3, price="2")
+        draft = calculate_standard_price(session, item.id)
+        version = approve_standard_price(
+            session,
+            item.id,
+            expected_fingerprint=draft.fingerprint,
+            expected_current_version_id=None,
+            approved_by="buyer",
+        )
+
+        # The draft average repeats indefinitely but its captured scalar is
+        # deliberately rounded to ExactDecimal's six-place storage precision.
+        assert price_version_matches_draft(version, draft)
+        version.average_price = Decimal("1.333332")
+        assert not price_version_matches_draft(version, draft)
 
 
 def test_draft_does_not_mutate_database() -> None:

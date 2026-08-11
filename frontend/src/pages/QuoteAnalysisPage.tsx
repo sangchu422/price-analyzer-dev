@@ -6,11 +6,13 @@ import {
   createQuoteAnalysisRun,
   getStandardEvidence,
   lookupMarketPrice,
+  lookupMarketPriceBatch,
   submitIncomingBid,
   type AnalysisAssessment,
   type AnalysisLine,
-  type QuoteAnalysisRun,
+  type MarketBatchLookupItem,
   type MarketLookupResult,
+  type QuoteAnalysisRun,
   type SubmissionResponse,
 } from "../api/client";
 
@@ -21,6 +23,17 @@ type ResultFilter =
   | "MARKET"
   | "PENDING"
   | AnalysisAssessment;
+
+type MarketLookupProgressItem =
+  | MarketBatchLookupItem
+  | { status: "PENDING"; detail: string | null };
+
+type MarketLookupProgress = {
+  state: "PENDING" | "COMPLETE" | "ERROR";
+  total: number;
+  completed: number;
+  unavailable: number;
+};
 
 const assessmentLabels: Record<AnalysisAssessment, string> = {
   NOT_APPLICABLE: "판정 제외",
@@ -44,9 +57,15 @@ export function QuoteAnalysisPage() {
   const [marketResults, setMarketResults] = useState<
     Record<number, MarketLookupResult>
   >({});
+  const [marketLookupItems, setMarketLookupItems] = useState<
+    Record<number, MarketLookupProgressItem>
+  >({});
+  const [marketLookupProgress, setMarketLookupProgress] =
+    useState<MarketLookupProgress | null>(null);
   const [validationError, setValidationError] = useState("");
   const uploadController = useRef<AbortController | null>(null);
   const analysisController = useRef<AbortController | null>(null);
+  const marketLookupController = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   const busy = stage !== "IDLE";
 
@@ -56,14 +75,16 @@ export function QuoteAnalysisPage() {
       mounted.current = false;
       uploadController.current?.abort();
       analysisController.current?.abort();
+      marketLookupController.current?.abort();
     };
   }, []);
 
   const startAnalysis = async (retryAccepted = false) => {
-    if (!file || !submittedBy.trim()) {
-      setValidationError("견적서 파일과 접수자를 모두 입력해 주세요.");
+    if (!file) {
+      setValidationError("견적서 파일을 선택해 주세요.");
       return;
     }
+    const actor = submittedBy.trim() || "익명";
     if (
       !Number.isFinite(reviewPercent)
       || !Number.isFinite(highPercent)
@@ -77,8 +98,11 @@ export function QuoteAnalysisPage() {
     setError(null);
     setAnalysis(null);
     setMarketResults({});
+    setMarketLookupItems({});
+    setMarketLookupProgress(null);
     uploadController.current?.abort();
     analysisController.current?.abort();
+    marketLookupController.current?.abort();
     if (!retryAccepted || submission === null) {
       setSubmission(null);
       setStage("PARSING");
@@ -92,7 +116,7 @@ export function QuoteAnalysisPage() {
         uploadController.current = controller;
         accepted = await submitIncomingBid(
           file,
-          submittedBy.trim(),
+          actor,
           controller.signal,
         );
         if (!mounted.current) return;
@@ -104,7 +128,7 @@ export function QuoteAnalysisPage() {
       analysisController.current = controller;
       const result = await createQuoteAnalysisRun({
         documentId: accepted.document_id,
-        createdBy: submittedBy.trim(),
+        createdBy: actor,
         reviewPercent,
         highPercent,
         signal: controller.signal,
@@ -122,6 +146,102 @@ export function QuoteAnalysisPage() {
       setStage("IDLE");
     }
   };
+
+  const autoMarketLookupIds = useMemo(
+    () => (
+      analysis?.lines
+        .filter((line) => line.market_price_lookup_required)
+        .map((line) => line.raw_item_id)
+        ?? []
+    ),
+    [analysis],
+  );
+
+  useEffect(() => {
+    if (autoMarketLookupIds.length === 0) {
+      return;
+    }
+    const controller = new AbortController();
+    marketLookupController.current = controller;
+    const pending: Record<number, MarketLookupProgressItem> = {};
+    for (const rawItemId of autoMarketLookupIds) {
+      pending[rawItemId] = {
+        status: "PENDING",
+        detail: null,
+      };
+    }
+    void Promise.resolve()
+      .then(() => {
+        if (controller.signal.aborted) return null;
+        setMarketLookupItems(pending);
+        setMarketLookupProgress({
+          state: "PENDING",
+          total: autoMarketLookupIds.length,
+          completed: 0,
+          unavailable: 0,
+        });
+        return lookupMarketPriceBatch(
+          autoMarketLookupIds,
+          false,
+          controller.signal,
+        );
+      })
+      .then((response) => {
+        if (!response || !mounted.current || controller.signal.aborted) return;
+        const next: Record<number, MarketLookupProgressItem> = {};
+        const resultById: Record<number, MarketLookupResult> = {};
+        for (const item of response.items) {
+          next[item.raw_item_id] = item;
+          if (item.result) resultById[item.raw_item_id] = item.result;
+        }
+        for (const rawItemId of autoMarketLookupIds) {
+          if (!next[rawItemId]) {
+            next[rawItemId] = {
+              raw_item_id: rawItemId,
+              status: "NOT_FOUND",
+              detail: "시장가 자동 조회 결과가 없습니다.",
+            };
+          }
+        }
+        setMarketLookupItems(next);
+        if (Object.keys(resultById).length > 0) {
+          setMarketResults((current) => ({ ...current, ...resultById }));
+        }
+        setMarketLookupProgress({
+          state: "COMPLETE",
+          total: autoMarketLookupIds.length,
+          completed: response.completed,
+          unavailable: response.unavailable,
+        });
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted || isAbortError(caught)) return;
+        const detail = caught instanceof Error
+          ? caught.message
+          : "시장가 자동 조회에 실패했습니다.";
+        const unavailable: Record<number, MarketLookupProgressItem> = {};
+        for (const rawItemId of autoMarketLookupIds) {
+          unavailable[rawItemId] = {
+            raw_item_id: rawItemId,
+            status: "SOURCE_UNAVAILABLE",
+            detail,
+          };
+        }
+        setMarketLookupItems(unavailable);
+        setMarketLookupProgress({
+          state: "ERROR",
+          total: autoMarketLookupIds.length,
+          completed: 0,
+          unavailable: autoMarketLookupIds.length,
+        });
+      });
+    return () => {
+      controller.abort();
+      if (marketLookupController.current === controller) {
+        marketLookupController.current = null;
+      }
+    };
+  }, [autoMarketLookupIds]);
 
   const metrics = useMemo(
     () => summarize(
@@ -146,12 +266,12 @@ export function QuoteAnalysisPage() {
     <main className="workspace-page analysis-page">
       <header className="page-heading analysis-page-heading">
         <div>
-          <p className="section-kicker">Incoming quote review</p>
+          <p className="section-kicker">신규 견적 접수</p>
           <h1>신규 견적 분석</h1>
         </div>
         <p>
-          업체 견적서를 접수하면 과거 견적 기반 표준 DB와 비교합니다.
-          매칭되지 않은 품목은 가격을 추정하지 않고 판정대기로 남깁니다.
+          표준 DB와 비교합니다. 매칭되지 않은 품목은 가격을 추정하지 않고
+          판정대기로 남깁니다.
         </p>
       </header>
 
@@ -177,6 +297,8 @@ export function QuoteAnalysisPage() {
               setSubmission(null);
               setAnalysis(null);
               setMarketResults({});
+              setMarketLookupItems({});
+              setMarketLookupProgress(null);
               setError(null);
               setStage("IDLE");
             }}
@@ -189,9 +311,10 @@ export function QuoteAnalysisPage() {
             aria-label="접수자"
             value={submittedBy}
             disabled={busy}
-            placeholder="이름 또는 담당 조직"
+            placeholder="예: 홍길동"
             onChange={(event) => setSubmittedBy(event.target.value)}
           />
+          <small className="submitter-helper">미입력 시 익명으로 기록됩니다.</small>
         </label>
         <div className="analysis-threshold-fields" aria-label="가격 판정 기준">
           <label>
@@ -271,6 +394,8 @@ export function QuoteAnalysisPage() {
           filter={resultFilter}
           onFilter={setResultFilter}
           marketResults={marketResults}
+          marketLookupItems={marketLookupItems}
+          marketLookupProgress={marketLookupProgress}
           onMarketResult={(result) => setMarketResults((current) => ({
             ...current,
             [result.raw_item_id]: result,
@@ -312,6 +437,8 @@ function AnalysisResults({
   filter,
   onFilter,
   marketResults,
+  marketLookupItems,
+  marketLookupProgress,
   onMarketResult,
 }: {
   analysis: QuoteAnalysisRun;
@@ -321,6 +448,8 @@ function AnalysisResults({
   filter: ResultFilter;
   onFilter: (filter: ResultFilter) => void;
   marketResults: Record<number, MarketLookupResult>;
+  marketLookupItems: Record<number, MarketLookupProgressItem>;
+  marketLookupProgress: MarketLookupProgress | null;
   onMarketResult: (result: MarketLookupResult) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"THRESHOLD" | "TARGET">("THRESHOLD");
@@ -360,7 +489,7 @@ function AnalysisResults({
           onClick={() => setActiveTab("TARGET")}
         >
           구매 목표가
-          <small>과거 단가를 현재 생산자물가로 보정</small>
+          <small>과거 단가를 현재 소비자물가(CPI)로 보정</small>
         </button>
       </div>
 
@@ -407,6 +536,11 @@ function AnalysisResults({
       <div className="market-roadmap">
         <strong>{`시장가 확인 필요 ${metrics.market}건`}</strong>
         <span>DeviceMart·Mouser 캐시 우선 조회</span>
+        {marketLookupProgress && (
+          <small className="market-batch-progress" role="status">
+            {marketLookupProgressLabel(marketLookupProgress)}
+          </small>
+        )}
         <p>캐시가 없거나 만료된 품목만 실시간 조회하며, 실패하면 가격을 만들지 않고 판정대기로 유지합니다.</p>
       </div>
 
@@ -431,15 +565,15 @@ function AnalysisResults({
       </div>
 
       <div className="analysis-table-scroll">
-        <table className="analysis-result-table">
+        <table className="analysis-result-table" aria-label="가격 적정성 품목별 판정">
           <thead>
             <tr>
               <th>품목 / 사양</th>
               <th>단위·수량</th>
-              <th>견적 단가</th>
-              <th>견적 금액</th>
+              <th>개당 단가</th>
+              <th>구매 금액</th>
               <th>참조 기준가</th>
-              <th>참조 최소·평균·최대</th>
+              <th>참조 최저·기준·최고</th>
               <th>편차 금액</th>
               <th>편차율</th>
               <th>매칭 / 근거</th>
@@ -452,6 +586,7 @@ function AnalysisResults({
                 key={line.raw_item_id}
                 line={line}
                 market={marketResults[line.raw_item_id] ?? null}
+                marketLookup={marketLookupItems[line.raw_item_id]}
                 onMarketResult={onMarketResult}
               />
             ))}
@@ -475,6 +610,7 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
   const coverage = analysis.lines.length === 0
     ? 0
     : analysis.target_available_count / analysis.lines.length;
+  const isLegacyPpi = analysis.inflation_series_kind === "PPI_ALL";
   const targetDifference =
     analysis.quote_total_amount !== null && analysis.target_total_amount !== null
       ? Number(analysis.quote_total_amount) - Number(analysis.target_total_amount)
@@ -509,15 +645,28 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
         <div>
           <span>물가보정 기준</span>
           <strong>
-            {analysis.target_period
+            {isLegacyPpi && analysis.target_period && analysis.target_index_value
               ? `${analysis.target_period.slice(0, 4)}년 ${Number(analysis.target_period.slice(4))}월 생산자물가지수 ${analysis.target_index_value}`
-              : "저장된 생산자물가지수 없음"}
+              : analysis.target_period
+              ? `${analysis.target_period.slice(0, 4)}년 확정 소비자물가 기준`
+              : "저장된 소비자물가지수(CPI) 없음"}
           </strong>
-          <small>한국은행 생산자물가지수 총지수 · 2020=100</small>
+          <small>
+            {isLegacyPpi
+              ? "과거 분석 실행 · 당시 저장된 생산자물가지수로 재현"
+              : "연간 총지수 등락률을 견적 다음 연도부터 복리로 적용"}
+            {analysis.inflation_source_last_changed ? (
+              <> · 최종 공표 {analysis.inflation_source_last_changed}</>
+            ) : null}
+          </small>
         </div>
-        <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
-          KOSIS 공식 통계 보기
-        </a>
+        {analysis.inflation_source_url ? (
+          <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
+            KOSIS 공식 통계 보기
+          </a>
+        ) : (
+          <span className="inflation-source-unavailable">공식 통계 출처 정보 없음</span>
+        )}
       </div>
 
       <p className="target-policy-note">
@@ -526,11 +675,11 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
       </p>
 
       <div className="analysis-table-scroll">
-        <table className="analysis-result-table target-price-table">
+        <table className="analysis-result-table target-price-table" aria-label="구매 목표가 품목별 산정">
           <thead>
             <tr>
               <th>품목 / 사양</th>
-              <th>견적 단가</th>
+              <th>개당 단가</th>
               <th>구매 목표 단가</th>
               <th>목표 금액</th>
               <th>목표가 대비</th>
@@ -568,8 +717,15 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <span>{evidence.source_logical_name.split(/[\\/]/).at(-1)}</span>
+                          <span>{conciseSourceName(evidence.source_logical_name)}</span>
                           <small>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</small>
+                          <small className="inflation-evidence-detail">
+                            {inflationEvidenceLabel(
+                              evidence,
+                              analysis.target_period,
+                              analysis.inflation_series_kind,
+                            )}
+                          </small>
                         </a>
                       ))}
                     </details>
@@ -584,11 +740,92 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
   );
 }
 
+function inflationEvidenceLabel(
+  evidence: QuoteAnalysisRun["target_lines"][number]["evidence"][number],
+  targetPeriod: string | null,
+  seriesKind?: string | null,
+) {
+  const inflation = evidence.inflation;
+  if (inflation) {
+    const rates = inflation.annual_rates
+      .map(({ year, rate }) => `${year}년 ${Number(rate).toLocaleString("ko-KR")}%`)
+      .join(" · ");
+    const factor = Number(inflation.factor);
+    const cumulative = Number(inflation.cumulative_percent);
+    const summary = [
+      rates,
+      Number.isFinite(cumulative)
+        ? `누적 ${cumulative >= 0 ? "+" : ""}${cumulative.toLocaleString("ko-KR", { maximumFractionDigits: 2 })}%`
+        : null,
+      Number.isFinite(factor)
+        ? `보정계수 ×${factor.toLocaleString("ko-KR", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`
+        : null,
+    ].filter((value): value is string => Boolean(value));
+    return summary.join(" · ");
+  }
+  const sourceIndex = Number(evidence.source_index_value);
+  const targetIndex = Number(evidence.target_index_value);
+  if (
+    !targetPeriod
+    || !Number.isFinite(sourceIndex)
+    || !Number.isFinite(targetIndex)
+    || sourceIndex <= 0
+    || !evidence.source_period
+  ) {
+    return seriesKind === "PPI_ALL"
+      ? "생산자물가지수 보정 정보 없음"
+      : "소비자물가지수(CPI) 보정 정보 없음";
+  }
+  const factor = targetIndex / sourceIndex;
+  const months = periodDistance(evidence.source_period, targetPeriod);
+  const annualRate = months && months > 0
+    ? Math.pow(factor, 12 / months) - 1
+    : null;
+  const indexText = sourceIndex.toLocaleString("ko-KR", {
+    maximumFractionDigits: 3,
+  }) + " → " + targetIndex.toLocaleString("ko-KR", {
+    maximumFractionDigits: 3,
+  });
+  const factorText = factor.toLocaleString("ko-KR", {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  });
+  return "생산자물가지수 " + formatPeriod(evidence.source_period)
+    + " → " + formatPeriod(targetPeriod)
+    + " · 지수 " + indexText
+    + " · 보정계수 ×" + factorText
+    + (annualRate === null
+      ? ""
+      : " · 연환산 보정률 " + formatPercent(annualRate));
+}
+
+function periodDistance(sourcePeriod: string, targetPeriod: string) {
+  const source = periodNumber(sourcePeriod);
+  const target = periodNumber(targetPeriod);
+  return source === null || target === null ? null : target - source;
+}
+
+function periodNumber(value: string) {
+  if (!/^[0-9]{6}$/.test(value)) return null;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(4));
+  return Number.isFinite(year) && month >= 1 && month <= 12
+    ? year * 12 + month - 1
+    : null;
+}
+
+function formatPeriod(value: string) {
+  const period = periodNumber(value);
+  if (period === null) return value;
+  return value.slice(0, 4) + "년 " + Number(value.slice(4)) + "월";
+}
+
 function targetStatusLabel(status: QuoteAnalysisRun["target_lines"][number]["status"]) {
   return {
     AVAILABLE: "산정 완료",
     DATE_UNAVAILABLE: "원본 견적일 확인 필요",
     INDEX_UNAVAILABLE: "물가지수 갱신 필요",
+    RATE_GAP: "연간 소비자물가 자료 누락",
     MARKET_REFERENCE_REQUIRED: "표준 DB 없음 · 시장가 별도 확인",
     NOT_APPLICABLE: "산정 제외",
   }[status];
@@ -597,10 +834,12 @@ function targetStatusLabel(status: QuoteAnalysisRun["target_lines"][number]["sta
 function AnalysisRow({
   line,
   market,
+  marketLookup,
   onMarketResult,
 }: {
   line: AnalysisLine;
   market: MarketLookupResult | null;
+  marketLookup?: MarketLookupProgressItem;
   onMarketResult: (result: MarketLookupResult) => void;
 }) {
   const [marketError, setMarketError] = useState("");
@@ -653,7 +892,7 @@ function AnalysisRow({
         <strong>{line.item_name ?? "품명 없음"}</strong>
         <span>{line.spec ?? analysisSpecLabel(line.spec_source_status)}</span>
       </td>
-      <td className="numeric">{line.unit ?? "—"} · {formatNumber(line.quantity)}</td>
+      <td className="numeric">{formatUnitQuantity(line.unit, line.quantity)}</td>
       <td className="numeric">{formatMoney(line.quote_unit_price)}</td>
       <td className="numeric">{formatMoney(line.quote_amount)}</td>
       <td className="numeric reference-basis">{formatMoney(referencePrice)}</td>
@@ -669,9 +908,18 @@ function AnalysisRow({
       >
         {line.match_status === "MATCHED" || market ? (
           <>
-            <strong>{formatMoney(minimumPrice)}</strong>
-            <span>{formatMoney(middlePrice)}</span>
-            <strong>{formatMoney(maximumPrice)}</strong>
+            <span className="reference-range-value">
+              <small>최저</small>
+              <strong>{formatMoney(minimumPrice)}</strong>
+            </span>
+            <span className="reference-range-value is-basis">
+              <small>기준</small>
+              <strong>{formatMoney(middlePrice)}</strong>
+            </span>
+            <span className="reference-range-value">
+              <small>최고</small>
+              <strong>{formatMoney(maximumPrice)}</strong>
+            </span>
             {hasPriceEvidence && (
               <span className="reference-evidence-count">
                 근거 {line.standard_observation_count ?? 0}건
@@ -691,7 +939,7 @@ function AnalysisRow({
                 rel="noreferrer"
                 key={row.raw_item_id}
               >
-                <span>{row.source.logical_name.split(/[\\/]/).at(-1)}</span>
+                <span>{conciseSourceName(row.source.logical_name)}</span>
                 <strong>{formatMoney(row.unit_price)}</strong>
               </a>
             ))}
@@ -708,6 +956,12 @@ function AnalysisRow({
           <span className={`match-badge is-${line.match_status.toLowerCase()}`}>
             {matchStatusLabel(line.match_status)}
           </span>
+          {marketLookup && (
+            <small className="market-auto-status">
+              {marketBatchStatusLabel(marketLookup.status)}
+              {marketLookup.detail ? <> · {marketLookup.detail}</> : null}
+            </small>
+          )}
           {hasPriceEvidence ? (
             <>
               <a
@@ -872,6 +1126,31 @@ function MarketResultPanel({
   );
 }
 
+function marketLookupProgressLabel(progress: MarketLookupProgress) {
+  if (progress.state === "PENDING") {
+    return "시장가 자동 조회 중 " + progress.total + "건";
+  }
+  if (progress.state === "ERROR") {
+    return "시장가 자동 조회를 완료하지 못했습니다. 불가 " + progress.unavailable + "건";
+  }
+  return "시장가 자동 조회 완료 " + progress.completed + "건 · 불가 " + progress.unavailable + "건";
+}
+
+function marketBatchStatusLabel(status: MarketLookupProgressItem["status"]) {
+  return {
+    PENDING: "시장가 자동 조회 중",
+    STANDARD_APPLIED: "표준 기준 적용",
+    CACHE_HIT: "저장된 시장가 적용",
+    LIVE_HIT: "실시간 시장가 적용",
+    REFERENCE_ONLY: "참고가만 확인",
+    NO_REFERENCE: "시장가 근거 없음",
+    SOURCE_UNAVAILABLE: "출처 조회 불가",
+    CLEANING_REQUIRED: "정제 확인 필요",
+    EXCLUDED: "정제 제외",
+    NOT_FOUND: "조회 대상 없음",
+  }[status];
+}
+
 function marketStateLabel(state: MarketLookupResult["cache_state"]) {
   return {
     CACHE: "저장된 시장가",
@@ -973,12 +1252,32 @@ function formatMoney(value: string | null) {
     : "—";
 }
 
+function conciseSourceName(value: string) {
+  const candidate = value.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? value;
+  const stem = candidate.replace(/\.[^.]+$/, "");
+  const extension = candidate.match(/\.(?:xlsx?|pdf|jpe?g|png|zip|ecml)$/i)?.[0] ?? "";
+  const looksGenerated =
+    stem.length > 48 &&
+    (/^[0-9]{14,}/.test(stem) || /[A-Za-z0-9+/=]{30,}/.test(stem));
+  return looksGenerated ? `수집 원본 견적서${extension}` : candidate;
+}
+
 function formatNumber(value: string | null) {
   if (value === null) return "—";
   const number = Number(value);
   return Number.isFinite(number)
     ? new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(number)
     : "—";
+}
+
+function formatUnitQuantity(unit: string | null, quantity: string | null) {
+  const normalizedUnit = unit?.trim() || null;
+  const formattedQuantity = quantity === null ? null : formatNumber(quantity);
+  const values = [
+    normalizedUnit,
+    formattedQuantity === "—" ? null : formattedQuantity,
+  ].filter((value): value is string => value !== null);
+  return values.length > 0 ? values.join(" ") : "정보 없음";
 }
 
 function formatPercent(value: number) {

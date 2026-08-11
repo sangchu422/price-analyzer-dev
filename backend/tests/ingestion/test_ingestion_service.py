@@ -1392,6 +1392,24 @@ def test_rows_without_item_name_are_skipped_even_when_other_fields_present(
     assert len(rows) == 2, f"품명 있는 행만 2개여야 함, got {len(rows)}: {item_names}"
 
 
+def test_wia_original_maker_column_is_preserved(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "단위장비4"
+    sheet.append(["품명", "규격", "단위", "수량", "단가", "금액", "原MAKER"])
+    sheet.append(
+        ["2분력계", "5000NM/10000N", "SET", 2, 47000000, 94000000, "DEVELOPMENT"]
+    )
+    quote = tmp_path / "wia-maker.xlsx"
+    workbook.save(quote)
+
+    rows = read_quote(quote)
+
+    assert len(rows) == 1
+    assert rows[0].maker == "DEVELOPMENT"
+    assert rows[0].cells == "A2:G2"
+
+
 def test_summary_and_merged_pdf_rows_are_not_auto_included() -> None:
     from app.ingestion import readers
 

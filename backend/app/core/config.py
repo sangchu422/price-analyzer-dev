@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     kosis_proxy_base_url: str = "https://k-skill-proxy.nomadamas.org"
     kosis_request_timeout_seconds: float = 30.0
     kosis_ppi_start_period: str = "196501"
+    kosis_cpi_start_period: str = "1965"
 
     @property
     def quote_path(self) -> Path:
