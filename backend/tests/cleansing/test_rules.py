@@ -42,6 +42,30 @@ def test_missing_name_has_priority_over_invalid_price(make_raw) -> None:
     assert result.reason_code == "MISSING_ITEM_NAME"
 
 
+def test_binary_float_tail_is_safely_normalized(make_raw) -> None:
+    result = evaluate(
+        make_raw(
+            quantity="1",
+            unit_price="2040000.0000000002",
+            amount="2040000.0000000002",
+        )
+    )
+
+    assert result.status is CleanStatus.INCLUDED
+    assert result.unit_price == Decimal("2040000.000000")
+
+
+def test_zero_quantity_and_zero_amount_keep_valid_unit_price(make_raw) -> None:
+    result = evaluate(
+        make_raw(quantity="0", unit_price="11500000", amount="0")
+    )
+
+    assert result.status is CleanStatus.INCLUDED
+    assert result.reason_code == "VALID"
+    assert result.quantity == 0
+    assert result.amount == 0
+
+
 @pytest.mark.parametrize(
     "item_name",
     [
@@ -539,7 +563,7 @@ def test_new_rule_version_appends_without_rewriting_prior_history(
     current = apply_rules(session, raw)
 
     assert current.id != prior.id
-    assert current.rule_version == "clean-v1"
+    assert current.rule_version == "clean-v2"
     assert session.scalar(select(func.count(CleanDecision.id))) == 2
 
 

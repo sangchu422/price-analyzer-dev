@@ -1,0 +1,247 @@
+{"kind":"deck","id":"pr/yzs0dl","name":"Deck"}
+{"kind":"layout","layoutId":"f49a9263-bdb4-4730-b2bd-89948ef91a69","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"8718e747-738e-467f-af5f-db2490f743f4","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/ne6vdr","slide":1,"title":"PRICE ANALYZER","textShapes":7}
+{"kind":"shape","id":"sh/rytojqhw","slide":1,"bbox":[0,0,16,720]}
+{"kind":"shape","id":"sh/szmpcvih","slide":1,"bbox":[760,0,520,720]}
+{"kind":"textbox","id":"sh/t0v6lgz2","slide":1,"text":"PRICE ANALYZER","textPreview":"PRICE ANALYZER","textChars":14,"textLines":1,"bbox":[70,64,270,28]}
+{"kind":"textbox","id":"sh/i9kn610f","slide":1,"text":"과거 견적을\n구매 의사결정 자산으로","textPreview":"과거 견적을 | 구매 의사결정 자산으로","textChars":19,"textLines":2,"bbox":[70,168,820,180]}
+{"kind":"textbox","id":"sh/jatof6h0","slide":1,"text":"견적 적정성 분석 · 구매 목표가 제안 시스템","textPreview":"견적 적정성 분석 · 구매 목표가 제안 시스템","textChars":25,"textLines":1,"bbox":[74,368,650,38]}
+{"kind":"shape","id":"sh/4b2p8bil","slide":1,"bbox":[74,478,590,2]}
+{"kind":"textbox","id":"sh/5cb6hgz6","slide":1,"text":"임원 보고  |  2026. 08. 11  |  로컬 시범운영 단계","textPreview":"임원 보고  |  2026. 08. 11  |  로컬 시범운영 단계","textChars":37,"textLines":1,"bbox":[74,504,650,28]}
+{"kind":"textbox","id":"sh/2547i50j","slide":1,"text":"핵심 질문","textPreview":"핵심 질문","textChars":5,"textLines":1,"bbox":[900,182,180,22]}
+{"kind":"textbox","id":"sh/n6xorah4","slide":1,"text":"비싼가?","textPreview":"비싼가?","textChars":4,"textLines":1,"bbox":[898,218,250,58]}
+{"kind":"textbox","id":"sh/vqtg7m9s","slide":1,"text":"얼마에 사야 하는가?","textPreview":"얼마에 사야 하는가?","textChars":11,"textLines":1,"bbox":[898,288,300,80]}
+{"kind":"notes","id":"nt/ne6vdr","slide":1,"text":"발표의 출발점은 기술이 아니라 구매 의사결정입니다. 이 시스템은 과거 견적을 다시 쓸 수 있는 가격 근거로 바꾸고, 신규 견적의 적정성과 구매 목표가를 한 흐름에서 제시합니다.\n\n[Sources]\n- docs/HANDOFF_2026-08-11.md\n- docs/DECISIONS.md\n[/Sources]"}
+{"kind":"slide","id":"sl/ps4lx4","slide":2,"title":"01 · 문제와 목적","textShapes":15}
+{"kind":"textbox","id":"sh/1kfq5cre","slide":2,"text":"01 · 문제와 목적","textPreview":"01 · 문제와 목적","textChars":11,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/eho7uhs3","slide":2,"text":"견적 검토의 문제는 ‘가격’보다 ‘근거의 단절’입니다","textPreview":"견적 검토의 문제는 ‘가격’보다 ‘근거의 단절’입니다","textChars":29,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/zix83mto","slide":2,"bbox":[54,145,1172,0]}
+{"kind":"textbox","id":"sh/onqp0ra5","slide":2,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[58,178,40,24]}
+{"kind":"textbox","id":"sh/9ozq9wrq","slide":2,"text":"과거 견적이 파일마다 흩어져","textPreview":"과거 견적이 파일마다 흩어져","textChars":15,"textLines":1,"bbox":[104,174,430,32]}
+{"kind":"textbox","id":"sh/ml87yhsz","slide":2,"text":"같은 품목을 다시 찾아 비교하기 어렵습니다.","textPreview":"같은 품목을 다시 찾아 비교하기 어렵습니다.","textChars":24,"textLines":1,"bbox":[104,213,420,42]}
+{"kind":"textbox","id":"sh/nmh87m9k","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[58,298,40,24]}
+{"kind":"textbox","id":"sh/wbqp4ra1","slide":2,"text":"담당자마다 비교 기준이 달라","textPreview":"담당자마다 비교 기준이 달라","textChars":15,"textLines":1,"bbox":[104,294,430,32]}
+{"kind":"textbox","id":"sh/xcjqdwrm","slide":2,"text":"판정 결과와 설명 방식이 일관되지 않습니다.","textPreview":"판정 결과와 설명 방식이 일관되지 않습니다.","textChars":24,"textLines":1,"bbox":[104,333,420,42]}
+{"kind":"textbox","id":"sh/lkn2xc76","slide":2,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[58,418,40,24]}
+{"kind":"textbox","id":"sh/0je147q1","slide":2,"text":"오래된 가격은 현재 가치와 달라","textPreview":"오래된 가격은 현재 가치와 달라","textChars":17,"textLines":1,"bbox":[104,414,430,32]}
+{"kind":"textbox","id":"sh/zilkv2pg","slide":2,"text":"2016년 단가를 2026년에 그대로 쓸 수 없습니다.","textPreview":"2016년 단가를 2026년에 그대로 쓸 수 없습니다.","textChars":30,"textLines":1,"bbox":[104,453,420,42]}
+{"kind":"shape","id":"sh/yhcj2x8v","slide":2,"bbox":[599,185,576,260]}
+{"kind":"shape","id":"sh/8nel87qx","slide":2,"bbox":[600,474,574,122]}
+{"kind":"textbox","id":"sh/7m5kz2pc","slide":2,"text":"따라서 필요한 것은","textPreview":"따라서 필요한 것은","textChars":10,"textLines":1,"bbox":[626,492,210,24]}
+{"kind":"textbox","id":"sh/mlw36h8r","slide":2,"text":"가격 숫자 + 원본 위치 + 판단 기준을\n함께 남기는 구매 의사결정 체계","textPreview":"가격 숫자 + 원본 위치 + 판단 기준을 | 함께 남기는 구매 의사결정 체계","textChars":40,"textLines":2,"bbox":[626,522,510,58]}
+{"kind":"shape","id":"sh/ps32ps7e","slide":2,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/ora1wnqt","slide":2,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/gvelcnyp","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"image","id":"im/yxwbqdsf","slide":2,"name":"","geometry":"roundRect","alt":"원본 견적서 셀 위치 미리보기","bbox":[604,190,566,250]}
+{"kind":"notes","id":"nt/ps4lx4","slide":2,"text":"원본 견적의 특정 행을 바로 확인할 수 있는 실제 화면입니다. 문제의 핵심은 파일이 없다는 것이 아니라, 가격과 근거가 연결되지 않았다는 점입니다.\n\n[Sources]\n- 프로젝트 실제 화면 캡처 · cleansing-original-preview.png (2026-08-11)\n- docs/DATA_QUALITY_AUDIT_2026-08-11.md\n[/Sources]"}
+{"kind":"slide","id":"sl/pgnedu","slide":3,"title":"02 · 프로젝트 목적","textShapes":14}
+{"kind":"textbox","id":"sh/zqxs7epo","slide":3,"text":"02 · 프로젝트 목적","textPreview":"02 · 프로젝트 목적","textChars":12,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/0r690z69","slide":3,"text":"견적서를 올리면 세 가지 답을 한 번에 제공합니다","textPreview":"견적서를 올리면 세 가지 답을 한 번에 제공합니다","textChars":27,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/lsfa947u","slide":3,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/mtor29of","slide":3,"bbox":[392,198,34,26]}
+{"kind":"shape","id":"sh/nuxsbep0","slide":3,"bbox":[760,198,34,26]}
+{"kind":"shape","id":"sh/8vq94j65","slide":3,"bbox":[72,172,304,86]}
+{"kind":"textbox","id":"sh/9wzado7q","slide":3,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[90,188,38,22]}
+{"kind":"textbox","id":"sh/ax8r6tob","slide":3,"text":"과거 가격 근거","textPreview":"과거 가격 근거","textChars":8,"textLines":1,"bbox":[132,182,220,28]}
+{"kind":"textbox","id":"sh/vyhsfypw","slide":3,"text":"표준 DB 매칭","textPreview":"표준 DB 매칭","textChars":8,"textLines":1,"bbox":[132,216,225,24]}
+{"kind":"shape","id":"sh/bydwfepk","slide":3,"bbox":[440,172,304,86]}
+{"kind":"textbox","id":"sh/ax4fm9oz","slide":3,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[458,188,38,22]}
+{"kind":"textbox","id":"sh/x0veho7q","slide":3,"text":"비싼지 판단","textPreview":"비싼지 판단","textChars":6,"textLines":1,"bbox":[500,182,220,28]}
+{"kind":"textbox","id":"sh/wzmxoj65","slide":3,"text":"적정 · 주의 · 고가 · 저가","textPreview":"적정 · 주의 · 고가 · 저가","textChars":17,"textLines":1,"bbox":[500,216,225,24]}
+{"kind":"shape","id":"sh/nutwbepo","slide":3,"bbox":[808,172,304,86]}
+{"kind":"textbox","id":"sh/mtkfi9o3","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[826,188,38,22]}
+{"kind":"textbox","id":"sh/9wved47u","slide":3,"text":"살 가격 제안","textPreview":"살 가격 제안","textChars":7,"textLines":1,"bbox":[868,182,220,28]}
+{"kind":"textbox","id":"sh/ov2xkz69","slide":3,"text":"물가 반영 구매 목표가","textPreview":"물가 반영 구매 목표가","textChars":12,"textLines":1,"bbox":[868,216,225,24]}
+{"kind":"shape","id":"sh/7qxgnyps","slide":3,"bbox":[99,295,1082,338]}
+{"kind":"shape","id":"sh/il8zmx8f","slide":3,"bbox":[92,286,92,30]}
+{"kind":"textbox","id":"sh/3m10f290","slide":3,"text":"실제 화면","textPreview":"실제 화면","textChars":5,"textLines":1,"bbox":[100,287,76,27]}
+{"kind":"shape","id":"sh/4naho7ql","slide":3,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/5ojihcr6","slide":3,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/qpszqh8r","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"image","id":"im/lwfehsvy","slide":3,"name":"","geometry":"roundRect","alt":"신규 견적 접수와 판정 기준 설정 화면","bbox":[104,300,1072,328]}
+{"kind":"notes","id":"nt/pgnedu","slide":3,"text":"사용자는 견적서 한 건과 담당자, 판정 기준만 입력합니다. 시스템은 표준 DB 비교와 목표가 산정을 동일한 접수 흐름에서 수행합니다.\n\n[Sources]\n- 프로젝트 실제 화면 캡처 · analysis-intake.png (2026-08-11)\n- docs/HANDOFF_2026-08-11.md\n[/Sources]"}
+{"kind":"slide","id":"sl/dbrqj9","slide":4,"title":"03 · 개발 과정","textShapes":23}
+{"kind":"textbox","id":"sh/wbmxkry9","slide":4,"text":"03 · 개발 과정","textPreview":"03 · 개발 과정","textChars":10,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/vadgrmxo","slide":4,"text":"자동화보다 ‘신뢰 가능한 근거’를 먼저 만들었습니다","textPreview":"자동화보다 ‘신뢰 가능한 근거’를 먼저 만들었습니다","textChars":28,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/a94fihg3","slide":4,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/50fyxwfq","slide":4,"bbox":[245,193,34,24]}
+{"kind":"shape","id":"sh/kz6hory5","slide":4,"bbox":[470,193,34,24]}
+{"kind":"shape","id":"sh/jyxgvmxk","slide":4,"bbox":[695,193,34,24]}
+{"kind":"shape","id":"sh/ix4zmhgz","slide":4,"bbox":[920,193,34,24]}
+{"kind":"shape","id":"sh/14bylsfm","slide":4,"bbox":[60,172,184,68]}
+{"kind":"textbox","id":"sh/032xc7y1","slide":4,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[76,187,28,18]}
+{"kind":"textbox","id":"sh/6lg7ex8n","slide":4,"text":"원본 수집","textPreview":"원본 수집","textChars":5,"textLines":1,"bbox":[108,182,120,35]}
+{"kind":"shape","id":"sh/7mp87298","slide":4,"bbox":[285,172,184,68]}
+{"kind":"textbox","id":"sh/8nypg7qt","slide":4,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[301,187,28,18]}
+{"kind":"textbox","id":"sh/to7q9cre","slide":4,"text":"품목 추출","textPreview":"품목 추출","textChars":5,"textLines":1,"bbox":[333,182,120,35]}
+{"kind":"shape","id":"sh/upg7ih8z","slide":4,"bbox":[510,172,184,68]}
+{"kind":"textbox","id":"sh/va98b294","slide":4,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[526,187,28,18]}
+{"kind":"textbox","id":"sh/gbipk7qp","slide":4,"text":"검토·정제","textPreview":"검토·정제","textChars":5,"textLines":1,"bbox":[558,182,120,35]}
+{"kind":"shape","id":"sh/hcrqdc7a","slide":4,"bbox":[735,172,184,68]}
+{"kind":"textbox","id":"sh/id0rmh8v","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[751,187,28,18]}
+{"kind":"textbox","id":"sh/3e98fmpg","slide":4,"text":"표준 DB","textPreview":"표준 DB","textChars":5,"textLines":1,"bbox":[783,182,120,35]}
+{"kind":"shape","id":"sh/fito3m5o","slide":4,"bbox":[960,172,184,68]}
+{"kind":"textbox","id":"sh/ehk7aho3","slide":4,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[976,187,28,18]}
+{"kind":"textbox","id":"sh/1kb65wne","slide":4,"text":"신규 견적 분석","textPreview":"신규 견적 분석","textChars":8,"textLines":1,"bbox":[1008,182,120,35]}
+{"kind":"shape","id":"sh/0j2pcr69","slide":4,"bbox":[51,273,770,366]}
+{"kind":"shape","id":"sh/qd076hor","slide":4,"bbox":[852,286,346,348]}
+{"kind":"textbox","id":"sh/dgr61cni","slide":4,"text":"개발 원칙","textPreview":"개발 원칙","textChars":5,"textLines":1,"bbox":[880,312,250,28]}
+{"kind":"shape","id":"sh/sfip876x","slide":4,"bbox":[880,360,22,22]}
+{"kind":"textbox","id":"sh/3q9ov25g","slide":4,"text":"✓","textPreview":"✓","textChars":1,"textLines":1,"bbox":[881,358,20,23]}
+{"kind":"textbox","id":"sh/ipg72xov","slide":4,"text":"원본 파일은 그대로 보존","textPreview":"원본 파일은 그대로 보존","textChars":13,"textLines":1,"bbox":[916,353,250,32]}
+{"kind":"shape","id":"sh/8judgzih","slide":4,"bbox":[880,418,22,22]}
+{"kind":"textbox","id":"sh/9knup4z2","slide":4,"text":"✓","textPreview":"✓","textChars":1,"textLines":1,"bbox":[881,416,20,23]}
+{"kind":"textbox","id":"sh/mhcve90b","slide":4,"text":"확실한 값만 자동 반영","textPreview":"확실한 값만 자동 반영","textChars":12,"textLines":1,"bbox":[916,411,250,32]}
+{"kind":"shape","id":"sh/nilcnehw","slide":4,"bbox":[880,476,22,22]}
+{"kind":"textbox","id":"sh/w7edkjid","slide":4,"text":"✓","textPreview":"✓","textChars":1,"textLines":1,"bbox":[881,474,20,23]}
+{"kind":"textbox","id":"sh/x8netozy","slide":4,"text":"애매한 값은 검토 대기","textPreview":"애매한 값은 검토 대기","textChars":12,"textLines":1,"bbox":[916,469,250,32]}
+{"kind":"shape","id":"sh/alwvi90n","slide":4,"bbox":[880,534,22,22]}
+{"kind":"textbox","id":"sh/v65wrehs","slide":4,"text":"✓","textPreview":"✓","textChars":1,"textLines":1,"bbox":[881,532,20,23]}
+{"kind":"textbox","id":"sh/cbad8fi9","slide":4,"text":"모든 가격은 원본으로 역추적","textPreview":"모든 가격은 원본으로 역추적","textChars":15,"textLines":1,"bbox":[916,527,250,32]}
+{"kind":"shape","id":"sh/dcjuhkzu","slide":4,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/pkfexo3a","slide":4,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/4j6d4jmp","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"image","id":"im/k7y90zyh","slide":4,"name":"","geometry":"roundRect","alt":"정제 검토 실제 화면","bbox":[56,278,760,356]}
+{"kind":"notes","id":"nt/dbrqj9","slide":4,"text":"개발 과정은 무조건 많이 읽는 자동화가 아니라, 가격 기준으로 써도 되는 행과 사람이 확인해야 하는 행을 분리하는 과정이었습니다.\n\n[Sources]\n- 프로젝트 실제 화면 캡처 · cleansing-review.png (2026-08-11)\n- docs/DATA_QUALITY_AUDIT_2026-08-11.md\n[/Sources]"}
+{"kind":"slide","id":"sl/rsojap","slide":5,"title":"04 · 구현 규모","textShapes":6}
+{"kind":"textbox","id":"sh/7mdwv6ds","slide":5,"text":"04 · 구현 규모","textPreview":"04 · 구현 규모","textChars":10,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/snmd4bud","slide":5,"text":"과거 견적이 검색 가능한 가격 기준으로 전환됐습니다","textPreview":"과거 견적이 검색 가능한 가격 기준으로 전환됐습니다","textChars":28,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/tovexgvi","slide":5,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/fqxwzqdo","slide":5,"bbox":[663,177,552,370]}
+{"kind":"shape","id":"sh/hsfe10vu","slide":5,"bbox":[668,568,542,62]}
+{"kind":"textbox","id":"sh/2tovalcf","slide":5,"text":"핵심","textPreview":"핵심","textChars":2,"textLines":1,"bbox":[686,580,50,20]}
+{"kind":"textbox","id":"sh/3uxw3qd0","slide":5,"text":"초창기 엑셀을 복사한 것이 아니라 원본 견적에서 다시 구축","textPreview":"초창기 엑셀을 복사한 것이 아니라 원본 견적에서 다시 구축","textChars":32,"textLines":1,"bbox":[748,574,438,34]}
+{"kind":"shape","id":"sh/fuxkrqdw","slide":5,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/uto3y5wr","slide":5,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/hwf2t0v2","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"table","id":"tb/fitc32p8","slide":5,"name":"","rows":6,"cols":3,"preview":"구분 | 현재 규모 | 의미","bbox":[56,180,574,360]}
+{"kind":"image","id":"im/p4z6dg3e","slide":5,"name":"","geometry":"roundRect","alt":"표준 DB 목록 화면","bbox":[668,182,542,360]}
+{"kind":"notes","id":"nt/rsojap","slide":5,"text":"수치는 현재 로컬 운영 DB와 2026-08-11 인수인계 문서를 기준으로 정리했습니다. 표는 PowerPoint에서 직접 수정할 수 있습니다.\n\n[Sources]\n- docs/HANDOFF_2026-08-11.md\n- docs/DATA_QUALITY_AUDIT_2026-08-11.md\n- 프로젝트 실제 화면 캡처 · standard-db.png (2026-08-11)\n[/Sources]"}
+{"kind":"slide","id":"sl/3ix5nf","slide":6,"title":"05 · 구현 화면","textShapes":11}
+{"kind":"textbox","id":"sh/3mtg36hw","slide":6,"text":"05 · 구현 화면","textPreview":"05 · 구현 화면","textChars":10,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/4n2xwbi1","slide":6,"text":"표준 DB는 숫자만 저장하지 않고 원본까지 역추적합니다","textPreview":"표준 DB는 숫자만 저장하지 않고 원본까지 역추적합니다","textChars":30,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/5oby5gzm","slide":6,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/qpkfyl07","slide":6,"bbox":[51,171,770,440]}
+{"kind":"shape","id":"sh/sr2h0bid","slide":6,"bbox":[858,184,340,106]}
+{"kind":"shape","id":"sh/dsvy9gzy","slide":6,"bbox":[878,202,104,30]}
+{"kind":"textbox","id":"sh/et4z2l0j","slide":6,"text":"가격 범위","textPreview":"가격 범위","textChars":5,"textLines":1,"bbox":[886,203,88,27]}
+{"kind":"textbox","id":"sh/fudgbqho","slide":6,"text":"최저 · 중앙값 · 평균 · 최고","textPreview":"최저 · 중앙값 · 평균 · 최고","textChars":18,"textLines":1,"bbox":[878,242,292,36]}
+{"kind":"shape","id":"sh/v6lcruls","slide":6,"bbox":[858,316,340,106]}
+{"kind":"shape","id":"sh/a5cvypk7","slide":6,"bbox":[878,334,104,30]}
+{"kind":"textbox","id":"sh/xs3ut43i","slide":6,"text":"원본 근거","textPreview":"원본 근거","textChars":5,"textLines":1,"bbox":[886,335,88,27]}
+{"kind":"textbox","id":"sh/wrud0z2x","slide":6,"text":"견적일 · 파일 · 시트 · 행","textPreview":"견적일 · 파일 · 시트 · 행","textChars":17,"textLines":1,"bbox":[878,374,292,36]}
+{"kind":"shape","id":"sh/n2lcnulg","slide":6,"bbox":[858,448,340,106]}
+{"kind":"shape","id":"sh/m1svupkv","slide":6,"bbox":[878,466,104,30]}
+{"kind":"textbox","id":"sh/943up43m","slide":6,"text":"감사 이력","textPreview":"감사 이력","textChars":5,"textLines":1,"bbox":[886,467,88,27]}
+{"kind":"textbox","id":"sh/83udwz21","slide":6,"text":"표준단가가 바뀐 시점과 근거 수","textPreview":"표준단가가 바뀐 시점과 근거 수","textChars":17,"textLines":1,"bbox":[878,506,292,36]}
+{"kind":"textbox","id":"sh/7y5czelk","slide":6,"text":"결과: 담당자가 ‘왜 이 가격인가’를 바로 설명할 수 있습니다.","textPreview":"결과: 담당자가 ‘왜 이 가격인가’를 바로 설명할 수 있습니다.","textChars":35,"textLines":1,"bbox":[858,598,348,46]}
+{"kind":"shape","id":"sh/6xwv69kf","slide":6,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/2t0fyd4n","slide":6,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/3u9gri5s","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"image","id":"im/atg7ehk7","slide":6,"name":"","geometry":"roundRect","alt":"표준 품목 가격 근거와 변경 이력","bbox":[56,176,760,430]}
+{"kind":"notes","id":"nt/3ix5nf","slide":6,"text":"표준 품목을 선택하면 가격 범위, 원본 위치, 공급사·제조사 확인 여부, 변경 이력이 함께 보입니다. 임원이 볼 핵심은 가격의 설명 가능성입니다.\n\n[Sources]\n- 프로젝트 실제 화면 캡처 · standard-db-detail.png (2026-08-11)\n- docs/HANDOFF_2026-08-11.md\n[/Sources]"}
+{"kind":"slide","id":"sl/hgrvlj","slide":7,"title":"06 · 통제와 신뢰","textShapes":6}
+{"kind":"textbox","id":"sh/vyhszqh0","slide":7,"text":"06 · 통제와 신뢰","textPreview":"06 · 통제와 신뢰","textChars":11,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/wzq98vyl","slide":7,"text":"애매한 값은 자동 가격 기준에서 제외하고 사람이 확인합니다","textPreview":"애매한 값은 자동 가격 기준에서 제외하고 사람이 확인합니다","textChars":32,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/x0za10z6","slide":7,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/il8ra5gr","slide":7,"bbox":[51,169,700,440]}
+{"kind":"shape","id":"sh/5oja50z2","slide":7,"bbox":[784,468,424,136]}
+{"kind":"textbox","id":"sh/6psbe5gn","slide":7,"text":"안전 장치","textPreview":"안전 장치","textChars":5,"textLines":1,"bbox":[808,486,100,22]}
+{"kind":"textbox","id":"sh/7q1s7ah8","slide":7,"text":"모르는 가격을 추정해 채우지 않고\n‘판정 대기’로 명확히 남깁니다.","textPreview":"모르는 가격을 추정해 채우지 않고 | ‘판정 대기’로 명확히 남깁니다.","textChars":37,"textLines":2,"bbox":[808,520,362,58]}
+{"kind":"shape","id":"sh/ridwne5w","slide":7,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/qh4vetob","slide":7,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/d4veponm","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"table","id":"tb/xsru9gzm","slide":7,"name":"","rows":4,"cols":3,"preview":"데이터 상태 | 시스템 처리 | 운영 의미","bbox":[784,190,424,242]}
+{"kind":"image","id":"im/e9grm90n","slide":7,"name":"","geometry":"roundRect","alt":"원본 견적과 정제 판단 화면","bbox":[56,174,690,430]}
+{"kind":"notes","id":"nt/hgrvlj","slide":7,"text":"정제 화면에서 원본 셀을 직접 보고 포함 또는 제외를 결정합니다. 자동화의 범위를 제한하는 것이 데이터 신뢰성의 핵심입니다.\n\n[Sources]\n- 프로젝트 실제 화면 캡처 · cleansing-detail.png (2026-08-11)\n- docs/DECISIONS.md\n[/Sources]"}
+{"kind":"slide","id":"sl/pe1kcd","slide":8,"title":"07 · 신규 견적 분석","textShapes":6}
+{"kind":"textbox","id":"sh/e1wvepsf","slide":8,"text":"07 · 신규 견적 분석","textPreview":"07 · 신규 견적 분석","textChars":13,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/1one94b6","slide":8,"text":"신규 견적 한 건으로 두 가지 결과를 제공합니다","textPreview":"신규 견적 한 건으로 두 가지 결과를 제공합니다","textChars":26,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/03edgzal","slide":8,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/rylc3at4","slide":8,"bbox":[58,170,132,30]}
+{"kind":"textbox","id":"sh/qxcvapsj","slide":8,"text":"① 가격 적정성","textPreview":"① 가격 적정성","textChars":8,"textLines":1,"bbox":[66,171,116,27]}
+{"kind":"shape","id":"sh/d0nu5kba","slide":8,"bbox":[650,170,132,30]}
+{"kind":"textbox","id":"sh/czudcfap","slide":8,"text":"② 구매 목표가","textPreview":"② 구매 목표가","textChars":8,"textLines":1,"bbox":[658,171,116,27]}
+{"kind":"shape","id":"sh/3ulczats","slide":8,"bbox":[51,207,576,284]}
+{"kind":"shape","id":"sh/gjedgn6l","slide":8,"bbox":[643,207,576,284]}
+{"kind":"shape","id":"sh/vi5w7i50","slide":8,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/8vudcn6p","slide":8,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/tgne5snu","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"table","id":"tb/x03uxwj2","slide":8,"name":"","rows":3,"cols":3,"preview":"업무 질문 | 판단 기준 | 결과","bbox":[142,520,996,116]}
+{"kind":"image","id":"im/vyh83qdk","slide":8,"name":"","geometry":"roundRect","alt":"가격 적정성 분석 결과","bbox":[56,212,566,274]}
+{"kind":"image","id":"im/q9sfmt8n","slide":8,"name":"","geometry":"roundRect","alt":"구매 목표가 분석 결과","bbox":[648,212,566,274]}
+{"kind":"notes","id":"nt/pe1kcd","slide":8,"text":"가격 적정성 탭은 사용자가 설정한 임계값으로 고가·적정·저가를 판정합니다. 구매 목표가 탭은 과거 단가를 현재 생산자물가로 보정합니다.\n\n[Sources]\n- 프로젝트 실제 화면 캡처 · analysis-threshold.png (2026-08-11)\n- 프로젝트 실제 화면 캡처 · analysis-target.png (2026-08-11)\n- docs/HANDOFF_2026-08-11.md\n[/Sources]"}
+{"kind":"slide","id":"sl/mlyetx","slide":9,"title":"08 · 구매 목표가","textShapes":11}
+{"kind":"textbox","id":"sh/fyxgr2hk","slide":9,"text":"08 · 구매 목표가","textPreview":"08 · 구매 목표가","textChars":11,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/gzqxk7y5","slide":9,"text":"2016년 가격을 2026년 가치로 환산해 구매 목표가를 제시합니다","textPreview":"2016년 가격을 2026년 가치로 환산해 구매 목표가를 제시합니다","textChars":37,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/10zytczq","slide":9,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/6tofexg3","slide":9,"bbox":[56,178,610,212]}
+{"kind":"textbox","id":"sh/ruxgn2ho","slide":9,"text":"과거 원본 단가","textPreview":"과거 원본 단가","textChars":8,"textLines":1,"bbox":[82,204,160,28]}
+{"kind":"textbox","id":"sh/sv6xg7y9","slide":9,"text":"×","textPreview":"×","textChars":1,"textLines":1,"bbox":[256,201,40,32]}
+{"kind":"shape","id":"sh/twfypszu","slide":9,"bbox":[306,192,310,62]}
+{"kind":"textbox","id":"sh/ip4fadg7","slide":9,"text":"2026년 생산자물가지수","textPreview":"2026년 생산자물가지수","textChars":13,"textLines":1,"bbox":[322,198,280,21]}
+{"kind":"textbox","id":"sh/jqdwjihs","slide":9,"text":"2016년 생산자물가지수","textPreview":"2016년 생산자물가지수","textChars":13,"textLines":1,"bbox":[322,224,280,21]}
+{"kind":"shape","id":"sh/rulon6pk","slide":9,"bbox":[332,222,260,0]}
+{"kind":"textbox","id":"sh/qtcne18z","slide":9,"text":"↓","textPreview":"↓","textChars":1,"textLines":1,"bbox":[306,270,60,38]}
+{"kind":"textbox","id":"sh/dw36pg7q","slide":9,"text":"보정 단가","textPreview":"보정 단가","textChars":5,"textLines":1,"bbox":[356,274,150,28]}
+{"kind":"textbox","id":"sh/svu5gbq5","slide":9,"text":"여러 과거 근거를 각각 보정한 뒤 중앙값을 구매 목표가로 사용","textPreview":"여러 과거 근거를 각각 보정한 뒤 중앙값을 구매 목표가로 사용","textChars":34,"textLines":1,"bbox":[82,334,540,34]}
+{"kind":"shape","id":"sh/zy5or6pg","slide":9,"bbox":[699,171,520,296]}
+{"kind":"shape","id":"sh/0ze5kb61","slide":9,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/v214fmpc","slide":9,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/u1sn6h8r","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"table","id":"tb/ilgnq5or","slide":9,"name":"","rows":4,"cols":3,"preview":"구분 | 출처 | 적용 방식","bbox":[104,488,1072,150]}
+{"kind":"image","id":"im/1wbyl0fi","slide":9,"name":"","geometry":"roundRect","alt":"KOSIS 생산자물가지수 조회 화면 사진","bbox":[704,176,510,286]}
+{"kind":"notes","id":"nt/mlyetx","slide":9,"text":"예시는 2016년 견적 단가에 2026년 지수와 2016년 지수의 비율을 곱하는 방식입니다. 실제 계산은 견적서에서 날짜가 직접 확인된 근거만 월별로 적용합니다.\n\n[Sources]\n- https://kosis.kr/statHtml/statHtml.do?orgId=301&tblId=DT_404Y014\n- 사용자 제공 KOSIS 화면 사진 (2026-08-11)\n- docs/HANDOFF_2026-08-11.md\n[/Sources]"}
+{"kind":"slide","id":"sl/cormbt","slide":10,"title":"09 · 활용성","textShapes":19}
+{"kind":"textbox","id":"sh/h8re5sre","slide":10,"text":"09 · 활용성","textPreview":"09 · 활용성","textChars":8,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/u50vuxsn","slide":10,"text":"검토 속도보다 ‘협상 가능한 근거’를 만드는 시스템입니다","textPreview":"검토 속도보다 ‘협상 가능한 근거’를 만드는 시스템입니다","textChars":31,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/v69w3i98","slide":10,"bbox":[54,145,1172,0]}
+{"kind":"shape","id":"sh/83ydsnax","slide":10,"bbox":[56,176,282,110]}
+{"kind":"textbox","id":"sh/947e1sr2","slide":10,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[74,192,36,20]}
+{"kind":"textbox","id":"sh/mhgvqdsr","slide":10,"text":"검토시간 단축","textPreview":"검토시간 단축","textChars":7,"textLines":1,"bbox":[116,189,200,28]}
+{"kind":"textbox","id":"sh/72pwzi9c","slide":10,"text":"비교 자료를 찾는 시간을 줄임","textPreview":"비교 자료를 찾는 시간을 줄임","textChars":16,"textLines":1,"bbox":[78,231,238,38]}
+{"kind":"shape","id":"sh/kfydo3al","slide":10,"bbox":[362,176,282,110]}
+{"kind":"textbox","id":"sh/lg7ex8r6","slide":10,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[380,192,36,20]}
+{"kind":"textbox","id":"sh/tcjipojm","slide":10,"text":"담당자 편차 축소","textPreview":"담당자 편차 축소","textChars":9,"textLines":1,"bbox":[422,189,200,28]}
+{"kind":"textbox","id":"sh/8bahgj21","slide":10,"text":"동일 기준과 임계값으로 판정","textPreview":"동일 기준과 임계값으로 판정","textChars":15,"textLines":1,"bbox":[384,231,238,38]}
+{"kind":"shape","id":"sh/7ah0ne1g","slide":10,"bbox":[56,310,282,110]}
+{"kind":"textbox","id":"sh/m98ze9kv","slide":10,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[74,326,36,20]}
+{"kind":"textbox","id":"sh/l8zil4ja","slide":10,"text":"협상 근거 표준화","textPreview":"협상 근거 표준화","textChars":9,"textLines":1,"bbox":[116,323,200,28]}
+{"kind":"textbox","id":"sh/knqhcz25","slide":10,"text":"목표가와 원본 근거를 함께 제시","textPreview":"목표가와 원본 근거를 함께 제시","textChars":17,"textLines":1,"bbox":[78,365,238,38]}
+{"kind":"shape","id":"sh/zmh0ju1k","slide":10,"bbox":[362,310,282,110]}
+{"kind":"textbox","id":"sh/yl8za9kz","slide":10,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[380,326,36,20]}
+{"kind":"textbox","id":"sh/xkzyh4je","slide":10,"text":"데이터의 지속 성장","textPreview":"데이터의 지속 성장","textChars":10,"textLines":1,"bbox":[422,323,200,28]}
+{"kind":"textbox","id":"sh/cjqh8z2t","slide":10,"text":"확정 견적이 다음 기준가격으로 축적","textPreview":"확정 견적이 다음 기준가격으로 축적","textChars":19,"textLines":1,"bbox":[384,365,238,38]}
+{"kind":"textbox","id":"sh/ozu9k3e1","slide":10,"text":"시범운영에서 측정할 KPI","textPreview":"시범운영에서 측정할 KPI","textChars":14,"textLines":1,"bbox":[690,176,450,28]}
+{"kind":"shape","id":"sh/2dcritwv","slide":10,"bbox":[688,528,528,96]}
+{"kind":"textbox","id":"sh/nel8bydg","slide":10,"text":"성과 수치는 아직 가정하지 않습니다.","textPreview":"성과 수치는 아직 가정하지 않습니다.","textChars":20,"textLines":1,"bbox":[712,545,440,26]}
+{"kind":"textbox","id":"sh/0bu9gjep","slide":10,"text":"실제 견적 시범운영으로 기준선을 먼저 측정합니다.","textPreview":"실제 견적 시범운영으로 기준선을 먼저 측정합니다.","textChars":27,"textLines":1,"bbox":[712,577,450,24]}
+{"kind":"shape","id":"sh/1c3q9ova","slide":10,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/e9sre9wz","slide":10,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/fal87ed4","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"table","id":"tb/ylkzm5w3","slide":10,"name":"","rows":5,"cols":3,"preview":"지표 | 측정 방법 | 목적","bbox":[688,218,528,284]}
+{"kind":"notes","id":"nt/cormbt","slide":10,"text":"활용 가치는 단순히 빠른 판정이 아니라 협상 근거의 표준화입니다. 효과 수치는 과장하지 않고 실제 파일럿에서 측정합니다.\n\n[Sources]\n- docs/HANDOFF_2026-08-11.md\n- docs/DECISIONS.md\n[/Sources]"}
+{"kind":"slide","id":"sl/obhnzb","slide":11,"title":"10 · 결론과 요청","textShapes":14}
+{"kind":"textbox","id":"sh/zyxwj6dc","slide":11,"text":"10 · 결론과 요청","textPreview":"10 · 결론과 요청","textChars":11,"textLines":1,"bbox":[54,32,300,20]}
+{"kind":"textbox","id":"sh/kz6dcbex","slide":11,"text":"다음 단계는 추가 개발보다 10~20건 실견적 시범운영입니다","textPreview":"다음 단계는 추가 개발보다 10~20건 실견적 시범운영입니다","textChars":33,"textLines":1,"bbox":[54,56,1140,54]}
+{"kind":"shape","id":"sh/l0felgvi","slide":11,"bbox":[54,145,1172,0]}
+{"kind":"textbox","id":"sh/q94v6hwv","slide":11,"text":"현재 구현도","textPreview":"현재 구현도","textChars":6,"textLines":1,"bbox":[56,174,260,28]}
+{"kind":"shape","id":"sh/cb6d8re1","slide":11,"bbox":[742,176,476,394]}
+{"kind":"textbox","id":"sh/xcfuhwv6","slide":11,"text":"의사결정 요청","textPreview":"의사결정 요청","textChars":7,"textLines":1,"bbox":[774,202,220,26]}
+{"kind":"shape","id":"sh/u58vilwz","slide":11,"bbox":[774,250,42,42]}
+{"kind":"textbox","id":"sh/v6hwrqdk","slide":11,"text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[774,250,42,42]}
+{"kind":"textbox","id":"sh/nihk32lw","slide":11,"text":"설비구매팀 실견적 10~20건 시범운영 승인","textPreview":"설비구매팀 실견적 10~20건 시범운영 승인","textChars":24,"textLines":1,"bbox":[834,244,344,56]}
+{"kind":"shape","id":"sh/2h83uxkb","slide":11,"bbox":[774,336,42,42]}
+{"kind":"textbox","id":"sh/pkz25s32","slide":11,"text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[774,336,42,42]}
+{"kind":"textbox","id":"sh/ojqlw72h","slide":11,"text":"사내에서 보안해제 원본 53개 재수집 지원","textPreview":"사내에서 보안해제 원본 53개 재수집 지원","textChars":23,"textLines":1,"bbox":[834,330,344,56]}
+{"kind":"shape","id":"sh/bmhk72l8","slide":11,"bbox":[774,422,42,42]}
+{"kind":"textbox","id":"sh/al83yxkn","slide":11,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[774,422,42,42]}
+{"kind":"textbox","id":"sh/xoj29c3y","slide":11,"text":"검토시간·목표가 산출률·절감액 측정 후 서버화 판단","textPreview":"검토시간·목표가 산출률·절감액 측정 후 서버화 판단","textChars":28,"textLines":1,"bbox":[834,416,344,56]}
+{"kind":"textbox","id":"sh/cnal072t","slide":11,"text":"결론","textPreview":"결론","textChars":2,"textLines":1,"bbox":[56,600,60,20]}
+{"kind":"textbox","id":"sh/zq1kbml4","slide":11,"text":"과거 견적을 ‘보관 파일’에서 ‘협상 가능한 가격 자산’으로 전환했습니다.","textPreview":"과거 견적을 ‘보관 파일’에서 ‘협상 가능한 가격 자산’으로 전환했습니다.","textChars":41,"textLines":1,"bbox":[128,586,1060,48]}
+{"kind":"shape","id":"sh/yps32hkj","slide":11,"bbox":[54,682,1172,0]}
+{"kind":"textbox","id":"sh/u5cnul4r","slide":11,"text":"PRICE ANALYZER · 임원 보고","textPreview":"PRICE ANALYZER · 임원 보고","textChars":22,"textLines":1,"bbox":[54,688,260,18]}
+{"kind":"textbox","id":"sh/v6lo3q5c","slide":11,"text":"11","textPreview":"11","textChars":2,"textLines":1,"bbox":[1174,687,52,18]}
+{"kind":"table","id":"tb/a9sbu5cb","slide":11,"name":"","rows":7,"cols":3,"preview":"영역 | 상태 | 비고","bbox":[56,218,640,352]}
+{"kind":"notes","id":"nt/obhnzb","slide":11,"text":"현재는 로컬에서 시범운영 가능한 단계입니다. 다음 의사결정은 더 많은 기능이 아니라 실제 견적을 통한 KPI 검증입니다.\n\n[Sources]\n- docs/HANDOFF_2026-08-11.md\n- docs/DATA_QUALITY_AUDIT_2026-08-11.md\n- docs/DECISIONS.md\n[/Sources]"}

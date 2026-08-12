@@ -117,7 +117,7 @@ def test_upload_ingests_incoming_bid_and_preserves_exact_evidence(
         "sha256": digest,
         "purpose": "INCOMING_BID",
         "parser_name": "quote-reader",
-        "parser_version": "reader-v1",
+        "parser_version": "reader-v2",
         "status": "INGESTED",
         "raw_item_count": 1,
         "included_count": 1,

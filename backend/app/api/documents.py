@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import re
+from functools import lru_cache
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -346,7 +347,12 @@ def _resolve_variant_file(variant: SourceVariant) -> Path | None:
     relative = Path(variant.path)
     if relative.is_absolute() or ".." in relative.parts:
         return None
-    for configured_root in (settings.quote_path, settings.submission_path):
+    configured_roots = (
+        settings.quote_path,
+        settings.project_root / "견적서",
+        settings.submission_path,
+    )
+    for configured_root in configured_roots:
         root = configured_root.resolve(strict=False)
         candidate = (root / relative).resolve(strict=False)
         try:
@@ -355,6 +361,27 @@ def _resolve_variant_file(variant: SourceVariant) -> Path | None:
             continue
         if candidate.is_file() and _sha256(candidate) == variant.sha256:
             return candidate
+        discovered = _find_source_by_sha(str(root), relative.name, variant.sha256)
+        if discovered is not None:
+            return Path(discovered)
+    return None
+
+
+@lru_cache(maxsize=2048)
+def _find_source_by_sha(root_text: str, filename: str, expected_sha: str) -> str | None:
+    root = Path(root_text)
+    if not root.is_dir() or not filename:
+        return None
+    for candidate in root.rglob(filename):
+        if not candidate.is_file():
+            continue
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if _sha256(resolved) == expected_sha:
+            return str(resolved)
     return None
 
 

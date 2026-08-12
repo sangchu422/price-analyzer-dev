@@ -18,11 +18,16 @@ from app.ingestion.readers import (
 )
 from app.ingestion.source_selector import SourceGroup, build_source_groups
 from app.quotes.models import RawQuoteItem
+from app.parsing.models import ParseRunStatus, SourceParseOutput, SourceParseRun
+from app.db.time import utc_now
 
 
 _UNLOCKED_SUFFIX = "_보안해제"
 _PARSER_NAME = "quote-reader"
-_PARSER_VERSION = "reader-v1"
+_PARSER_VERSION = "reader-v2"
+_PARSER_CODE_FINGERPRINT = hashlib.sha256(
+    b"quote-reader-v2:versioned-output:multifactor-evidence:2026-08-12"
+).hexdigest()
 
 
 class UnsupportedQuoteLayoutError(ValueError):
@@ -145,6 +150,32 @@ def parsing_variant_for(
     return parsed_sibling or variant
 
 
+def current_raw_items_for_variant(
+    session: Session,
+    variant: SourceVariant,
+) -> list[RawQuoteItem]:
+    """Return only rows from the latest successful immutable parse run."""
+    run_id = session.scalar(
+        select(SourceParseRun.id)
+        .where(
+            SourceParseRun.source_variant_id == variant.id,
+            SourceParseRun.status == ParseRunStatus.SUCCEEDED,
+        )
+        .order_by(SourceParseRun.id.desc())
+        .limit(1)
+    )
+    if run_id is None:
+        return list(variant.raw_items)
+    return list(
+        session.scalars(
+            select(RawQuoteItem)
+            .join(SourceParseOutput, SourceParseOutput.raw_item_id == RawQuoteItem.id)
+            .where(SourceParseOutput.parse_run_id == run_id)
+            .order_by(RawQuoteItem.id)
+        )
+    )
+
+
 def preferred_variant_for(
     document: SourceDocument,
 ) -> SourceVariant:
@@ -187,6 +218,8 @@ def _register_variant(
             raise SourceEvidenceConflictError(
                 f"content changed at immutable source path: {stored_path}"
             )
+        if parse:
+            _ensure_current_parse_run(session, existing_path, source_path)
         return existing_path
 
     document = _find_document(session, logical_name)
@@ -223,7 +256,57 @@ def _register_variant(
     for parsed in rows:
         variant.raw_items.append(_raw_item(parsed))
     session.flush()
+    if should_parse:
+        _append_parse_run(session, variant, list(variant.raw_items))
     return variant
+
+
+def _ensure_current_parse_run(
+    session: Session,
+    variant: SourceVariant,
+    source_path: Path,
+) -> SourceParseRun:
+    existing = session.scalar(
+        select(SourceParseRun).where(
+            SourceParseRun.source_variant_id == variant.id,
+            SourceParseRun.parser_version == _PARSER_VERSION,
+            SourceParseRun.code_fingerprint == _PARSER_CODE_FINGERPRINT,
+        )
+    )
+    if existing is not None:
+        return existing
+    rows = read_quote(source_path)
+    if not rows:
+        raise UnsupportedQuoteLayoutError(
+            f"no quote rows matched a supported layout: {variant.path}"
+        )
+    raw_items = [_raw_item(row) for row in rows]
+    variant.raw_items.extend(raw_items)
+    session.flush()
+    return _append_parse_run(session, variant, raw_items)
+
+
+def _append_parse_run(
+    session: Session,
+    variant: SourceVariant,
+    raw_items: list[RawQuoteItem],
+) -> SourceParseRun:
+    run = SourceParseRun(
+        source_variant_id=variant.id,
+        parser_name=_PARSER_NAME,
+        parser_version=_PARSER_VERSION,
+        code_fingerprint=_PARSER_CODE_FINGERPRINT,
+        status=ParseRunStatus.SUCCEEDED,
+        row_count=len(raw_items),
+        finished_at=utc_now(),
+    )
+    session.add(run)
+    session.flush()
+    session.add_all(
+        SourceParseOutput(parse_run_id=run.id, raw_item_id=raw.id)
+        for raw in raw_items
+    )
+    return run
 
 
 def _find_document(

@@ -105,7 +105,12 @@ export function ReviewQueue({
                 </span>
                 <span className="row-meta">
                   <span className="reason-mark">{reasonLabel(item.reason_code)}</span>
-                  <span>{item.source.logical_name}</span>
+                  {(item.document_group_count ?? 1) > 1 && (
+                    <span className="document-group-mark">
+                      문서 내 {item.document_group_count}개 행
+                    </span>
+                  )}
+                  <span>{sourceFileLabel(item.source.logical_name)}</span>
                   <span>
                     {item.source.row
                       ? `${item.source.row}행`
@@ -134,4 +139,9 @@ export function ReviewQueue({
       )}
     </aside>
   );
+}
+
+function sourceFileLabel(value: string) {
+  const filename = value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
+  return filename.replace(/_보안해제(?=\.[^.]+$|$)/u, "");
 }

@@ -1,0 +1,565 @@
+- generic [ref=f2e3]:
+  - navigation "주요 작업" [ref=f2e4]:
+    - link "Price Analyzer 견적 적정성 분석" [ref=f2e5] [cursor=pointer]:
+      - /url: /cleansing
+      - generic [ref=f2e6]:
+        - strong [ref=f2e7]: PRICE
+        - generic [ref=f2e8]: /
+        - strong [ref=f2e9]: ANALYZER
+    - generic [ref=f2e11]:
+      - generic [ref=f2e12]: LOCAL MODE
+      - generic [ref=f2e14]:
+        - link "정제 검토" [ref=f2e15] [cursor=pointer]:
+          - /url: /cleansing
+        - link "표준 DB" [ref=f2e19] [cursor=pointer]:
+          - /url: /standard-prices
+        - link "신규 견적 분석" [ref=f2e24] [cursor=pointer]:
+          - /url: /analysis
+      - button "다크 모드로 전환" [pressed] [ref=f2e32]
+  - main [ref=f2e39]:
+    - generic [ref=f2e40]:
+      - generic [ref=f2e42]:
+        - heading "정제 검토" [active] [level=1] [ref=f2e43]
+        - generic [ref=f2e44]: 견적 원본과 정제값 판정
+      - generic "검토 대기 70건" [ref=f2e645]:
+        - text: 검토 대기
+        - strong [ref=f2e47]: "70"
+        - text: 건
+    - generic [ref=f2e48]:
+      - complementary "검토 대기 목록" [ref=f2e49]:
+        - generic [ref=f2e50]:
+          - generic [ref=f2e51]:
+            - generic [ref=f2e52]: 품목 또는 파일 검색
+            - searchbox "품목 또는 파일 검색" [ref=f2e56]
+          - generic [ref=f2e57]:
+            - generic [ref=f2e58]: 검토 사유 필터
+            - combobox "검토 사유 필터" [ref=f2e59]:
+              - option "모든 사유"
+              - option "금액 불일치" [selected]
+              - option "열 위치 확인 필요"
+              - option "금액 확인 필요"
+              - option "수량 확인 필요"
+              - option "숫자 범위 확인 필요"
+              - option "OCR로 추출한 항목 확인 필요"
+              - option "원본 표 구조 확인 필요"
+              - option "SOURCE_MAKER_RECOVERY"
+              - option "단가 편차 큼"
+        - generic [ref=f2e60]:
+          - generic [ref=f2e61]: 검토 항목
+          - generic [ref=f2e646]: 50건 표시
+        - list [ref=f2e63]:
+          - listitem [ref=f2e647]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 3쪽" [pressed] [ref=f2e648] [cursor=pointer]:
+              - generic [ref=f2e649]:
+                - strong [ref=f2e650]: 기타자재
+                - generic [ref=f2e651]: 사양 없음
+              - generic [ref=f2e652]:
+                - generic [ref=f2e653]: 금액 불일치
+                - generic [ref=f2e654]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e655]: 3쪽
+          - listitem [ref=f2e656]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 4쪽" [ref=f2e657] [cursor=pointer]:
+              - generic [ref=f2e658]:
+                - strong [ref=f2e659]: 기타자재
+                - generic [ref=f2e660]: 사양 없음
+              - generic [ref=f2e661]:
+                - generic [ref=f2e662]: 금액 불일치
+                - generic [ref=f2e663]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e664]: 4쪽
+          - listitem [ref=f2e665]:
+            - button "기타 구매품 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 4쪽" [ref=f2e666] [cursor=pointer]:
+              - generic [ref=f2e667]:
+                - strong [ref=f2e668]: 기타 구매품
+                - generic [ref=f2e669]: 사양 없음
+              - generic [ref=f2e670]:
+                - generic [ref=f2e671]: 금액 불일치
+                - generic [ref=f2e672]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e673]: 4쪽
+          - listitem [ref=f2e674]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 5쪽" [ref=f2e675] [cursor=pointer]:
+              - generic [ref=f2e676]:
+                - strong [ref=f2e677]: 기타자재
+                - generic [ref=f2e678]: 사양 없음
+              - generic [ref=f2e679]:
+                - generic [ref=f2e680]: 금액 불일치
+                - generic [ref=f2e681]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e682]: 5쪽
+          - listitem [ref=f2e683]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 6쪽" [ref=f2e684] [cursor=pointer]:
+              - generic [ref=f2e685]:
+                - strong [ref=f2e686]: 기타자재
+                - generic [ref=f2e687]: 사양 없음
+              - generic [ref=f2e688]:
+                - generic [ref=f2e689]: 금액 불일치
+                - generic [ref=f2e690]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e691]: 6쪽
+          - listitem [ref=f2e692]:
+            - button "기타 구매품 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 6쪽" [ref=f2e693] [cursor=pointer]:
+              - generic [ref=f2e694]:
+                - strong [ref=f2e695]: 기타 구매품
+                - generic [ref=f2e696]: 사양 없음
+              - generic [ref=f2e697]:
+                - generic [ref=f2e698]: 금액 불일치
+                - generic [ref=f2e699]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e700]: 6쪽
+          - listitem [ref=f2e701]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 7쪽" [ref=f2e702] [cursor=pointer]:
+              - generic [ref=f2e703]:
+                - strong [ref=f2e704]: 기타자재
+                - generic [ref=f2e705]: 사양 없음
+              - generic [ref=f2e706]:
+                - generic [ref=f2e707]: 금액 불일치
+                - generic [ref=f2e708]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e709]: 7쪽
+          - listitem [ref=f2e710]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 8쪽" [ref=f2e711] [cursor=pointer]:
+              - generic [ref=f2e712]:
+                - strong [ref=f2e713]: 기타자재
+                - generic [ref=f2e714]: 사양 없음
+              - generic [ref=f2e715]:
+                - generic [ref=f2e716]: 금액 불일치
+                - generic [ref=f2e717]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e718]: 8쪽
+          - listitem [ref=f2e719]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 9쪽" [ref=f2e720] [cursor=pointer]:
+              - generic [ref=f2e721]:
+                - strong [ref=f2e722]: 기타자재
+                - generic [ref=f2e723]: 사양 없음
+              - generic [ref=f2e724]:
+                - generic [ref=f2e725]: 금액 불일치
+                - generic [ref=f2e726]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e727]: 9쪽
+          - listitem [ref=f2e728]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 10쪽" [ref=f2e729] [cursor=pointer]:
+              - generic [ref=f2e730]:
+                - strong [ref=f2e731]: 기타자재
+                - generic [ref=f2e732]: 사양 없음
+              - generic [ref=f2e733]:
+                - generic [ref=f2e734]: 금액 불일치
+                - generic [ref=f2e735]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e736]: 10쪽
+          - listitem [ref=f2e737]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 11쪽" [ref=f2e738] [cursor=pointer]:
+              - generic [ref=f2e739]:
+                - strong [ref=f2e740]: 기타자재
+                - generic [ref=f2e741]: 사양 없음
+              - generic [ref=f2e742]:
+                - generic [ref=f2e743]: 금액 불일치
+                - generic [ref=f2e744]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e745]: 11쪽
+          - listitem [ref=f2e746]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 12쪽" [ref=f2e747] [cursor=pointer]:
+              - generic [ref=f2e748]:
+                - strong [ref=f2e749]: 기타자재
+                - generic [ref=f2e750]: 사양 없음
+              - generic [ref=f2e751]:
+                - generic [ref=f2e752]: 금액 불일치
+                - generic [ref=f2e753]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e754]: 12쪽
+          - listitem [ref=f2e755]:
+            - button "기타자재 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서 13쪽" [ref=f2e756] [cursor=pointer]:
+              - generic [ref=f2e757]:
+                - strong [ref=f2e758]: 기타자재
+                - generic [ref=f2e759]: 사양 없음
+              - generic [ref=f2e760]:
+                - generic [ref=f2e761]: 금액 불일치
+                - generic [ref=f2e762]: 3차 학습/AONE 추출 견적서/A2017020004503/4.업체견적서
+                - generic [ref=f2e763]: 13쪽
+          - listitem [ref=f2e764]:
+            - button "JIG 보관함 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2017070001423/4.업체견적서 3쪽" [ref=f2e765] [cursor=pointer]:
+              - generic [ref=f2e766]:
+                - strong [ref=f2e767]: JIG 보관함
+                - generic [ref=f2e768]: 사양 없음
+              - generic [ref=f2e769]:
+                - generic [ref=f2e770]: 금액 불일치
+                - generic [ref=f2e771]: 3차 학습/AONE 추출 견적서/A2017070001423/4.업체견적서
+                - generic [ref=f2e772]: 3쪽
+          - listitem [ref=f2e773]:
+            - button "S45C R/BAR Ø60 외 금액 불일치 3차 학습/AONE 추출 견적서/A2019070013189/7-1. 최종견적서_용접라인 9행" [ref=f2e774] [cursor=pointer]:
+              - generic [ref=f2e775]:
+                - strong [ref=f2e776]: S45C R/BAR
+                - generic [ref=f2e777]: Ø60 외
+              - generic [ref=f2e778]:
+                - generic [ref=f2e779]: 금액 불일치
+                - generic [ref=f2e780]: 3차 학습/AONE 추출 견적서/A2019070013189/7-1. 최종견적서_용접라인
+                - generic [ref=f2e781]: 9행
+          - listitem [ref=f2e782]:
+            - button "인버터 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2024010009058/5.업체견적서 4쪽" [ref=f2e783] [cursor=pointer]:
+              - generic [ref=f2e784]:
+                - strong [ref=f2e785]: 인버터
+                - generic [ref=f2e786]: 사양 없음
+              - generic [ref=f2e787]:
+                - generic [ref=f2e788]: 금액 불일치
+                - generic [ref=f2e789]: 3차 학습/AONE 추출 견적서/A2024010009058/5.업체견적서
+                - generic [ref=f2e790]: 4쪽
+          - listitem [ref=f2e791]:
+            - button "1) SOFTWARE TOOL (LAB WINDOWS CVI 8.2) 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2024010009058/5.업체견적서 4쪽" [ref=f2e792] [cursor=pointer]:
+              - generic [ref=f2e793]:
+                - strong [ref=f2e794]: 1) SOFTWARE TOOL (LAB WINDOWS CVI 8.2)
+                - generic [ref=f2e795]: 사양 없음
+              - generic [ref=f2e796]:
+                - generic [ref=f2e797]: 금액 불일치
+                - generic [ref=f2e798]: 3차 학습/AONE 추출 견적서/A2024010009058/5.업체견적서
+                - generic [ref=f2e799]: 4쪽
+          - listitem [ref=f2e800]:
+            - button "BOOTH LABOR_INSTALLATION 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 63행" [ref=f2e801] [cursor=pointer]:
+              - generic [ref=f2e802]:
+                - strong [ref=f2e803]: BOOTH LABOR_INSTALLATION
+                - generic [ref=f2e804]: 사양 없음
+              - generic [ref=f2e805]:
+                - generic [ref=f2e806]: 금액 불일치
+                - generic [ref=f2e807]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e808]: 63행
+          - listitem [ref=f2e809]:
+            - button "BOOTH LABOR_INSTALLATION OVER TIME 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 64행" [ref=f2e810] [cursor=pointer]:
+              - generic [ref=f2e811]:
+                - strong [ref=f2e812]: BOOTH LABOR_INSTALLATION OVER TIME
+                - generic [ref=f2e813]: 사양 없음
+              - generic [ref=f2e814]:
+                - generic [ref=f2e815]: 금액 불일치
+                - generic [ref=f2e816]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e817]: 64행
+          - listitem [ref=f2e818]:
+            - button "BOOTH LABOR_DISMANTLE 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 65행" [ref=f2e819] [cursor=pointer]:
+              - generic [ref=f2e820]:
+                - strong [ref=f2e821]: BOOTH LABOR_DISMANTLE
+                - generic [ref=f2e822]: 사양 없음
+              - generic [ref=f2e823]:
+                - generic [ref=f2e824]: 금액 불일치
+                - generic [ref=f2e825]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e826]: 65행
+          - listitem [ref=f2e827]:
+            - button "ELECTRIC LABOR_INSTALLATION 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 66행" [ref=f2e828] [cursor=pointer]:
+              - generic [ref=f2e829]:
+                - strong [ref=f2e830]: ELECTRIC LABOR_INSTALLATION
+                - generic [ref=f2e831]: 사양 없음
+              - generic [ref=f2e832]:
+                - generic [ref=f2e833]: 금액 불일치
+                - generic [ref=f2e834]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e835]: 66행
+          - listitem [ref=f2e836]:
+            - button "ELECTRIC LABOR_INSTALLATION OVER TIME 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 67행" [ref=f2e837] [cursor=pointer]:
+              - generic [ref=f2e838]:
+                - strong [ref=f2e839]: ELECTRIC LABOR_INSTALLATION OVER TIME
+                - generic [ref=f2e840]: 사양 없음
+              - generic [ref=f2e841]:
+                - generic [ref=f2e842]: 금액 불일치
+                - generic [ref=f2e843]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e844]: 67행
+          - listitem [ref=f2e845]:
+            - button "ELECTRIC LABOR_DISMANTLE 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 68행" [ref=f2e846] [cursor=pointer]:
+              - generic [ref=f2e847]:
+                - strong [ref=f2e848]: ELECTRIC LABOR_DISMANTLE
+                - generic [ref=f2e849]: 사양 없음
+              - generic [ref=f2e850]:
+                - generic [ref=f2e851]: 금액 불일치
+                - generic [ref=f2e852]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e853]: 68행
+          - listitem [ref=f2e854]:
+            - button "SIGN LABOR_INSTALLATION 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 69행" [ref=f2e855] [cursor=pointer]:
+              - generic [ref=f2e856]:
+                - strong [ref=f2e857]: SIGN LABOR_INSTALLATION
+                - generic [ref=f2e858]: 사양 없음
+              - generic [ref=f2e859]:
+                - generic [ref=f2e860]: 금액 불일치
+                - generic [ref=f2e861]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e862]: 69행
+          - listitem [ref=f2e863]:
+            - button "SIGN LABOR_DISMANTLE 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 70행" [ref=f2e864] [cursor=pointer]:
+              - generic [ref=f2e865]:
+                - strong [ref=f2e866]: SIGN LABOR_DISMANTLE
+                - generic [ref=f2e867]: 사양 없음
+              - generic [ref=f2e868]:
+                - generic [ref=f2e869]: 금액 불일치
+                - generic [ref=f2e870]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e871]: 70행
+          - listitem [ref=f2e872]:
+            - button "현장 감리/ENGINEERING DRAWING 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 71행" [ref=f2e873] [cursor=pointer]:
+              - generic [ref=f2e874]:
+                - strong [ref=f2e875]: 현장 감리/ENGINEERING DRAWING
+                - generic [ref=f2e876]: 사양 없음
+              - generic [ref=f2e877]:
+                - generic [ref=f2e878]: 금액 불일치
+                - generic [ref=f2e879]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e880]: 71행
+          - listitem [ref=f2e881]:
+            - button "설치, 철거 운송비 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 110행" [ref=f2e882] [cursor=pointer]:
+              - generic [ref=f2e883]:
+                - strong [ref=f2e884]: 설치, 철거 운송비
+                - generic [ref=f2e885]: 사양 없음
+              - generic [ref=f2e886]:
+                - generic [ref=f2e887]: 금액 불일치
+                - generic [ref=f2e888]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e889]: 110행
+          - listitem [ref=f2e890]:
+            - 'button "(옵션 2) HD 카메라-목업 차량 내부 : 핸드핼드 카메라 1대 + 목업 차량 외부 : 촬영 용 핸드헬드 카메라 1대 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 131행" [ref=f2e891] [cursor=pointer]':
+              - generic [ref=f2e892]:
+                - strong [ref=f2e893]: "(옵션 2) HD 카메라-목업 차량 내부 : 핸드핼드 카메라 1대 + 목업 차량 외부 : 촬영 용 핸드헬드 카메라 1대"
+                - generic [ref=f2e894]: 사양 없음
+              - generic [ref=f2e895]:
+                - generic [ref=f2e896]: 금액 불일치
+                - generic [ref=f2e897]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e898]: 131행
+          - listitem [ref=f2e899]:
+            - button "1대 X 2일 X 8시간 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 145행" [ref=f2e900] [cursor=pointer]:
+              - generic [ref=f2e901]:
+                - strong [ref=f2e902]: 1대 X 2일 X 8시간
+                - generic [ref=f2e903]: 사양 없음
+              - generic [ref=f2e904]:
+                - generic [ref=f2e905]: 금액 불일치
+                - generic [ref=f2e906]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e907]: 145행
+          - listitem [ref=f2e908]:
+            - 'button "LABOR : SOUND TECH 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 158행" [ref=f2e909] [cursor=pointer]':
+              - generic [ref=f2e910]:
+                - strong [ref=f2e911]: "LABOR : SOUND TECH"
+                - generic [ref=f2e912]: 사양 없음
+              - generic [ref=f2e913]:
+                - generic [ref=f2e914]: 금액 불일치
+                - generic [ref=f2e915]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e916]: 158행
+          - listitem [ref=f2e917]:
+            - 'button "LABOR : LIGHTING TECH 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 159행" [ref=f2e918] [cursor=pointer]':
+              - generic [ref=f2e919]:
+                - strong [ref=f2e920]: "LABOR : LIGHTING TECH"
+                - generic [ref=f2e921]: 사양 없음
+              - generic [ref=f2e922]:
+                - generic [ref=f2e923]: 금액 불일치
+                - generic [ref=f2e924]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e925]: 159행
+          - listitem [ref=f2e926]:
+            - button "운영감독_전시 운영관리 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 166행" [ref=f2e927] [cursor=pointer]:
+              - generic [ref=f2e928]:
+                - strong [ref=f2e929]: 운영감독_전시 운영관리
+                - generic [ref=f2e930]: 사양 없음
+              - generic [ref=f2e931]:
+                - generic [ref=f2e932]: 금액 불일치
+                - generic [ref=f2e933]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e934]: 166행
+          - listitem [ref=f2e935]:
+            - button "쇼케이스 MC (1인, 일 5회 진행, 리허설 2일) 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 169행" [ref=f2e936] [cursor=pointer]:
+              - generic [ref=f2e937]:
+                - strong [ref=f2e938]: 쇼케이스 MC (1인, 일 5회 진행, 리허설 2일)
+                - generic [ref=f2e939]: 사양 없음
+              - generic [ref=f2e940]:
+                - generic [ref=f2e941]: 금액 불일치
+                - generic [ref=f2e942]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e943]: 169행
+          - listitem [ref=f2e944]:
+            - button "쇼케이스 연출 지원 인력 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 171행" [ref=f2e945] [cursor=pointer]:
+              - generic [ref=f2e946]:
+                - strong [ref=f2e947]: 쇼케이스 연출 지원 인력
+                - generic [ref=f2e948]: 사양 없음
+              - generic [ref=f2e949]:
+                - generic [ref=f2e950]: 금액 불일치
+                - generic [ref=f2e951]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e952]: 171행
+          - listitem [ref=f2e953]:
+            - button "인포메이션_전시관 안내, 미팅룸 안내 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 172행" [ref=f2e954] [cursor=pointer]:
+              - generic [ref=f2e955]:
+                - strong [ref=f2e956]: 인포메이션_전시관 안내, 미팅룸 안내
+                - generic [ref=f2e957]: 사양 없음
+              - generic [ref=f2e958]:
+                - generic [ref=f2e959]: 금액 불일치
+                - generic [ref=f2e960]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e961]: 172행
+          - listitem [ref=f2e962]:
+            - button "슈퍼바이저_전시품 및 관람객 안전관리 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 173행" [ref=f2e963] [cursor=pointer]:
+              - generic [ref=f2e964]:
+                - strong [ref=f2e965]: 슈퍼바이저_전시품 및 관람객 안전관리
+                - generic [ref=f2e966]: 사양 없음
+              - generic [ref=f2e967]:
+                - generic [ref=f2e968]: 금액 불일치
+                - generic [ref=f2e969]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e970]: 173행
+          - listitem [ref=f2e971]:
+            - button "스태프_고객 체험/클리닝/전체 물자 관리 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 175행" [ref=f2e972] [cursor=pointer]:
+              - generic [ref=f2e973]:
+                - strong [ref=f2e974]: 스태프_고객 체험/클리닝/전체 물자 관리
+                - generic [ref=f2e975]: 사양 없음
+              - generic [ref=f2e976]:
+                - generic [ref=f2e977]: 금액 불일치
+                - generic [ref=f2e978]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e979]: 175행
+          - listitem [ref=f2e980]:
+            - button "현장 스케치 포토그래퍼 촬영 (1인 2일) 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치 176행" [ref=f2e981] [cursor=pointer]:
+              - generic [ref=f2e982]:
+                - strong [ref=f2e983]: 현장 스케치 포토그래퍼 촬영 (1인 2일)
+                - generic [ref=f2e984]: 사양 없음
+              - generic [ref=f2e985]:
+                - generic [ref=f2e986]: 금액 불일치
+                - generic [ref=f2e987]: 3차 학습/AONE 추출 견적서/A2025120014802/5. 견적서_2026CES 전시회 부스 설치
+                - generic [ref=f2e988]: 176행
+          - listitem [ref=f2e989]:
+            - button "BASE&FRAME 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 6쪽" [ref=f2e990] [cursor=pointer]:
+              - generic [ref=f2e991]:
+                - strong [ref=f2e992]: BASE&FRAME
+                - generic [ref=f2e993]: 사양 없음
+              - generic [ref=f2e994]:
+                - generic [ref=f2e995]: 금액 불일치
+                - generic [ref=f2e996]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e997]: 6쪽
+          - listitem [ref=f2e998]:
+            - button "이종감지 JIG 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 6쪽" [ref=f2e999] [cursor=pointer]:
+              - generic [ref=f2e1000]:
+                - strong [ref=f2e1001]: 이종감지 JIG
+                - generic [ref=f2e1002]: 사양 없음
+              - generic [ref=f2e1003]:
+                - generic [ref=f2e1004]: 금액 불일치
+                - generic [ref=f2e1005]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e1006]: 6쪽
+          - listitem [ref=f2e1007]:
+            - button "조립용 핸들 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 6쪽" [ref=f2e1008] [cursor=pointer]:
+              - generic [ref=f2e1009]:
+                - strong [ref=f2e1010]: 조립용 핸들
+                - generic [ref=f2e1011]: 사양 없음
+              - generic [ref=f2e1012]:
+                - generic [ref=f2e1013]: 금액 불일치
+                - generic [ref=f2e1014]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e1015]: 6쪽
+          - listitem [ref=f2e1016]:
+            - button "BED 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 9쪽" [ref=f2e1017] [cursor=pointer]:
+              - generic [ref=f2e1018]:
+                - strong [ref=f2e1019]: BED
+                - generic [ref=f2e1020]: 사양 없음
+              - generic [ref=f2e1021]:
+                - generic [ref=f2e1022]: 금액 불일치
+                - generic [ref=f2e1023]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e1024]: 9쪽
+          - listitem [ref=f2e1025]:
+            - button "FRAME 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 9쪽" [ref=f2e1026] [cursor=pointer]:
+              - generic [ref=f2e1027]:
+                - strong [ref=f2e1028]: FRAME
+                - generic [ref=f2e1029]: 사양 없음
+              - generic [ref=f2e1030]:
+                - generic [ref=f2e1031]: 금액 불일치
+                - generic [ref=f2e1032]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e1033]: 9쪽
+          - listitem [ref=f2e1034]:
+            - button "BED 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 16쪽" [ref=f2e1035] [cursor=pointer]:
+              - generic [ref=f2e1036]:
+                - strong [ref=f2e1037]: BED
+                - generic [ref=f2e1038]: 사양 없음
+              - generic [ref=f2e1039]:
+                - generic [ref=f2e1040]: 금액 불일치
+                - generic [ref=f2e1041]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e1042]: 16쪽
+          - listitem [ref=f2e1043]:
+            - button "FRAME 사양 없음 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9 16쪽" [ref=f2e1044] [cursor=pointer]:
+              - generic [ref=f2e1045]:
+                - strong [ref=f2e1046]: FRAME
+                - generic [ref=f2e1047]: 사양 없음
+              - generic [ref=f2e1048]:
+                - generic [ref=f2e1049]: 금액 불일치
+                - generic [ref=f2e1050]: 3차 학습/바츠 추출 견적서/tmp_20260803/20230629142202579vrcdUJ33RqgmLaCtB9P47pDddXA8VEPiUPaq4bSVh0zsPiPsxMwwhlFOaUixsWAl.Z3Bvc19kb21haW4vZ3Bvc19tcw==9.743842917645958E9
+                - generic [ref=f2e1051]: 16쪽
+          - listitem [ref=f2e1052]:
+            - button "기존설비 철거 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서 12행" [ref=f2e1053] [cursor=pointer]:
+              - generic [ref=f2e1054]:
+                - strong [ref=f2e1055]: 기존설비 철거
+                - generic [ref=f2e1056]: 사양 없음
+              - generic [ref=f2e1057]:
+                - generic [ref=f2e1058]: 금액 불일치
+                - generic [ref=f2e1059]: 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서
+                - generic [ref=f2e1060]: 12행
+          - listitem [ref=f2e1061]:
+            - button "설치 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서 16행" [ref=f2e1062] [cursor=pointer]:
+              - generic [ref=f2e1063]:
+                - strong [ref=f2e1064]: 설치
+                - generic [ref=f2e1065]: 사양 없음
+              - generic [ref=f2e1066]:
+                - generic [ref=f2e1067]: 금액 불일치
+                - generic [ref=f2e1068]: 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서
+                - generic [ref=f2e1069]: 16행
+          - listitem [ref=f2e1070]:
+            - button "기존설비 철거 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서 12행" [ref=f2e1071] [cursor=pointer]:
+              - generic [ref=f2e1072]:
+                - strong [ref=f2e1073]: 기존설비 철거
+                - generic [ref=f2e1074]: 사양 없음
+              - generic [ref=f2e1075]:
+                - generic [ref=f2e1076]: 금액 불일치
+                - generic [ref=f2e1077]: 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서
+                - generic [ref=f2e1078]: 12행
+          - listitem [ref=f2e1079]:
+            - button "설치 사양 없음 금액 불일치 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서 16행" [ref=f2e1080] [cursor=pointer]:
+              - generic [ref=f2e1081]:
+                - strong [ref=f2e1082]: 설치
+                - generic [ref=f2e1083]: 사양 없음
+              - generic [ref=f2e1084]:
+                - generic [ref=f2e1085]: 금액 불일치
+                - generic [ref=f2e1086]: 3차 학습/AONE 추출 견적서/A2026050004991/3.견적서
+                - generic [ref=f2e1087]: 16행
+          - listitem [ref=f2e1088]:
+            - button "TRANSE AC480/220V,복권1KW 금액 불일치 3차 학습/바츠 추출 견적서/tmp_20260803/202004211541502797Z9PNgGCfKYWICd7EZ7Lqrl6BHxsMXQh46oTeROV199pQt7I471B21ERNn0jaP2X.Z3Bvc19kb21haW5fcHJkL2dwb3NfbXNfMDI=7.491747633565293E9 305행" [ref=f2e1089] [cursor=pointer]:
+              - generic [ref=f2e1090]:
+                - strong [ref=f2e1091]: TRANSE
+                - generic [ref=f2e1092]: AC480/220V,복권1KW
+              - generic [ref=f2e1093]:
+                - generic [ref=f2e1094]: 금액 불일치
+                - generic [ref=f2e1095]: 3차 학습/바츠 추출 견적서/tmp_20260803/202004211541502797Z9PNgGCfKYWICd7EZ7Lqrl6BHxsMXQh46oTeROV199pQt7I471B21ERNn0jaP2X.Z3Bvc19kb21haW5fcHJkL2dwb3NfbXNfMDI=7.491747633565293E9
+                - generic [ref=f2e1096]: 305행
+        - button "다음 항목 불러오기" [ref=f2e1097] [cursor=pointer]
+      - generic [ref=f2e515]:
+        - region "선택 항목 상세" [ref=f2e1098]:
+          - generic [ref=f2e1099]:
+            - generic [ref=f2e1100]:
+              - paragraph [ref=f2e1101]: "품목 #25498"
+              - heading "기타자재" [level=1] [ref=f2e1102]
+              - paragraph [ref=f2e1103]: 원본에서 규격을 확인하지 못함
+            - generic [ref=f2e1104]: 검토 필요
+          - region [ref=f2e1105]:
+            - generic [ref=f2e1106]:
+              - paragraph [ref=f2e1107]: 검토 사유
+              - heading "금액 불일치" [level=2] [ref=f2e1108]
+            - paragraph [ref=f2e1109]: 수량 × 단가로 계산한 값과 견적서 금액이 일치하지 않습니다.
+          - region [ref=f2e1110]:
+            - generic [ref=f2e1111]:
+              - paragraph [ref=f2e1112]: 계산 근거
+              - heading "표시 금액 대 계산 금액" [level=2] [ref=f2e1113]
+            - generic [ref=f2e1114]:
+              - generic [ref=f2e1115]:
+                - term [ref=f2e1116]: 원본 수량
+                - definition [ref=f2e1117]: "1"
+              - generic [ref=f2e1118]:
+                - term [ref=f2e1119]: 원본 단위
+                - definition [ref=f2e1120]: LOT
+              - generic [ref=f2e1121]:
+                - term [ref=f2e1122]: 원본 단가
+                - definition [ref=f2e1123]: "1"
+              - generic [ref=f2e1124]:
+                - term [ref=f2e1125]: 표시 금액
+                - definition [ref=f2e1126]: 50,000
+              - generic [ref=f2e1127]:
+                - term [ref=f2e1128]: 계산 금액
+                - definition [ref=f2e1129]: 1원
+              - generic [ref=f2e1130]:
+                - term [ref=f2e1131]: 차액
+                - definition [ref=f2e1132]: "-49,999원"
+            - paragraph [ref=f2e1133]: 계산 금액 − 표시 금액 · 차이율 -100% · 허용오차 ±500원
+          - region [ref=f2e1134]:
+            - generic [ref=f2e1135]:
+              - paragraph [ref=f2e1136]: 원본 확인
+              - heading "견적서 해당 위치" [level=2] [ref=f2e1137]
+            - generic [ref=f2e1138]:
+              - strong [ref=f2e1139]: 4.업체견적서.pdf
+              - generic [ref=f2e1140]: 3쪽
+              - link "원본 전체 열기" [ref=f2e1141] [cursor=pointer]:
+                - /url: /api/documents/variants/31/file#page=3
+            - iframe [ref=f2e1142]:
+              
+        - region "검토 판단" [ref=f2e1143]:
+          - generic [ref=f2e1144]:
+            - generic [ref=f2e1145]:
+              - generic [ref=f2e1146]: 검토자
+              - textbox "검토자" [ref=f2e1147]:
+                - /placeholder: 이름 또는 사번
+              - generic [ref=f2e1148]: 0 / 100
+            - generic [ref=f2e1149]:
+              - generic [ref=f2e1150]: 판단 근거
+              - textbox "판단 근거" [ref=f2e1151]:
+                - /placeholder: 원본과 판단 근거를 구체적으로 기록하세요.
+              - generic [ref=f2e1152]: 0 / 2,000
+          - generic [ref=f2e1153]:
+            - status [ref=f2e1154]
+            - button "제외" [ref=f2e1155] [cursor=pointer]
+            - button "포함" [ref=f2e1156] [cursor=pointer]

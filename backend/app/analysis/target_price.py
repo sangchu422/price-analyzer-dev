@@ -841,7 +841,19 @@ def _target_line_from_cpi(
             (),
         )
 
-    target_unit = Decimal(str(median([item.adjusted_unit_price for item in evidence]))).quantize(
+    # Price assessment uses the standard-price median as a neutral benchmark.
+    # A purchase target instead represents the most aggressive price the
+    # company has actually achieved, after putting all observations on the
+    # same CPI basis.  Keep every observation for audit, but select the lowest
+    # adjusted unit price as the negotiation target.
+    evidence.sort(
+        key=lambda item: (
+            item.adjusted_unit_price,
+            -item.quote_date.toordinal(),
+            item.raw_item_id,
+        )
+    )
+    target_unit = evidence[0].adjusted_unit_price.quantize(
         KRW_QUANTUM,
         rounding=ROUND_HALF_UP,
     )
@@ -865,11 +877,14 @@ def _target_line_from_cpi(
                 variance_amount / target_unit * Decimal("100")
             ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     reason = (
-        f"원본 날짜가 확인된 과거 단가 {len(evidence)}건에 "
-        f"{latest_confirmed_year}년까지의 소비자물가 등락률을 복리로 적용했습니다."
+        f"원본 날짜가 확인된 과거 단가 {len(evidence)}건을 "
+        f"{latest_confirmed_year}년 확정 소비자물가로 보정한 뒤 "
+        "가장 낮은 금액을 협상 목표로 채택했습니다."
     )
     if rate_gap_count:
         reason += " 필요한 연간 등락률이 누락된 과거 근거는 계산에서 제외했습니다."
+    if len(evidence) == 1:
+        reason += " 근거가 1건뿐이므로 협상 시 신뢰도가 낮습니다."
     return TargetLineResult(
         line.raw_item_id,
         "AVAILABLE",

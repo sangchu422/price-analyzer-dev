@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 import re
 import unicodedata
 
@@ -14,13 +14,15 @@ from app.db.types import (
 )
 
 
-RULE_VERSION = "clean-v1"
-OUTLIER_RULE_VERSION = "outlier-mad-v1"
+RULE_VERSION = "clean-v2"
+OUTLIER_RULE_VERSION = "outlier-mad-v2"
 _MAD_SCALE = Decimal("0.6745")
 _MAD_THRESHOLD = Decimal("3.5")
 ZERO_MAD_MIN_ABSOLUTE_DELTA = Decimal("1")
 ZERO_MAD_MIN_RELATIVE_DELTA = Decimal("0.20")
 _MAX_NUMERIC_DIGITS = 64
+_STORAGE_QUANTUM = Decimal(1).scaleb(-EXACT_DECIMAL_FRACTIONAL_DIGITS)
+_SAFE_FLOAT_ARTIFACT_DELTA = _STORAGE_QUANTUM / Decimal("2")
 _CURRENCY_EDGE = re.compile(
     r"^(?:(?:KRW|WON)\s*|[₩￦$]\s*)|"
     r"(?:\s*(?:KRW|WON|원)|\s*[₩￦$])$",
@@ -199,11 +201,18 @@ def parse_number(value: str | None) -> ParsedNumber:
                 True,
             )
         return ParsedNumber(parsed, True, nonpositive_hint=True)
-    if (
-        parsed.as_tuple().exponent
-        < -EXACT_DECIMAL_FRACTIONAL_DIGITS
-    ):
-        return ParsedNumber(None, True, "EXCESSIVE_SCALE")
+    if parsed.as_tuple().exponent < -EXACT_DECIMAL_FRACTIONAL_DIGITS:
+        rounded = parsed.quantize(_STORAGE_QUANTUM, rounding=ROUND_HALF_UP)
+        # Spreadsheet binary-float tails are typically much deeper than an
+        # intentionally entered seventh decimal place.  Preserve the latter
+        # as a review item while normalizing only the characteristic tail.
+        if (
+            parsed.as_tuple().exponent <= -8
+            and abs(parsed - rounded) <= _SAFE_FLOAT_ARTIFACT_DELTA
+        ):
+            parsed = rounded
+        else:
+            return ParsedNumber(None, True, "EXCESSIVE_SCALE")
     if parsed > EXACT_DECIMAL_MAX:
         return ParsedNumber(None, True, "OUT_OF_RANGE")
     return ParsedNumber(parsed, True)
@@ -281,8 +290,12 @@ def evaluate(raw: object) -> Evaluation:
             structural_detail,
             **common,
         )
+    zero_quantity_zero_amount = (
+        quantity.value == 0 and amount.value == 0
+    )
     if quantity.supplied and (
-        quantity.value is None or quantity.value <= 0
+        quantity.value is None
+        or (quantity.value <= 0 and not zero_quantity_zero_amount)
     ):
         return Evaluation(
             CleanStatus.REVIEW_REQUIRED,
@@ -290,7 +303,10 @@ def evaluate(raw: object) -> Evaluation:
             _invalid_detail("quantity", quantity),
             **common,
         )
-    if amount.supplied and (amount.value is None or amount.value <= 0):
+    if amount.supplied and (
+        amount.value is None
+        or (amount.value <= 0 and not zero_quantity_zero_amount)
+    ):
         return Evaluation(
             CleanStatus.REVIEW_REQUIRED,
             "INVALID_AMOUNT",

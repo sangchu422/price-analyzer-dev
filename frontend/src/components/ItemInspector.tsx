@@ -115,8 +115,10 @@ export function ItemInspector({
       {item.reason_evidence?.kind === "UNIT_PRICE_DISTRIBUTION" && (
         <PriceDistribution item={item} />
       )}
-      {item.reason_evidence?.kind === "AMOUNT_MISMATCH" && (
-        <AmountMismatchEvidence evidence={item.reason_evidence} />
+      {(["AMOUNT_MISMATCH", "AMOUNT_CALCULATION"] as string[]).includes(
+        item.reason_evidence?.kind ?? "",
+      ) && (
+        <AmountMismatchEvidence evidence={item.reason_evidence!} />
       )}
 
       <section className="evidence source-preview-section" aria-labelledby="evidence-title">
@@ -202,6 +204,12 @@ function AmountMismatchEvidence({
         <h2 id="amount-mismatch-title">표시 금액 대 계산 금액</h2>
       </div>
       <dl>
+        {evidence.factors?.map((factor) => (
+          <div key={factor.coordinate}>
+            <dt>{factor.label}</dt>
+            <dd>{factor.value} <small>({factor.coordinate})</small></dd>
+          </div>
+        ))}
         <div>
           <dt>원본 수량</dt>
           <dd>{rawValue(evidence.original_quantity)}</dd>
@@ -232,6 +240,11 @@ function AmountMismatchEvidence({
         {differencePercent ? <> · 차이율 {differencePercent}</> : null}
         {evidence.tolerance_amount ? <> · 허용오차 ±{tolerance}</> : null}
       </p>
+      {evidence.formula && (
+        <p className="calculation-formula">
+          원본 계산식: <code>{evidence.formula}</code>
+        </p>
+      )}
     </section>
   );
 }

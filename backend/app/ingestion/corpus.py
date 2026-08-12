@@ -23,6 +23,7 @@ from app.ingestion.service import (
     UnsupportedQuoteLayoutError,
     ingest_group,
     parsing_variant_for,
+    current_raw_items_for_variant,
     sha256,
 )
 from app.ingestion.readers import (
@@ -317,9 +318,8 @@ def ingest_corpus(session: Session, root: Path) -> IngestReport:
                     )
                 )
             parsing_variant = parsing_variant_for(session, selected)
-            for raw_item in sorted(
-                parsing_variant.raw_items,
-                key=lambda item: item.id,
+            for raw_item in current_raw_items_for_variant(
+                session, parsing_variant
             ):
                 apply_rules(session, raw_item)
             session.commit()

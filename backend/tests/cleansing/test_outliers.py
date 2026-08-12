@@ -112,7 +112,7 @@ def test_outliers_are_group_local_and_append_review_decisions(
     assert "median=" in latest.reason_detail
     assert "mad=" in latest.reason_detail
     assert "decision_ids=" in latest.reason_detail
-    assert "rule=outlier-mad-v1" in latest.reason_detail
+    assert "rule=outlier-mad-v2" in latest.reason_detail
     assert "gate=delta>1 and relative>0.20" in latest.reason_detail
     assert current_decision(
         session,
@@ -340,14 +340,14 @@ def test_outlier_version_bump_appends_new_flagged_history(
     [first] = apply_group_outlier_rules(session)
     monkeypatch.setattr(
         "app.cleansing.service.OUTLIER_RULE_VERSION",
-        "outlier-mad-v2",
+        "outlier-mad-v3",
     )
 
     [second] = apply_group_outlier_rules(session)
 
     assert first.raw_item_id == second.raw_item_id == rows[2].id
-    assert first.rule_version == "outlier-mad-v1"
-    assert second.rule_version == "outlier-mad-v2"
+    assert first.rule_version == "outlier-mad-v2"
+    assert second.rule_version == "outlier-mad-v3"
     assert second.id > first.id
     assert current_decision(session, rows[2].id) is second
 
@@ -424,7 +424,7 @@ def test_outlier_version_bump_appends_recovery_when_no_longer_flagged(
         apply_rules(session, row)
     monkeypatch.setattr(
         "app.cleansing.service.OUTLIER_RULE_VERSION",
-        "outlier-mad-v2",
+        "outlier-mad-v3",
     )
 
     created = apply_group_outlier_rules(session)
@@ -434,7 +434,7 @@ def test_outlier_version_bump_appends_recovery_when_no_longer_flagged(
     assert recovered is not None
     assert recovered.status is CleanStatus.INCLUDED
     assert recovered.reason_code == "VALID"
-    assert recovered.rule_version == "outlier-mad-v2"
+    assert recovered.rule_version == "outlier-mad-v3"
     assert "no longer" in recovered.reason_detail
     assert recovered in created
 
@@ -461,7 +461,7 @@ def test_same_outlier_version_retry_is_idempotent_after_version_bump(
     apply_group_outlier_rules(session)
     monkeypatch.setattr(
         "app.cleansing.service.OUTLIER_RULE_VERSION",
-        "outlier-mad-v2",
+        "outlier-mad-v3",
     )
 
     first = apply_group_outlier_rules(session)

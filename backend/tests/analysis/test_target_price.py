@@ -181,6 +181,33 @@ def test_cpi_target_compounds_confirmed_annual_rates_and_rounds_to_krw() -> None
     ]
 
 
+def test_cpi_purchase_target_uses_lowest_adjusted_historical_price() -> None:
+    result = _target_line_from_cpi(
+        _matched_line(),
+        (
+            _observation(
+                1,
+                "SOURCE_CONFIRMED",
+                unit_price=Decimal("1000000"),
+            ),
+            _observation(
+                2,
+                "SOURCE_CONFIRMED",
+                unit_price=Decimal("1200000"),
+            ),
+        ),
+        _cpi_rates_2017_to_2025(),
+        "2025",
+        77,
+    )
+
+    assert result.status == "AVAILABLE"
+    assert result.target_unit_price == Decimal("1216544")
+    assert result.target_amount == Decimal("2433088")
+    assert [item.raw_item_id for item in result.evidence] == [1, 2]
+    assert "가장 낮은 금액을 협상 목표로 채택" in result.reason
+
+
 def test_cpi_target_reports_rate_gap_without_ppi_fallback() -> None:
     rates = _cpi_rates_2017_to_2025()
     del rates["2021"]

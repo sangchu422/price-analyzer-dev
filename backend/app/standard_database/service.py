@@ -37,6 +37,7 @@ from app.pricing.service import (
     price_version_matches_draft,
 )
 from app.quotes.models import RawQuoteItem
+from app.parsing.projection import current_raw_item_ids
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -235,6 +236,7 @@ def _load_historical_rows(
         DocumentMetadataVersion.source_document_id,
         DocumentMetadataVersion.id,
     )
+    current_raw = current_raw_item_ids()
     statement = (
         select(
             RawQuoteItem,
@@ -249,6 +251,7 @@ def _load_historical_rows(
             latest_clean.c.parent_id == RawQuoteItem.id,
         )
         .join(CleanDecision, CleanDecision.id == latest_clean.c.id)
+        .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
         .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
         .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
         .join(

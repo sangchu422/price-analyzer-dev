@@ -45,9 +45,15 @@ export interface ReviewQueueItem {
   reason_code: string;
   reason_detail: string | null;
   reason_evidence: ReasonEvidence | null;
+  extraction_confidence?: number | null;
+  calculation_factors?: Array<{ label: string; coordinate: string; value: string }>;
+  calculated_amount?: string | null;
+  difference_amount?: string | null;
+  difference_percent?: string | null;
   spec_source_status: "PRESENT" | "SOURCE_BLANK" | "PARSER_UNMAPPED" | "UNKNOWN";
   decision: Decision;
   source: SourceEvidence;
+  document_group_count?: number;
 }
 
 export interface ReasonEvidenceObservation {
@@ -82,6 +88,9 @@ export interface ReasonEvidence {
   difference_percent?: string | null;
   tolerance_amount?: string | null;
   comparison?: "CALCULATED_MINUS_DISPLAYED" | string;
+  formula?: string | null;
+  factors?: Array<{ label: string; coordinate: string; value: string }>;
+  matches?: boolean;
 }
 
 export interface SourcePreviewRow {

@@ -35,7 +35,9 @@ export function CleansingReviewPage() {
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [isMobileDetailOpen, setIsMobileDetailOpen] = useState(false);
   const inspectorHeadingRef = useRef<HTMLHeadingElement>(null);
+  const detailPaneRef = useRef<HTMLDivElement>(null);
   const focusAfterDecisionRef = useRef(false);
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
 
@@ -204,7 +206,7 @@ export function CleansingReviewPage() {
         </section>
       )}
 
-      <div className="workspace">
+      <div className={`workspace ${isMobileDetailOpen ? "has-mobile-detail" : ""}`}>
         <ReviewQueue
           items={items}
           availableReasons={availableReasons}
@@ -220,11 +222,24 @@ export function CleansingReviewPage() {
           onReasonChange={setReason}
           onSelect={(id) => {
             setSelectedId(id);
+            setIsMobileDetailOpen(true);
             setNotice(null);
+            window.requestAnimationFrame(() => {
+              if (detailPaneRef.current) detailPaneRef.current.scrollTop = 0;
+            });
           }}
           onLoadMore={() => void queue.fetchNextPage()}
         />
-        <div className="detail-pane">
+        <div className="detail-pane" ref={detailPaneRef}>
+          {selected && (
+            <button
+              className="mobile-queue-back"
+              type="button"
+              onClick={() => setIsMobileDetailOpen(false)}
+            >
+              검토 목록으로
+            </button>
+          )}
           {!selected && (
             <div className="filtered-empty">
               <p>검색 조건에 맞는 검토 항목이 없습니다.</p>

@@ -503,7 +503,7 @@ function AnalysisResults({
           onClick={() => setActiveTab("TARGET")}
         >
           구매 목표가
-          <small>과거 단가를 현재 소비자물가(CPI)로 보정</small>
+          <small>검증된 과거 최저가를 현재 가치로 환산</small>
         </button>
       </div>
 
@@ -633,14 +633,39 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
     ? 0
     : analysis.target_available_count / analysis.lines.length;
   const isLegacyPpi = analysis.inflation_series_kind === "PPI_ALL";
-  const targetDifference =
-    analysis.quote_total_amount !== null && analysis.target_total_amount !== null
-      ? Number(analysis.quote_total_amount) - Number(analysis.target_total_amount)
-      : null;
   const totalQuoteAmount = useMemo(
     () => analysis.lines.reduce((sum, line) => sum + Number(line.quote_amount ?? 0), 0),
     [analysis.lines],
   );
+  const totalTargetUnitPrice = useMemo(() => {
+    const available = analysis.target_lines.filter(
+      (target) => target.target_unit_price !== null,
+    );
+    return available.length === 0
+      ? null
+      : available.reduce(
+          (sum, target) => sum + Number(target.target_unit_price),
+          0,
+        );
+  }, [analysis.target_lines]);
+  const totalTargetAmount = analysis.target_total_amount === null
+    ? null
+    : Number(analysis.target_total_amount);
+  const targetCoveredQuoteAmount = useMemo(
+    () => analysis.target_lines.reduce((sum, target) => {
+      if (target.target_amount === null) return sum;
+      const line = lineById.get(target.raw_item_id);
+      return sum + Number(line?.quote_amount ?? 0);
+    }, 0),
+    [analysis.target_lines, lineById],
+  );
+  const totalTargetVariance = totalTargetAmount === null
+    ? null
+    : targetCoveredQuoteAmount - totalTargetAmount;
+  const totalTargetVariancePercent =
+    totalTargetVariance === null || totalTargetAmount === null || totalTargetAmount === 0
+      ? null
+      : (totalTargetVariance / totalTargetAmount) * 100;
 
   return (
     <section className="target-price-panel" role="tabpanel">
@@ -656,53 +681,47 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
           <small>날짜·지수·표준 DB 근거 부족</small>
         </div>
         <div>
-          <span>산정 품목 목표금액</span>
+          <span>협상 목표금액</span>
           <strong>{formatMoney(analysis.target_total_amount)}</strong>
           <small>계산 가능한 품목만 합산</small>
         </div>
-        <div className={targetDifference !== null && targetDifference > 0 ? "is-saving" : ""}>
+        <div className={totalTargetVariance !== null && totalTargetVariance > 0 ? "is-saving" : ""}>
           <span>목표가 대비 차액</span>
-          <strong>{targetDifference === null ? "—" : formatSignedMoney(String(targetDifference))}</strong>
-          <small>양수이면 협상 절감 여지</small>
+          <strong>{formatSignedMoney(numberString(totalTargetVariance))}</strong>
+          <small>목표가가 산정된 품목끼리 비교</small>
         </div>
       </div>
 
-      <div className="inflation-basis-card">
+      <details className="target-method-disclosure">
+        <summary>구매 목표가 산정 방식 보기</summary>
         <div>
-          <span>물가보정 기준</span>
           <strong>
-            {isLegacyPpi && analysis.target_period && analysis.target_index_value
-              ? `${analysis.target_period.slice(0, 4)}년 ${Number(analysis.target_period.slice(4))}월 생산자물가지수 ${analysis.target_index_value}`
-              : analysis.target_period
-              ? `${analysis.target_period.slice(0, 4)}년 확정 소비자물가 기준`
-              : "저장된 소비자물가지수(CPI) 없음"}
-          </strong>
-          <small>
             {isLegacyPpi
-              ? "과거 분석 실행 · 당시 저장된 생산자물가지수로 재현"
-              : "연간 총지수 등락률을 견적 다음 연도부터 복리로 적용"}
+              ? "이 결과는 과거 목표가 정책으로 계산된 기록입니다."
+              : "실제로 구매했던 가격 중 현재 가치로 환산한 최저값을 협상 목표로 사용합니다."}
+          </strong>
+          <p>
+            {isLegacyPpi
+              ? "이 결과는 과거 실행 당시 저장된 생산자물가지수 기준으로 재현한 기록입니다."
+              : analysis.target_period
+              ? `원본 날짜가 확인된 과거 단가를 ${analysis.target_period.slice(0, 4)}년 확정 소비자물가까지 보정한 뒤 가장 낮은 단가를 채택합니다.`
+              : "소비자물가 자료가 없어 목표가를 계산할 수 없습니다."}
             {analysis.inflation_source_last_changed ? (
-              <> · 최종 공표 {analysis.inflation_source_last_changed}</>
+              <> 최종 공표일은 {analysis.inflation_source_last_changed}입니다.</>
             ) : null}
-          </small>
+          </p>
+          <p>중앙값과 가격 범위는 ‘가격 적정성’ 탭에서 별도로 확인할 수 있습니다.</p>
+          {analysis.inflation_source_url ? (
+            <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
+              KOSIS 공식 통계 보기
+            </a>
+          ) : null}
         </div>
-        {analysis.inflation_source_url ? (
-          <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
-            KOSIS 공식 통계 보기
-          </a>
-        ) : (
-          <span className="inflation-source-unavailable">공식 통계 출처 정보 없음</span>
-        )}
-      </div>
-
-      <p className="target-policy-note">
-        원본 견적서 본문이나 머리말에서 날짜가 직접 확인된 과거 단가만 각각 물가보정한 뒤 중앙값을 계산합니다.
-        팀 엑셀 보완 날짜와 파일명 추정 날짜는 사용하지 않으며, 시장가는 목표가에 섞지 않습니다.
-      </p>
+      </details>
 
       <div className="result-toolbar target-price-toolbar">
         <div>
-          <h3>품목별 목표가 산정</h3>
+          <h3>품목별 협상 목표가</h3>
           <span>표시 {analysis.target_lines.length}건</span>
         </div>
         <a className="table-export-link" href={`/api/analysis/runs/${analysis.run_id}/target-price-export`}>
@@ -739,7 +758,13 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
             <tr className="target-total-row">
               <td colSpan={3}>합계</td>
               <td className="numeric"><strong>{formatMoney(String(totalQuoteAmount))}</strong></td>
-              <td colSpan={4} />
+              <td className="numeric"><strong>{formatMoney(numberString(totalTargetUnitPrice))}</strong></td>
+              <td className="numeric"><strong>{formatMoney(numberString(totalTargetAmount))}</strong></td>
+              <td className="numeric">
+                <strong>{formatSignedMoney(numberString(totalTargetVariance))}</strong>
+                <span>{formatSignedPercent(numberString(totalTargetVariancePercent))}</span>
+              </td>
+              <td aria-label="합계 산정 근거 없음">—</td>
             </tr>
           </tfoot>
         </table>
@@ -761,6 +786,15 @@ function TargetPriceRow({
 }) {
   const [open, setOpen] = useState(false);
   const cellRef = useRef<HTMLTableCellElement>(null);
+  const usesAggressiveMinimum = inflationSeriesKind !== "PPI_ALL";
+  const rankedEvidence = usesAggressiveMinimum
+    ? [...target.evidence].sort(
+        (left, right) =>
+          Number(left.adjusted_unit_price) - Number(right.adjusted_unit_price) ||
+          right.quote_date.localeCompare(left.quote_date) ||
+          left.raw_item_id - right.raw_item_id,
+      )
+    : target.evidence;
 
   useEffect(() => {
     if (!open) return;
@@ -796,19 +830,21 @@ function TargetPriceRow({
           onClick={() => setOpen((value) => !value)}
         >
           {target.status === "AVAILABLE"
-            ? `원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
+            ? `${usesAggressiveMinimum ? "최저가 근거 · " : ""}원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
             : targetStatusLabel(target.status)}
         </button>
         {open && (
           <div className="target-evidence-popover" role="dialog">
             <p>{target.reason}</p>
-            {target.evidence.map((evidence) => (
+            {rankedEvidence.map((evidence, index) => (
               <a
                 key={evidence.raw_item_id}
+                className={usesAggressiveMinimum && index === 0 ? "is-selected-target" : undefined}
                 href={`/api/documents/variants/${evidence.source_variant_id}/file${evidence.source_page ? `#page=${evidence.source_page}` : ""}`}
                 target="_blank"
                 rel="noreferrer"
               >
+                {usesAggressiveMinimum && index === 0 ? <strong className="target-selection-label">협상 목표로 채택</strong> : null}
                 <span>{conciseSourceName(evidence.source_logical_name)}</span>
                 <small>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</small>
                 <small className="inflation-evidence-detail">
@@ -1375,10 +1411,14 @@ function formatUnitQuantity(unit: string | null, quantity: string | null) {
   const normalizedUnit = unit?.trim() || null;
   const formattedQuantity = quantity === null ? null : formatNumber(quantity);
   const values = [
-    normalizedUnit,
     formattedQuantity === "—" ? null : formattedQuantity,
+    normalizedUnit,
   ].filter((value): value is string => value !== null);
   return values.length > 0 ? values.join(" ") : "정보 없음";
+}
+
+function numberString(value: number | null) {
+  return value === null || !Number.isFinite(value) ? null : String(value);
 }
 
 function formatPercent(value: number) {
@@ -1405,7 +1445,7 @@ function formatSignedPercent(value: string | null) {
   const formatted = new Intl.NumberFormat("ko-KR", {
     maximumFractionDigits: 2,
   }).format(Math.abs(number));
-  return `${number > 0 ? "+" : number < 0 ? "−" : ""}${formatted}%`;
+  return `(${number > 0 ? "+" : number < 0 ? "−" : ""}${formatted}%)`;
 }
 
 function matchStatusLabel(status: AnalysisLine["match_status"]) {

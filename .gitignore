@@ -21,6 +21,15 @@ venv/
 .playwright-cli/
 output/playwright/
 
+# Reproducible presentation and spreadsheet build caches
+outputs/
+output/ppt-build/**/node_modules/
+output/ppt-build/**/pptx-inspect/
+output/ppt-build/**/pptx-render/
+output/ppt-build/**/rendered/
+output/browser-verification/**/.playwright-cli/
+output/browser-verification/**/*.sqlite3
+
 # Local corpus runs (may contain quote-derived evidence)
 backend/.local/*
 !backend/.local/standard-item-migration-v2.sqlite3

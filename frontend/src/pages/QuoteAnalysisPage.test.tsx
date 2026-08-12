@@ -253,7 +253,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(screen.getByRole("columnheader", { name: "개당 단가" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "구매 금액" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "참조 최저·기준·최고" })).toBeVisible();
-  expect(screen.getAllByText("EA 2").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("2 EA").length).toBeGreaterThan(0);
   expect(screen.queryByText("EA · —")).not.toBeInTheDocument();
   const servo = screen.getByRole("row", { name: /SERVO MOTOR/ });
   expect(within(servo).getByText("시장가 확인 필요")).toBeVisible();
@@ -262,16 +262,24 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
-  expect(screen.getByText("2025년 확정 소비자물가 기준")).toBeVisible();
-  expect(document.querySelector(".inflation-basis-card small")).toHaveTextContent(
-    "연간 총지수 등락률을 견적 다음 연도부터 복리로 적용",
-  );
+  const totalRow = document.querySelector(".target-total-row");
+  expect(totalRow).not.toBeNull();
+  expect(totalRow).toHaveTextContent("2,080원");
+  expect(totalRow).toHaveTextContent("630원");
+  expect(totalRow).toHaveTextContent("1,260원");
+  expect(totalRow).toHaveTextContent("+560원");
+  expect(totalRow).toHaveTextContent("(+44.44%)");
+  expect(screen.queryByText("물가보정 기준")).not.toBeInTheDocument();
+  await user.click(screen.getByText("구매 목표가 산정 방식 보기"));
+  expect(screen.getByText(/현재 가치로 환산한 최저값을 협상 목표/)).toBeVisible();
+  expect(screen.getByText(/2025년 확정 소비자물가까지 보정한 뒤 가장 낮은 단가/)).toBeVisible();
   expect(screen.getByText("전체 품목의 77.8%")).toBeVisible();
   expect(screen.getByRole("link", { name: "KOSIS 공식 통계 보기" })).toHaveAttribute(
     "href",
     expect.stringContaining("DT_1J22041"),
   );
-  await user.click(screen.getAllByText("원본 2건")[0]);
+  await user.click(screen.getAllByText("최저가 근거 · 원본 2건")[0]);
+  expect(screen.getByText("협상 목표로 채택")).toBeVisible();
   expect(screen.getByText(/보정계수 ×1.034285/)).toBeVisible();
   expect(document.querySelector(".inflation-evidence-detail")).toHaveTextContent(
     "2017년 1.9% · 2018년 1.5% · 누적 +3.43%",
@@ -362,7 +370,7 @@ it("renders comparison basis, signed variance, and every operational status dist
   expect(within(matched).getByText("표준 DB 근거 매칭")).toBeVisible();
   expect(within(matched).getByText("101원")).toBeVisible();
   expect(within(matched).getByText("+30원")).toBeVisible();
-  expect(within(matched).getByText("+30%")).toBeVisible();
+  expect(within(matched).getByText("(+30%)")).toBeVisible();
   expect(
     within(matched).getByRole("link", { name: "표준 가격 근거 보기" }),
   ).toHaveAttribute("href", "/standard-prices?item_id=21&version_id=21");

@@ -271,19 +271,24 @@ export function StandardPricesPage() {
           setSearch(searchInput.trim());
         }}
       >
-        <label>
-          <span>표준 품목 검색</span>
+        <label className="standard-search-control">
+          <span className="sr-only">표준 품목 검색</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="6" />
+            <path d="m16 16 4 4" />
+          </svg>
           <input
             aria-label="표준 품목 검색"
             type="search"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="품명, 사양 또는 단위"
+            placeholder="품명·사양·단위 검색"
           />
         </label>
-        <label>
-          <span>근거 품질</span>
+        <label className="standard-filter-control">
+          <span aria-hidden="true">근거</span>
           <select
+            aria-label="근거 품질"
             value={quality}
             onChange={(event) => {
               setSelectedId(null);
@@ -297,7 +302,13 @@ export function StandardPricesPage() {
             <option value="MULTI_OBSERVATION">근거 2건 이상</option>
           </select>
         </label>
-        <button type="submit">검색</button>
+        <button type="submit" className="standard-search-submit">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="6" />
+            <path d="m16 16 4 4" />
+          </svg>
+          <span>검색</span>
+        </button>
       </form>
 
       <div className="standard-db-catalog">

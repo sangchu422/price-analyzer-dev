@@ -13,6 +13,12 @@ from app.catalog.models import (
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.parsing.models import (
+    CleansingReassessmentEntry,
+    CleansingReassessmentRun,
+    SourceParseOutput,
+    SourceParseRun,
+)
 from app.market.models import (
     MarketCollectionRun,
     MarketPriceObservation,
@@ -49,6 +55,10 @@ __all__ = [
     "QuoteDocumentPurpose",
     "QuoteDocumentRole",
     "RawQuoteItem",
+    "SourceParseRun",
+    "SourceParseOutput",
+    "CleansingReassessmentRun",
+    "CleansingReassessmentEntry",
     "SourceDocument",
     "SourceVariant",
     "StandardItem",

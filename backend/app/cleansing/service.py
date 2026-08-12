@@ -10,6 +10,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.cleansing.calculation import spreadsheet_amount_evidence
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.cleansing.rules import (
     OUTLIER_RULE_VERSION,
@@ -22,6 +23,7 @@ from app.cleansing.rules import (
     mad_outlier_ids,
 )
 from app.quotes.models import RawQuoteItem
+from app.parsing.projection import current_raw_item_ids
 
 
 def apply_rules(session: Session, raw_item: RawQuoteItem) -> CleanDecision:
@@ -31,6 +33,16 @@ def apply_rules(session: Session, raw_item: RawQuoteItem) -> CleanDecision:
     idempotent. A newer manual decision is never silently superseded.
     """
     result = evaluate(raw_item)
+    calculation_evidence = None
+    if result.reason_code == "AMOUNT_MISMATCH":
+        calculation_evidence = spreadsheet_amount_evidence(raw_item)
+        if calculation_evidence and calculation_evidence.get("matches") is True:
+            result = replace(
+                result,
+                status=CleanStatus.INCLUDED,
+                reason_code="VALID_MULTIFACTOR_AMOUNT",
+                reason_detail="source formula confirms all amount factors",
+            )
     if _requires_ocr_review(raw_item):
         result = replace(
             result,
@@ -41,7 +53,7 @@ def apply_rules(session: Session, raw_item: RawQuoteItem) -> CleanDecision:
                 "review before inclusion"
             ),
         )
-    elif _requires_parser_review(raw_item):
+    elif _requires_parser_review(raw_item, result):
         result = replace(
             result,
             status=CleanStatus.REVIEW_REQUIRED,
@@ -59,7 +71,11 @@ def apply_rules(session: Session, raw_item: RawQuoteItem) -> CleanDecision:
         return prior_match
 
     with session.begin_nested():
-        decision = _decision_from_evaluation(raw_item, result)
+        decision = _decision_from_evaluation(
+            raw_item,
+            result,
+            reason_evidence=calculation_evidence,
+        )
         session.add(decision)
         session.flush()
     return decision
@@ -70,18 +86,48 @@ def _requires_ocr_review(raw_item: RawQuoteItem) -> bool:
         warnings = json.loads(raw_item.parse_warnings_json)
     except (TypeError, ValueError):
         return False
-    return isinstance(warnings, list) and bool(
-        {"OCR_SOURCE", "OCR_REVIEW_REQUIRED"}.intersection(warnings)
+    if not isinstance(warnings, list):
+        return False
+    confidence = next(
+        (
+            int(value.rsplit("_", 1)[1])
+            for value in warnings
+            if isinstance(value, str)
+            and value.startswith("EXTRACTION_CONFIDENCE_")
+            and value.rsplit("_", 1)[1].isdigit()
+        ),
+        None,
     )
+    return bool(
+        {"OCR_SOURCE", "OCR_REVIEW_REQUIRED"}.intersection(warnings)
+    ) and (confidence is None or confidence < 90)
 
 
-def _requires_parser_review(raw_item: RawQuoteItem) -> bool:
+def _requires_parser_review(
+    raw_item: RawQuoteItem,
+    result: Evaluation,
+) -> bool:
     try:
         warnings = json.loads(raw_item.parse_warnings_json)
     except (TypeError, ValueError):
         return False
-    return isinstance(warnings, list) and (
-        "PARSER_SOURCE_REVIEW_REQUIRED" in warnings
+    if not isinstance(warnings, list) or "PARSER_SOURCE_REVIEW_REQUIRED" not in warnings:
+        return False
+    warning_set = {value for value in warnings if isinstance(value, str)}
+    risky = {
+        "PDF_LEGACY_LINE",
+        "PDF_LAYOUT_TEXT",
+        "DERIVED_UNIT_PRICE",
+        "SOURCE_SPEC_BLANK",
+        "SPEC_COLUMN_NOT_FOUND",
+    }
+    high_confidence_layout = bool(
+        {"PDF_COORDINATE_TABLE", "CJK_HEADER_MAPPING"}.intersection(warning_set)
+    )
+    return not (
+        result.status is CleanStatus.INCLUDED
+        and high_confidence_layout
+        and not risky.intersection(warning_set)
     )
 
 
@@ -117,12 +163,16 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
         ):
             baseline_by_item[decision.raw_item_id] = decision
 
+    current_raw = current_raw_item_ids()
+    current_ids = set(session.scalars(select(current_raw.c.raw_item_id)))
     grouped: dict[
         tuple[str, str, str],
         list[tuple[int, Decimal]],
     ] = defaultdict(list)
     eligible_baselines: dict[int, CleanDecision] = {}
     for raw_item_id, baseline in baseline_by_item.items():
+        if raw_item_id not in current_ids:
+            continue
         latest = latest_by_item[raw_item_id]
         if (
             latest.decided_by != "SYSTEM"
@@ -195,6 +245,7 @@ def apply_group_outlier_rules(session: Session) -> list[CleanDecision]:
                     latest.status is CleanStatus.REVIEW_REQUIRED
                     and latest.reason_code == "UNIT_PRICE_MAD_OUTLIER"
                     and latest.reason_detail == reason_detail
+                    and latest.reason_evidence_json == reason_evidence_json
                     and latest.rule_version == OUTLIER_RULE_VERSION
                 ):
                     continue
@@ -330,12 +381,20 @@ def _bounded_text(value: str, limit: int) -> str:
 def _decision_from_evaluation(
     raw_item: RawQuoteItem,
     result: Evaluation,
+    *,
+    reason_evidence: dict[str, object] | None = None,
 ) -> CleanDecision:
     return CleanDecision(
         raw_item=raw_item,
         status=result.status,
         reason_code=result.reason_code,
         reason_detail=result.reason_detail,
+        reason_evidence_json=json.dumps(
+            reason_evidence or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         item_name_norm=result.item_name_norm,
         spec_norm=result.spec_norm,
         unit_norm=result.unit_norm,

@@ -15,9 +15,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.cleansing.models import CleanDecision, CleanStatus
+from app.cleansing.calculation import spreadsheet_amount_evidence
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.parsing.projection import current_raw_item_ids
 
 
 router = APIRouter()
@@ -92,9 +94,15 @@ class ReviewQueueItem(BaseModel):
     reason_code: str
     reason_detail: str | None
     reason_evidence: dict[str, Any] | None
+    extraction_confidence: float | None
+    calculation_factors: list[dict[str, Any]]
+    calculated_amount: str | None
+    difference_amount: str | None
+    difference_percent: str | None
     spec_source_status: str
     decision: DecisionResponse
     source: SourceEvidence
+    document_group_count: int = Field(default=1, ge=1)
 
 
 class ReviewQueueResponse(BaseModel):
@@ -150,6 +158,7 @@ def review_queue(
         .group_by(CleanDecision.raw_item_id)
         .subquery()
     )
+    current_raw = current_raw_item_ids()
     base = (
         select(RawQuoteItem, CleanDecision, SourceVariant, SourceDocument)
         .join(
@@ -162,6 +171,7 @@ def review_queue(
         )
         .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
         .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
+        .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
         .where(CleanDecision.status == CleanStatus.REVIEW_REQUIRED)
     )
     if logical_name is not None:
@@ -210,20 +220,41 @@ def review_queue(
     )
     if reason_code is not None:
         base = base.where(CleanDecision.reason_code == reason_code)
+    rows = session.execute(base.order_by(RawQuoteItem.id, CleanDecision.id)).all()
+    grouped_rows: list[tuple[RawQuoteItem, CleanDecision, SourceVariant, SourceDocument]] = []
+    group_counts: dict[tuple[object, ...], int] = {}
+    group_index: dict[tuple[object, ...], int] = {}
+    document_reasons = {"OCR_SOURCE_REVIEW_REQUIRED", "PARSER_SOURCE_REVIEW_REQUIRED"}
+    for row in rows:
+        raw, decision, variant, _document = row
+        key: tuple[object, ...] = (
+            ("document", variant.id, decision.reason_code)
+            if decision.reason_code in document_reasons
+            else ("row", raw.id)
+        )
+        group_counts[key] = group_counts.get(key, 0) + 1
+        if key not in group_index:
+            group_index[key] = len(grouped_rows)
+            grouped_rows.append(row)
     if after_id is not None:
-        base = base.where(RawQuoteItem.id > after_id)
-
-    count_query = select(func.count()).select_from(base.subquery())
-    total = session.scalar(count_query) or 0
-    rows = session.execute(
-        base.order_by(RawQuoteItem.id, CleanDecision.id)
-        .limit(limit + 1)
-    ).all()
-    has_more = len(rows) > limit
-    page_rows = rows[:limit]
+        grouped_rows = [row for row in grouped_rows if row[0].id > after_id]
+    total = len(grouped_rows)
+    page_rows = grouped_rows[:limit]
+    has_more = len(grouped_rows) > limit
     return {
         "items": [
-            _review_item(session, raw, decision, variant, document)
+            _review_item(
+                session,
+                raw,
+                decision,
+                variant,
+                document,
+                group_counts[
+                    ("document", variant.id, decision.reason_code)
+                    if decision.reason_code in document_reasons
+                    else ("row", raw.id)
+                ],
+            )
             for raw, decision, variant, document in page_rows
         ],
         "remaining": total,
@@ -317,8 +348,10 @@ def _review_item(
     decision: CleanDecision,
     variant: SourceVariant,
     document: SourceDocument,
+    document_group_count: int = 1,
 ) -> dict[str, object]:
     warnings = _parser_warnings(raw.parse_warnings_json)
+    reason_evidence = _reason_evidence(session, decision, raw)
     return {
         "raw_item_id": raw.id,
         "raw": {
@@ -341,7 +374,28 @@ def _review_item(
         },
         "reason_code": decision.reason_code,
         "reason_detail": decision.reason_detail,
-        "reason_evidence": _reason_evidence(session, decision, raw),
+        "reason_evidence": reason_evidence,
+        "extraction_confidence": _extraction_confidence(warnings),
+        "calculation_factors": (
+            reason_evidence.get("factors", [])
+            if isinstance(reason_evidence, dict)
+            else []
+        ),
+        "calculated_amount": (
+            reason_evidence.get("calculated_amount")
+            if isinstance(reason_evidence, dict)
+            else None
+        ),
+        "difference_amount": (
+            reason_evidence.get("difference_amount")
+            if isinstance(reason_evidence, dict)
+            else None
+        ),
+        "difference_percent": (
+            reason_evidence.get("difference_percent")
+            if isinstance(reason_evidence, dict)
+            else None
+        ),
         "spec_source_status": _spec_source_status(raw.spec_raw, warnings),
         "decision": _decision_summary(decision),
         "source": {
@@ -362,6 +416,7 @@ def _review_item(
             "parser_version": raw.parser_version,
             "parser_warnings": warnings,
         },
+        "document_group_count": document_group_count,
     }
 
 
@@ -378,12 +433,30 @@ def _spec_source_status(spec_raw: str | None, warnings: list[object]) -> str:
     return "UNKNOWN"
 
 
+def _extraction_confidence(warnings: list[object]) -> float | None:
+    text_warnings = {value for value in warnings if isinstance(value, str)}
+    for warning in text_warnings:
+        if warning.startswith("EXTRACTION_CONFIDENCE_"):
+            try:
+                return min(1.0, max(0.0, int(warning.rsplit("_", 1)[1]) / 100))
+            except ValueError:
+                pass
+    if "OCR_SOURCE" in text_warnings:
+        return None
+    if "PARSER_SOURCE_REVIEW_REQUIRED" in text_warnings:
+        return None
+    return 1.0
+
+
 def _reason_evidence(
     session: Session,
     decision: CleanDecision,
     raw: RawQuoteItem,
 ) -> dict[str, Any] | None:
     if decision.reason_code == "AMOUNT_MISMATCH":
+        spreadsheet_evidence = spreadsheet_amount_evidence(raw)
+        if spreadsheet_evidence is not None:
+            return spreadsheet_evidence
         mismatch_evidence = _amount_mismatch_evidence(raw, decision)
         if mismatch_evidence is not None:
             return mismatch_evidence
