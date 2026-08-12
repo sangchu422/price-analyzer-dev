@@ -153,6 +153,8 @@ _FIELD_ALIASES = {
         "menge",
         "數量",
         "数量",
+        "us",
+        "usage",
     ),
     "unit_price": (
         "단가",

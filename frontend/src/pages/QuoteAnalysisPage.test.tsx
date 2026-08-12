@@ -664,3 +664,32 @@ it("cancels an in-flight upload when the page unmounts", async () => {
 
   expect((uploadSignal as AbortSignal | null)?.aborted).toBe(true);
 });
+
+it("keeps submitter and thresholds after navigating away and back", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      jsonResponse({
+        items: [],
+        next_cursor: null,
+        limit: 50,
+        latest_build: null,
+      }),
+    ),
+  );
+  const user = userEvent.setup();
+  renderApp("/analysis");
+
+  await user.type(screen.getByLabelText("접수자"), "설비구매팀");
+  await user.clear(screen.getByLabelText("적정 범위(±%)"));
+  await user.type(screen.getByLabelText("적정 범위(±%)"), "15");
+
+  await user.click(screen.getByRole("link", { name: "표준 DB" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/standard-prices"));
+
+  await user.click(screen.getByRole("link", { name: "신규 견적 분석" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/analysis"));
+
+  expect(screen.getByLabelText("접수자")).toHaveValue("설비구매팀");
+  expect(screen.getByLabelText("적정 범위(±%)")).toHaveValue(15);
+});

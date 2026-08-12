@@ -208,6 +208,22 @@ def test_cjk_quote_headers_are_supported_and_derived_price_needs_review(
     assert "PARSER_SOURCE_REVIEW_REQUIRED" in rows[0].warnings
 
 
+def test_automotive_us_header_is_recognized_as_quantity(
+    tmp_path: Path,
+) -> None:
+    quote = tmp_path / "us-header.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["품명", "규격", "U/S", "단위", "단가", "금액"])
+    sheet.append(["SENSOR CABLE", "BCCM314-0000", 20, "EA", 12300, 246000])
+    workbook.save(quote)
+
+    rows = read_xlsx(quote)
+
+    assert len(rows) == 1
+    assert rows[0].quantity == "20"
+
+
 def test_bilingual_pdf_style_headers_are_recognized_in_one_band(
     tmp_path: Path,
 ) -> None:

@@ -5,6 +5,7 @@ import { CleansingReviewPage } from "./pages/CleansingReviewPage";
 import { GroupingReviewPage } from "./pages/GroupingReviewPage";
 import { QuoteAnalysisPage } from "./pages/QuoteAnalysisPage";
 import { StandardPricesPage } from "./pages/StandardPricesPage";
+import { useQuoteAnalysisWorkflowState } from "./state/quoteAnalysisState";
 import { applyTheme, getStoredTheme, type AppTheme } from "./theme";
 
 function currentPathname() {
@@ -14,6 +15,7 @@ function currentPathname() {
 export function App() {
   const [path, setPath] = useState(currentPathname);
   const [theme, setTheme] = useState<AppTheme>(getStoredTheme);
+  const quoteAnalysisWorkflow = useQuoteAnalysisWorkflowState();
 
   useEffect(() => {
     applyTheme(theme);
@@ -61,7 +63,7 @@ export function App() {
       page = <StandardPricesPage />;
       break;
     case "/analysis":
-      page = <QuoteAnalysisPage />;
+      page = <QuoteAnalysisPage workflow={quoteAnalysisWorkflow} />;
       break;
     default:
       page = (

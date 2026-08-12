@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -50,6 +51,7 @@ from app.analysis.models import (
     QuoteAnalysisTargetEvidence,
 )
 from app.api.catalog import get_candidate_embedding_runtime
+from app.api.xlsx_export import build_xlsx_response
 from app.catalog.service import CandidateEmbeddingRuntime
 from app.core.config import settings
 from app.db.session import get_session
@@ -353,6 +355,68 @@ def get_document_analysis(
     return _analysis_payload(result)
 
 
+@router.get("/documents/{document_id}/export")
+def export_document_analysis(
+    document_id: int,
+    session: Session = Depends(get_session),
+    runtime: CandidateEmbeddingRuntime = Depends(get_candidate_embedding_runtime),
+    *,
+    review_percent: Decimal = Query(Decimal("10"), ge=0),
+    high_percent: Decimal = Query(Decimal("20"), ge=0),
+) -> Response:
+    lines: list = []
+    after_id: int | None = None
+    while True:
+        result = _analyze(
+            session,
+            document_id,
+            runtime=runtime,
+            after_id=after_id,
+            limit=100,
+            match_status=None,
+            assessment=None,
+            review_percent=review_percent,
+            high_percent=high_percent,
+        )
+        lines.extend(result.lines)
+        session.commit()
+        if result.next_cursor is None:
+            break
+        after_id = result.next_cursor
+
+    headers = [
+        "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
+        "참조 기준가", "참조 최저", "참조 최고", "편차 금액", "편차율(%)",
+        "매칭 상태", "표준 품목 ID", "표준 가격 버전 ID", "가격 판정",
+    ]
+    rows = [
+        [
+            line.item_name or "",
+            line.spec or "",
+            line.unit or "",
+            line.quantity,
+            line.quote_unit_price,
+            line.quote_amount,
+            line.reference_price,
+            line.minimum_price,
+            line.maximum_price,
+            line.variance_amount,
+            line.variance_percent,
+            line.match_status,
+            line.standard_item_id,
+            line.standard_price_version_id,
+            line.assessment,
+        ]
+        for line in lines
+    ]
+    return build_xlsx_response(
+        sheet_title="견적 분석 결과",
+        headers=headers,
+        rows=rows,
+        filename=f"견적분석_문서{document_id}_{date.today():%Y%m%d}.xlsx",
+    )
+
+
 @router.post(
     "/documents/{document_id}/runs",
     response_model=AnalysisRunResponse,
@@ -498,6 +562,85 @@ def get_analysis_run(
     }
 
 
+_TARGET_STATUS_LABELS = {
+    "AVAILABLE": "산정 완료",
+    "DATE_UNAVAILABLE": "원본 견적일 확인 필요",
+    "INDEX_UNAVAILABLE": "물가지수 갱신 필요",
+    "RATE_GAP": "연간 소비자물가 자료 누락",
+    "MARKET_REFERENCE_REQUIRED": "표준 DB 없음 · 시장가 별도 확인",
+    "NOT_APPLICABLE": "산정 제외",
+}
+
+
+@router.get("/runs/{run_id}/target-price-export")
+def export_target_price_run(
+    run_id: int,
+    session: Session = Depends(get_session),
+    runtime: CandidateEmbeddingRuntime = Depends(get_candidate_embedding_runtime),
+) -> Response:
+    run = session.get(QuoteAnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
+
+    target_rows = list(
+        session.scalars(
+            select(QuoteAnalysisLineResult)
+            .where(QuoteAnalysisLineResult.analysis_run_id == run.id)
+            .order_by(QuoteAnalysisLineResult.raw_item_id)
+        )
+    )
+    target_by_raw_item_id = {row.raw_item_id: row for row in target_rows}
+
+    lines: list = []
+    after_id: int | None = None
+    while True:
+        page = _analyze(
+            session,
+            run.document_id,
+            runtime=runtime,
+            after_id=after_id,
+            limit=100,
+            match_status=None,
+            assessment=None,
+            review_percent=run.review_percent,
+            high_percent=run.high_percent,
+        )
+        lines.extend(page.lines)
+        if page.next_cursor is None:
+            break
+        after_id = page.next_cursor
+
+    headers = [
+        "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
+        "구매 목표 단가", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
+        "산정 상태",
+    ]
+    rows = []
+    for line in lines:
+        target = target_by_raw_item_id.get(line.raw_item_id)
+        rows.append([
+            line.item_name or "",
+            line.spec or "",
+            line.unit or "",
+            line.quantity,
+            line.quote_unit_price,
+            line.quote_amount,
+            target.target_unit_price if target else None,
+            target.target_amount if target else None,
+            target.target_variance_amount if target else None,
+            target.target_variance_percent if target else None,
+            _TARGET_STATUS_LABELS.get(target.target_status, target.target_status)
+            if target
+            else "—",
+        ])
+    return build_xlsx_response(
+        sheet_title="구매 목표가 분석 결과",
+        headers=headers,
+        rows=rows,
+        filename=f"구매목표가_문서{run.document_id}_{date.today():%Y%m%d}.xlsx",
+    )
+
+
 @router.get("/inflation/series/ppi-all", response_model=InflationSeriesResponse)
 def get_ppi_series(session: Session = Depends(get_session)) -> dict[str, object]:
     run, points = latest_ppi_series(session)
@@ -578,6 +721,8 @@ def _analyze(
     limit: int,
     match_status: MatchStatus | set[MatchStatus] | None,
     assessment: Assessment | None = None,
+    review_percent: Decimal | None = None,
+    high_percent: Decimal | None = None,
 ) -> DocumentAnalysis:
     _require_incoming_role(session, document_id)
     try:
@@ -588,8 +733,8 @@ def _analyze(
             limit=limit,
             match_status=match_status,
             assessment=assessment,
-            review_percent=settings.price_variance_review_percent,
-            high_percent=settings.price_variance_high_percent,
+            review_percent=review_percent or settings.price_variance_review_percent,
+            high_percent=high_percent or settings.price_variance_high_percent,
             embedding_runtime=runtime,
             deterministic_exact_match=True,
         )

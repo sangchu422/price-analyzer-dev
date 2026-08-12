@@ -720,3 +720,32 @@ def test_stale_metadata_write_is_atomic(
     assert (
         api_session.scalar(select(func.count(DocumentMetadataVersion.id))) == 1
     )
+
+
+def test_standard_items_export_returns_xlsx_workbook(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    _source(api_session)
+    _create_standard_item(client)
+
+    response = client.get("/api/catalog/standard-items/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert "attachment" in response.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(response.content))
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    assert rows[0] == (
+        "품명", "규격", "단위", "최저", "중앙값", "평균", "최고",
+        "근거 건수", "제품 제조사", "견적 제출사", "최근 견적일",
+    )
+    assert len(rows) == 2
+    assert rows[1][0] == "BALL BEARING"

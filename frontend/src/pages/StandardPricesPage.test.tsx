@@ -557,6 +557,8 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
 });
 
 it("loads catalog cursors until a linked standard item is selected", async () => {
+  const scrollIntoView = vi.fn();
+  Element.prototype.scrollIntoView = scrollIntoView;
   const linked = {
     ...sensor,
     id: 13,
@@ -609,4 +611,5 @@ it("loads catalog cursors until a linked standard item is selected", async () =>
     await screen.findByRole("heading", { name: "LINKED SENSOR" }),
   ).toBeVisible();
   expect(catalogUrls.filter((url) => url.includes("after_id=12"))).toHaveLength(1);
+  await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
 });

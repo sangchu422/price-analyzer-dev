@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 
+import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
 import {
   ApiError,
   createQuoteAnalysisRun,
@@ -10,30 +11,17 @@ import {
   submitIncomingBid,
   type AnalysisAssessment,
   type AnalysisLine,
-  type MarketBatchLookupItem,
   type MarketLookupResult,
   type QuoteAnalysisRun,
   type SubmissionResponse,
 } from "../api/client";
-
-type WorkflowStage = "IDLE" | "PARSING" | "ANALYZING";
-type ResultFilter =
-  | "ALL"
-  | "MATCHED"
-  | "MARKET"
-  | "PENDING"
-  | AnalysisAssessment;
-
-type MarketLookupProgressItem =
-  | MarketBatchLookupItem
-  | { status: "PENDING"; detail: string | null };
-
-type MarketLookupProgress = {
-  state: "PENDING" | "COMPLETE" | "ERROR";
-  total: number;
-  completed: number;
-  unavailable: number;
-};
+import type {
+  MarketLookupProgress,
+  MarketLookupProgressItem,
+  QuoteAnalysisWorkflowState,
+  ResultFilter,
+  WorkflowStage,
+} from "../state/quoteAnalysisState";
 
 const assessmentLabels: Record<AnalysisAssessment, string> = {
   NOT_APPLICABLE: "판정 제외",
@@ -44,25 +32,39 @@ const assessmentLabels: Record<AnalysisAssessment, string> = {
   HIGH: "고가",
 };
 
-export function QuoteAnalysisPage() {
-  const [file, setFile] = useState<File | null>(null);
-  const [submittedBy, setSubmittedBy] = useState("");
-  const [reviewPercent, setReviewPercent] = useState(10);
-  const [highPercent, setHighPercent] = useState(20);
-  const [stage, setStage] = useState<WorkflowStage>("IDLE");
-  const [submission, setSubmission] = useState<SubmissionResponse | null>(null);
-  const [analysis, setAnalysis] = useState<QuoteAnalysisRun | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [resultFilter, setResultFilter] = useState<ResultFilter>("ALL");
-  const [marketResults, setMarketResults] = useState<
-    Record<number, MarketLookupResult>
-  >({});
-  const [marketLookupItems, setMarketLookupItems] = useState<
-    Record<number, MarketLookupProgressItem>
-  >({});
-  const [marketLookupProgress, setMarketLookupProgress] =
-    useState<MarketLookupProgress | null>(null);
-  const [validationError, setValidationError] = useState("");
+export function QuoteAnalysisPage({
+  workflow,
+}: {
+  workflow: QuoteAnalysisWorkflowState;
+}) {
+  const {
+    file,
+    setFile,
+    submittedBy,
+    setSubmittedBy,
+    reviewPercent,
+    setReviewPercent,
+    highPercent,
+    setHighPercent,
+    stage,
+    setStage,
+    submission,
+    setSubmission,
+    analysis,
+    setAnalysis,
+    error,
+    setError,
+    resultFilter,
+    setResultFilter,
+    marketResults,
+    setMarketResults,
+    marketLookupItems,
+    setMarketLookupItems,
+    marketLookupProgress,
+    setMarketLookupProgress,
+    validationError,
+    setValidationError,
+  } = workflow;
   const uploadController = useRef<AbortController | null>(null);
   const analysisController = useRef<AbortController | null>(null);
   const marketLookupController = useRef<AbortController | null>(null);
@@ -76,8 +78,9 @@ export function QuoteAnalysisPage() {
       uploadController.current?.abort();
       analysisController.current?.abort();
       marketLookupController.current?.abort();
+      setStage("IDLE");
     };
-  }, []);
+  }, [setStage]);
 
   const startAnalysis = async (retryAccepted = false) => {
     if (!file) {
@@ -241,7 +244,12 @@ export function QuoteAnalysisPage() {
         marketLookupController.current = null;
       }
     };
-  }, [autoMarketLookupIds]);
+  }, [
+    autoMarketLookupIds,
+    setMarketLookupItems,
+    setMarketLookupProgress,
+    setMarketResults,
+  ]);
 
   const metrics = useMemo(
     () => summarize(
@@ -400,6 +408,8 @@ export function QuoteAnalysisPage() {
             ...current,
             [result.raw_item_id]: result,
           }))}
+          reviewPercent={reviewPercent}
+          highPercent={highPercent}
         />
       )}
     </main>
@@ -440,6 +450,8 @@ function AnalysisResults({
   marketLookupItems,
   marketLookupProgress,
   onMarketResult,
+  reviewPercent,
+  highPercent,
 }: {
   analysis: QuoteAnalysisRun;
   submission: SubmissionResponse;
@@ -451,6 +463,8 @@ function AnalysisResults({
   marketLookupItems: Record<number, MarketLookupProgressItem>;
   marketLookupProgress: MarketLookupProgress | null;
   onMarketResult: (result: MarketLookupResult) => void;
+  reviewPercent: number;
+  highPercent: number;
 }) {
   const [activeTab, setActiveTab] = useState<"THRESHOLD" | "TARGET">("THRESHOLD");
   return (
@@ -549,19 +563,27 @@ function AnalysisResults({
           <h3>품목별 판정</h3>
           <span>표시 {lines.length}건 / 전체 {analysis.lines.length}건</span>
         </div>
-        <label>
-          <span>결과 필터</span>
-          <select value={filter} onChange={(event) => onFilter(event.target.value as ResultFilter)}>
-            <option value="ALL">전체 품목</option>
-            <option value="MATCHED">표준 DB 매칭</option>
-            <option value="MARKET">시장가 확인 필요</option>
-            <option value="PENDING">판정 대기</option>
-            <option value="HIGH">고가</option>
-            <option value="WITHIN_RANGE">적정</option>
-            <option value="REVIEW">주의</option>
-            <option value="LOW">저가</option>
-          </select>
-        </label>
+        <div className="result-toolbar-actions">
+          <a
+            className="table-export-link"
+            href={`/api/analysis/documents/${analysis.document.id}/export?review_percent=${reviewPercent}&high_percent=${highPercent}`}
+          >
+            엑셀 다운로드
+          </a>
+          <label>
+            <span>결과 필터</span>
+            <select value={filter} onChange={(event) => onFilter(event.target.value as ResultFilter)}>
+              <option value="ALL">전체 품목</option>
+              <option value="MATCHED">표준 DB 매칭</option>
+              <option value="MARKET">시장가 확인 필요</option>
+              <option value="PENDING">판정 대기</option>
+              <option value="HIGH">고가</option>
+              <option value="WITHIN_RANGE">적정</option>
+              <option value="REVIEW">주의</option>
+              <option value="LOW">저가</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div className="analysis-table-scroll">
@@ -615,6 +637,10 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
     analysis.quote_total_amount !== null && analysis.target_total_amount !== null
       ? Number(analysis.quote_total_amount) - Number(analysis.target_total_amount)
       : null;
+  const totalQuoteAmount = useMemo(
+    () => analysis.lines.reduce((sum, line) => sum + Number(line.quote_amount ?? 0), 0),
+    [analysis.lines],
+  );
 
   return (
     <section className="target-price-panel" role="tabpanel">
@@ -674,12 +700,24 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
         팀 엑셀 보완 날짜와 파일명 추정 날짜는 사용하지 않으며, 시장가는 목표가에 섞지 않습니다.
       </p>
 
+      <div className="result-toolbar target-price-toolbar">
+        <div>
+          <h3>품목별 목표가 산정</h3>
+          <span>표시 {analysis.target_lines.length}건</span>
+        </div>
+        <a className="table-export-link" href={`/api/analysis/runs/${analysis.run_id}/target-price-export`}>
+          엑셀 다운로드
+        </a>
+      </div>
+
       <div className="analysis-table-scroll">
         <table className="analysis-result-table target-price-table" aria-label="구매 목표가 품목별 산정">
           <thead>
             <tr>
               <th>품목 / 사양</th>
+              <th>수량</th>
               <th>개당 단가</th>
+              <th>구매 금액</th>
               <th>구매 목표 단가</th>
               <th>목표 금액</th>
               <th>목표가 대비</th>
@@ -687,56 +725,101 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
             </tr>
           </thead>
           <tbody>
-            {analysis.target_lines.map((target) => {
-              const line = lineById.get(target.raw_item_id);
-              return (
-                <tr key={target.raw_item_id}>
-                  <td>
-                    <strong>{line?.item_name ?? "품명 없음"}</strong>
-                    <span>{line?.spec ?? "원본에 규격 없음"}</span>
-                  </td>
-                  <td className="numeric">{formatMoney(line?.quote_unit_price ?? null)}</td>
-                  <td className="numeric target-unit-price">{formatMoney(target.target_unit_price)}</td>
-                  <td className="numeric">{formatMoney(target.target_amount)}</td>
-                  <td className="numeric">
-                    <strong>{formatSignedMoney(target.variance_amount)}</strong>
-                    <span>{formatSignedPercent(target.variance_percent)}</span>
-                  </td>
-                  <td>
-                    <details className="target-evidence-details">
-                      <summary>
-                        {target.status === "AVAILABLE"
-                          ? `원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
-                          : targetStatusLabel(target.status)}
-                      </summary>
-                      <p>{target.reason}</p>
-                      {target.evidence.map((evidence) => (
-                        <a
-                          key={evidence.raw_item_id}
-                          href={`/api/documents/variants/${evidence.source_variant_id}/file${evidence.source_page ? `#page=${evidence.source_page}` : ""}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <span>{conciseSourceName(evidence.source_logical_name)}</span>
-                          <small>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</small>
-                          <small className="inflation-evidence-detail">
-                            {inflationEvidenceLabel(
-                              evidence,
-                              analysis.target_period,
-                              analysis.inflation_series_kind,
-                            )}
-                          </small>
-                        </a>
-                      ))}
-                    </details>
-                  </td>
-                </tr>
-              );
-            })}
+            {analysis.target_lines.map((target) => (
+              <TargetPriceRow
+                key={target.raw_item_id}
+                target={target}
+                line={lineById.get(target.raw_item_id)}
+                targetPeriod={analysis.target_period}
+                inflationSeriesKind={analysis.inflation_series_kind}
+              />
+            ))}
           </tbody>
+          <tfoot>
+            <tr className="target-total-row">
+              <td colSpan={3}>합계</td>
+              <td className="numeric"><strong>{formatMoney(String(totalQuoteAmount))}</strong></td>
+              <td colSpan={4} />
+            </tr>
+          </tfoot>
         </table>
       </div>
     </section>
+  );
+}
+
+function TargetPriceRow({
+  target,
+  line,
+  targetPeriod,
+  inflationSeriesKind,
+}: {
+  target: QuoteAnalysisRun["target_lines"][number];
+  line: AnalysisLine | undefined;
+  targetPeriod: string | null;
+  inflationSeriesKind: string | null | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const cellRef = useRef<HTMLTableCellElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (event: MouseEvent) => {
+      if (cellRef.current && !cellRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [open]);
+
+  return (
+    <tr>
+      <td>
+        <strong>{line?.item_name ?? "품명 없음"}</strong>
+        <span>{line?.spec ?? "원본에 규격 없음"}</span>
+      </td>
+      <td className="numeric">{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</td>
+      <td className="numeric">{formatMoney(line?.quote_unit_price ?? null)}</td>
+      <td className="numeric">{formatMoney(line?.quote_amount ?? null)}</td>
+      <td className="numeric target-unit-price">{formatMoney(target.target_unit_price)}</td>
+      <td className="numeric">{formatMoney(target.target_amount)}</td>
+      <td className="numeric">
+        <strong>{formatSignedMoney(target.variance_amount)}</strong>
+        <span>{formatSignedPercent(target.variance_percent)}</span>
+      </td>
+      <td className="target-evidence-trigger" ref={cellRef}>
+        <button
+          type="button"
+          className="target-evidence-trigger-button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {target.status === "AVAILABLE"
+            ? `원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
+            : targetStatusLabel(target.status)}
+        </button>
+        {open && (
+          <div className="target-evidence-popover" role="dialog">
+            <p>{target.reason}</p>
+            {target.evidence.map((evidence) => (
+              <a
+                key={evidence.raw_item_id}
+                href={`/api/documents/variants/${evidence.source_variant_id}/file${evidence.source_page ? `#page=${evidence.source_page}` : ""}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span>{conciseSourceName(evidence.source_logical_name)}</span>
+                <small>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</small>
+                <small className="inflation-evidence-detail">
+                  {inflationEvidenceLabel(evidence, targetPeriod, inflationSeriesKind)}
+                </small>
+              </a>
+            ))}
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }
 
@@ -848,21 +931,27 @@ function AnalysisRow({
     line.match_status === "MATCHED" &&
     line.standard_item_id !== null &&
     line.standard_price_version_id !== null;
-  const standardEvidence = useQuery({
+  const standardEvidence = useInfiniteQuery({
     queryKey: [
       "analysis-standard-evidence",
       line.standard_item_id,
       line.standard_price_version_id,
     ],
-    queryFn: ({ signal }) =>
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam, signal }) =>
       getStandardEvidence({
         standardItemId: line.standard_item_id!,
         priceVersionId: line.standard_price_version_id!,
+        afterId: pageParam,
         signal,
       }),
+    getNextPageParam: safeNextCursor,
     enabled: false,
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const standardEvidenceObservations = uniqueByRawItemId(
+    standardEvidence.data?.pages.flatMap((page) => page.observations) ?? [],
+  );
 
   const requestMarket = async (forceRefresh = false) => {
     setMarketLoading(true);
@@ -907,7 +996,7 @@ function AnalysisRow({
         }}
       >
         {line.match_status === "MATCHED" || market ? (
-          <>
+          <div className="reference-range-row">
             <span className="reference-range-value">
               <small>최저</small>
               <strong>{formatMoney(minimumPrice)}</strong>
@@ -926,13 +1015,15 @@ function AnalysisRow({
                 {line.evidence_quality === "SINGLE_OBSERVATION" ? " · 신뢰도 낮음" : ""}
               </span>
             )}
-          </>
+          </div>
         ) : "—"}
         {hasPriceEvidence && (
           <div className="reference-evidence-popover" role="tooltip">
             <strong>표준단가 원본 근거</strong>
-            {standardEvidence.isFetching && <span>불러오는 중…</span>}
-            {standardEvidence.data?.observations.slice(0, 4).map((row) => (
+            {standardEvidence.isFetching && !standardEvidence.isFetchingNextPage && (
+              <span>불러오는 중…</span>
+            )}
+            {standardEvidenceObservations.map((row) => (
               <a
                 href={`/api/documents/variants/${row.source.variant_id}/file${row.source.page ? `#page=${row.source.page}` : ""}`}
                 target="_blank"
@@ -944,6 +1035,16 @@ function AnalysisRow({
               </a>
             ))}
             {standardEvidence.isError && <span>근거를 불러오지 못했습니다.</span>}
+            {standardEvidence.hasNextPage && (
+              <button
+                className="load-more-button"
+                type="button"
+                disabled={standardEvidence.isFetchingNextPage}
+                onClick={() => void standardEvidence.fetchNextPage()}
+              >
+                {standardEvidence.isFetchingNextPage ? "불러오는 중…" : "근거 더 보기"}
+              </button>
+            )}
           </div>
         )}
       </td>

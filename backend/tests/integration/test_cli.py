@@ -246,6 +246,15 @@ def test_quote_root_symlink_loop_is_sanitized_when_supported(
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
+    try:
+        loop.resolve(strict=False)
+    except (OSError, RuntimeError):
+        pass
+    else:
+        pytest.skip(
+            "Path.resolve does not raise on symlink loops on this Python version"
+        )
+
     exit_code = main(
         [
             "preflight",

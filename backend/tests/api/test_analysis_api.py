@@ -369,6 +369,38 @@ def test_analysis_api_rejects_missing_documents_and_bad_page_bounds(
     )
 
 
+def test_document_analysis_export_returns_xlsx_workbook(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    document = _document(api_session, rows=2)
+
+    response = client.get(
+        f"/api/analysis/documents/{document.id}/export"
+        "?review_percent=15&high_percent=25"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert "attachment" in response.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(response.content))
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    assert rows[0] == (
+        "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
+        "참조 기준가", "참조 최저", "참조 최고", "편차 금액", "편차율(%)",
+        "매칭 상태", "표준 품목 ID", "표준 가격 버전 ID", "가격 판정",
+    )
+    assert len(rows) == 3
+    assert {row[0] for row in rows[1:]} == {"CUSTOM ITEM 1", "CUSTOM ITEM 2"}
+
+
 def test_cpi_sync_api_returns_confirmed_annual_rate_evidence(
     client: TestClient,
     monkeypatch,
@@ -586,3 +618,52 @@ def test_new_analysis_run_uses_cpi_and_never_falls_back_to_ppi(
     assert body["inflation_series_kind"] == "CPI_ALL"
     assert body["target_period"] == "2025"
     assert body["inflation_source_url"] == cpi.source_url
+
+
+def test_target_price_export_reads_stored_run_without_side_effects(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    document = _document(api_session, rows=2)
+    run_response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={"created_by": "buyer-01", "review_percent": 10, "high_percent": 20},
+    )
+    assert run_response.status_code == 200, run_response.text
+    run_id = run_response.json()["run_id"]
+
+    run_count_before = api_session.scalar(
+        select(func.count(QuoteAnalysisRun.id))
+    )
+
+    response = client.get(f"/api/analysis/runs/{run_id}/target-price-export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert "attachment" in response.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(response.content))
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    assert rows[0] == (
+        "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
+        "구매 목표 단가", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
+        "산정 상태",
+    )
+    assert len(rows) == 3
+    assert {row[0] for row in rows[1:]} == {"CUSTOM ITEM 1", "CUSTOM ITEM 2"}
+
+    api_session.expire_all()
+    run_count_after = api_session.scalar(select(func.count(QuoteAnalysisRun.id)))
+    assert run_count_after == run_count_before
+
+
+def test_target_price_export_rejects_missing_run(client: TestClient) -> None:
+    assert (
+        client.get("/api/analysis/runs/999/target-price-export").status_code == 404
+    )

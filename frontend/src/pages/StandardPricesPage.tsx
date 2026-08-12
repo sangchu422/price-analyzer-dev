@@ -11,6 +11,7 @@ import {
   type PriceVersion,
   type StandardItemSummary,
 } from "../api/client";
+import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
 import { EvidenceBadge } from "../components/EvidenceBadge";
 import { MetricStrip } from "../components/MetricStrip";
 
@@ -67,6 +68,7 @@ export function StandardPricesPage() {
     hasNextPage: hasNextCatalogPage,
     isFetchNextPageError: isFetchNextCatalogPageError,
     isFetchingNextPage: isFetchingNextCatalogPage,
+    isFetching: isFetchingCatalog,
   } = catalog;
   const requestedItem = items.find((item) => item.id === requestedItemId);
   const selected =
@@ -117,6 +119,24 @@ export function StandardPricesPage() {
     fetchNextCatalogPage,
   ]);
 
+  const requestedItemFound = requestedItemId !== null && requestedItem !== undefined;
+  const requestedItemExhausted =
+    requestedItemId !== null &&
+    !requestedItem &&
+    !hasNextCatalogPage &&
+    !isFetchingNextCatalogPage &&
+    !isFetchingCatalog;
+  const requestedItemFetchFailed =
+    requestedItemId !== null && !requestedItem && isFetchNextCatalogPageError;
+
+  useEffect(() => {
+    if (!requestedItemFound) return;
+    const detail = document.getElementById("standard-item-detail");
+    if (detail && typeof detail.scrollIntoView === "function") {
+      detail.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [requestedItemFound]);
+
   const evidence = useInfiniteQuery({
     queryKey: [
       "standard-db-evidence",
@@ -166,6 +186,14 @@ export function StandardPricesPage() {
       Number.isFinite(sourceCoverageData.recovered_copy_files) &&
       Number.isFinite(sourceCoverageData.security_release_required_files),
   );
+
+  const exportParams = new URLSearchParams();
+  if (search) exportParams.set("search", search);
+  if (quality) exportParams.set("evidence_quality", quality);
+  const exportQuery = exportParams.toString();
+  const catalogExportHref = `/api/catalog/standard-items/export${
+    exportQuery ? `?${exportQuery}` : ""
+  }`;
 
   return (
     <main className="workspace-page standard-db-page">
@@ -279,7 +307,12 @@ export function StandardPricesPage() {
               <strong>표준 품목 목록</strong>
               <small>품명·사양·단위별로 묶은 가격 기준</small>
             </div>
-            <span>{items.length.toLocaleString("ko-KR")}건 표시</span>
+            <div className="table-panel-actions">
+              <span>{items.length.toLocaleString("ko-KR")}건 표시</span>
+              <a className="table-export-link" href={catalogExportHref}>
+                엑셀 다운로드
+              </a>
+            </div>
           </header>
           {catalog.isPending && <p className="inline-state">목록을 불러오는 중…</p>}
           {catalog.isError && !isFetchNextCatalogPageError && (
@@ -298,6 +331,19 @@ export function StandardPricesPage() {
               </button>
             </div>
           )}
+          {requestedItemFetchFailed && (
+            <div className="inline-state is-error" role="alert">
+              <p>요청한 품목을 확인하는 중 오류가 발생했습니다.</p>
+              <button type="button" onClick={() => void fetchNextCatalogPage()}>
+                다시 시도
+              </button>
+            </div>
+          )}
+          {requestedItemExhausted && (
+            <p className="inline-state" role="status">
+              요청한 품목을 찾을 수 없습니다. 목록에서 다시 선택해 주세요.
+            </p>
+          )}
           {!catalog.isPending && !catalog.isError && items.length === 0 && (
             <p className="inline-state">검색 결과가 없습니다.</p>
           )}
@@ -315,8 +361,8 @@ export function StandardPricesPage() {
                     <th className="numeric">최고</th>
                     <th className="numeric">근거</th>
                     <th>제품 제조사</th>
-                    <th>최근 견적일</th>
                     <th>견적 제출사</th>
+                    <th>최근 견적일</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -432,8 +478,8 @@ function StandardItemTableRow({
       <td className="numeric">{formatWon(price?.maximum ?? null)}</td>
       <td className="numeric">{formatObservationCount(item)}</td>
       <td>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</td>
-      <td>{formatQuoteDate(item.quote_date_end, item.quote_date_end_quality)}</td>
       <td>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</td>
+      <td>{formatQuoteDate(item.quote_date_end, item.quote_date_end_quality)}</td>
     </tr>
   );
 }
@@ -838,36 +884,11 @@ function sameDisplayedPrice(left: PriceVersion, right: PriceVersion) {
   );
 }
 
-function safeNextCursor<T extends { next_cursor: number | null }>(
-  lastPage: T,
-  allPages: T[],
-  lastPageParam: number | undefined,
-) {
-  const next = lastPage.next_cursor;
-  if (
-    next === null ||
-    next === lastPageParam ||
-    allPages.slice(0, -1).some((page) => page.next_cursor === next)
-  ) {
-    return undefined;
-  }
-  return next;
-}
-
 function uniqueById<T extends { id: number }>(items: T[]) {
   const seen = new Set<number>();
   return items.filter((item) => {
     if (seen.has(item.id)) return false;
     seen.add(item.id);
-    return true;
-  });
-}
-
-function uniqueByRawItemId<T extends { raw_item_id: number }>(items: T[]) {
-  const seen = new Set<number>();
-  return items.filter((item) => {
-    if (seen.has(item.raw_item_id)) return false;
-    seen.add(item.raw_item_id);
     return true;
   });
 }

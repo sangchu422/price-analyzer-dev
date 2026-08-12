@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -42,6 +42,7 @@ from app.catalog.service import (
     standard_item_members,
     unmatched_included,
 )
+from app.api.xlsx_export import build_xlsx_response
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import settings
 from app.db.session import get_session
@@ -880,6 +881,57 @@ def get_standard_items(
         "limit": limit,
         "latest_build": _build_provenance_payload(latest_build),
     }
+
+
+@router.get("/standard-items/export")
+def export_standard_items(
+    session: Session = Depends(get_session),
+    *,
+    search: str | None = Query(None, max_length=200),
+    evidence_quality: EvidenceQuality | None = Query(None),
+) -> Response:
+    headers = [
+        "품명", "규격", "단위", "최저", "중앙값", "평균", "최고",
+        "근거 건수", "제품 제조사", "견적 제출사", "최근 견적일",
+    ]
+    rows: list[list[object]] = []
+    after_id: int | None = None
+    while True:
+        chunk, next_cursor, _latest_build = list_standard_explorer_items(
+            session,
+            after_id=after_id,
+            limit=200,
+            search=search,
+            quality=evidence_quality,
+        )
+        for summary in chunk:
+            payload = _explorer_summary_payload(summary)
+            version = payload["current_version"]
+            price = payload["current_price"]
+            rows.append([
+                version["canonical_name"],
+                version["canonical_spec"] or "",
+                version["canonical_unit"] or "",
+                price["minimum"] if price else None,
+                price["median"] if price else None,
+                price["average"] if price else None,
+                price["maximum"] if price else None,
+                payload["observation_count"],
+                ", ".join(payload["maker_summary"]),
+                ", ".join(payload["supplier_summary"]),
+                payload["quote_date_end"] or "",
+            ])
+        session.commit()
+        if next_cursor is None:
+            break
+        after_id = next_cursor
+
+    return build_xlsx_response(
+        sheet_title="표준 품목 목록",
+        headers=headers,
+        rows=rows,
+        filename=f"표준품목목록_{date.today():%Y%m%d}.xlsx",
+    )
 
 
 @router.get(
