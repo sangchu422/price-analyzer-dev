@@ -148,6 +148,7 @@ class QuoteAnalysisLineResult(_ImmutableAnalysisRow, Base):
     target_amount: Mapped[Decimal | None] = mapped_column(ExactDecimal())
     target_variance_amount: Mapped[Decimal | None] = mapped_column(ExactDecimal())
     target_variance_percent: Mapped[Decimal | None] = mapped_column(ExactDecimal())
+    target_unit_variance_amount: Mapped[Decimal | None] = mapped_column(ExactDecimal())
     target_used_observation_count: Mapped[int] = mapped_column(Integer, default=0)
     target_excluded_observation_count: Mapped[int] = mapped_column(Integer, default=0)
     target_reason: Mapped[str] = mapped_column(Text)
