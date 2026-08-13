@@ -737,9 +737,10 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
               <th>수량</th>
               <th>개당 단가</th>
               <th>구매 금액</th>
-              <th>구매 목표 단가</th>
+              <th>구매 목표 단가(개당)</th>
               <th>목표 금액</th>
               <th>목표가 대비</th>
+              <th>목표가 대비(개당)</th>
               <th>산정 근거</th>
             </tr>
           </thead>
@@ -755,6 +756,15 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
             ))}
           </tbody>
           <tfoot>
+            <tr className="target-covered-quote-row">
+              <td colSpan={3}>산정 대상 구매금액(목표가 있는 품목만)</td>
+              <td className="numeric"><strong>{formatMoney(String(targetCoveredQuoteAmount))}</strong></td>
+              <td className="numeric">—</td>
+              <td className="numeric">—</td>
+              <td className="numeric">—</td>
+              <td className="numeric">—</td>
+              <td aria-label="산정 대상 구매금액 서브토탈">—</td>
+            </tr>
             <tr className="target-total-row">
               <td colSpan={3}>합계</td>
               <td className="numeric"><strong>{formatMoney(String(totalQuoteAmount))}</strong></td>
@@ -764,6 +774,7 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
                 <strong>{formatSignedMoney(numberString(totalTargetVariance))}</strong>
                 <span>{formatSignedPercent(numberString(totalTargetVariancePercent))}</span>
               </td>
+              <td className="numeric">—</td>
               <td aria-label="합계 산정 근거 없음">—</td>
             </tr>
           </tfoot>
@@ -822,6 +833,7 @@ function TargetPriceRow({
         <strong>{formatSignedMoney(target.variance_amount)}</strong>
         <span>{formatSignedPercent(target.variance_percent)}</span>
       </td>
+      <td className="numeric">{formatSignedMoney(target.unit_variance_amount ?? null)}</td>
       <td className="target-evidence-trigger" ref={cellRef}>
         <button
           type="button"
