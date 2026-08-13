@@ -277,8 +277,9 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   const targetItem1Row = within(targetTable as HTMLElement).getByRole("row", {
     name: /ITEM 1/,
   });
-  expect(within(targetItem1Row).getByText("+80원")).toBeVisible();
-  expect(within(targetItem1Row).getByText("+40원")).toBeVisible();
+  const targetItem1Cells = within(targetItem1Row).getAllByRole("cell");
+  expect(targetItem1Cells[6]).toHaveTextContent("+80원");
+  expect(targetItem1Cells[7]).toHaveTextContent("+40원");
   const totalRow = document.querySelector(".target-total-row");
   expect(totalRow).not.toBeNull();
   expect(totalRow).toHaveTextContent("2,080원");
