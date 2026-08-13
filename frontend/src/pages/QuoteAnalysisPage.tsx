@@ -759,9 +759,12 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
             <tr className="target-covered-quote-row">
               <td colSpan={3}>산정 대상 구매금액(목표가 있는 품목만)</td>
               <td className="numeric"><strong>{formatMoney(String(targetCoveredQuoteAmount))}</strong></td>
-              <td className="numeric">—</td>
-              <td className="numeric">—</td>
-              <td className="numeric">—</td>
+              <td className="numeric">{formatMoney(numberString(totalTargetUnitPrice))}</td>
+              <td className="numeric">{formatMoney(numberString(totalTargetAmount))}</td>
+              <td className="numeric">
+                {formatSignedMoney(numberString(totalTargetVariance))}
+                <span>{formatSignedPercent(numberString(totalTargetVariancePercent))}</span>
+              </td>
               <td className="numeric">—</td>
               <td aria-label="산정 대상 구매금액 산정 근거 없음">—</td>
             </tr>
