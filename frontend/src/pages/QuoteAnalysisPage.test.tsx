@@ -272,6 +272,13 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   const coveredRow = document.querySelector(".target-covered-quote-row");
   expect(coveredRow).not.toBeNull();
   expect(coveredRow).toHaveTextContent("1,820원");
+  const targetTable = document.querySelector(".target-price-table");
+  expect(targetTable).not.toBeNull();
+  const targetItem1Row = within(targetTable as HTMLElement).getByRole("row", {
+    name: /ITEM 1/,
+  });
+  expect(within(targetItem1Row).getByText("+80원")).toBeVisible();
+  expect(within(targetItem1Row).getByText("+40원")).toBeVisible();
   const totalRow = document.querySelector(".target-total-row");
   expect(totalRow).not.toBeNull();
   expect(totalRow).toHaveTextContent("2,080원");
