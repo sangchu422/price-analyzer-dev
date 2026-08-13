@@ -652,7 +652,8 @@ def test_target_price_export_reads_stored_run_without_side_effects(
     rows = list(sheet.iter_rows(values_only=True))
     assert rows[0] == (
         "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
-        "구매 목표 단가", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
+        "구매 목표 단가(개당)", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
+        "목표가 대비 개당차액",
         "산정 상태",
     )
     assert len(rows) == 3

@@ -230,6 +230,7 @@ class TargetLineResponse(BaseModel):
     target_amount: Decimal | None
     variance_amount: Decimal | None
     variance_percent: Decimal | None
+    unit_variance_amount: Decimal | None = None
     used_observation_count: int
     excluded_observation_count: int
     reason: str
@@ -552,6 +553,7 @@ def get_analysis_run(
                 "target_amount": line.target_amount,
                 "variance_amount": line.target_variance_amount,
                 "variance_percent": line.target_variance_percent,
+                "unit_variance_amount": line.target_unit_variance_amount,
                 "used_observation_count": line.target_used_observation_count,
                 "excluded_observation_count": line.target_excluded_observation_count,
                 "reason": line.target_reason,
@@ -612,7 +614,8 @@ def export_target_price_run(
 
     headers = [
         "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
-        "구매 목표 단가", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
+        "구매 목표 단가(개당)", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
+        "목표가 대비 개당차액",
         "산정 상태",
     ]
     rows = []
@@ -629,6 +632,7 @@ def export_target_price_run(
             target.target_amount if target else None,
             target.target_variance_amount if target else None,
             target.target_variance_percent if target else None,
+            target.target_unit_variance_amount if target else None,
             _TARGET_STATUS_LABELS.get(target.target_status, target.target_status)
             if target
             else "—",
