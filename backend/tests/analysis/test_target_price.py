@@ -102,6 +102,8 @@ def test_target_price_uses_only_source_confirmed_exact_dates() -> None:
     assert result.status == "AVAILABLE"
     assert result.target_unit_price == Decimal("150.000000")
     assert result.target_amount == Decimal("300.000000")
+    assert result.variance_amount == Decimal("60.000000")
+    assert result.unit_variance_amount == Decimal("30.000000")
     assert result.variance_percent == Decimal("20.000000")
     assert result.used_observation_count == 1
     assert result.excluded_observation_count == 1
@@ -171,6 +173,8 @@ def test_cpi_target_compounds_confirmed_annual_rates_and_rounds_to_krw() -> None
     assert result.status == "AVAILABLE"
     assert result.target_unit_price == Decimal("1216544")
     assert result.target_amount == Decimal("2433088")
+    assert result.variance_amount == Decimal("-2432728")
+    assert result.unit_variance_amount == Decimal("-1216364")
     assert result.evidence[0].source_period == "2016"
     assert result.evidence[0].inflation is not None
     assert result.evidence[0].inflation.sync_run_id == 77

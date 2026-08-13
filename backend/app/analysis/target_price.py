@@ -114,6 +114,7 @@ class TargetLineResult:
     excluded_observation_count: int
     reason: str
     evidence: tuple[TargetEvidenceResult, ...]
+    unit_variance_amount: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -404,6 +405,7 @@ def create_analysis_run(
             target_amount=target.target_amount,
             target_variance_amount=target.variance_amount,
             target_variance_percent=target.variance_percent,
+            target_unit_variance_amount=target.unit_variance_amount,
             target_used_observation_count=target.used_observation_count,
             target_excluded_observation_count=target.excluded_observation_count,
             target_reason=target.reason,
@@ -688,15 +690,23 @@ def _target_line(
         return TargetLineResult(line.raw_item_id, "DATE_UNAVAILABLE", None, None, None, None, 0, excluded, "원본 본문·머리말에서 확인된 견적일이 없어 목표가를 계산할 수 없습니다.", ())
     target_unit = Decimal(str(median([item.adjusted_unit_price for item in evidence]))).quantize(MONEY_QUANTUM)
     target_amount = None if line.quantity is None else (target_unit * line.quantity).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+    unit_variance_amount = None
     variance_amount = None
     variance_percent = None
     if line.quote_unit_price is not None:
-        variance_amount = (line.quote_unit_price - target_unit).quantize(MONEY_QUANTUM)
-        variance_percent = (variance_amount / target_unit * Decimal("100")).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        unit_variance_amount = (line.quote_unit_price - target_unit).quantize(MONEY_QUANTUM)
+    if line.quote_amount is not None and target_amount is not None:
+        variance_amount = (line.quote_amount - target_amount).quantize(MONEY_QUANTUM)
+        if target_amount != 0:
+            variance_percent = (variance_amount / target_amount * Decimal("100")).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     reason = f"원본 날짜가 확인된 과거 단가 {len(evidence)}건을 {target_period[:4]}년 {int(target_period[4:])}월 물가 수준으로 보정했습니다."
     if len(evidence) == 1:
         reason += " 근거가 1건이므로 신뢰도가 낮습니다."
-    return TargetLineResult(line.raw_item_id, "AVAILABLE", target_unit, target_amount, variance_amount, variance_percent, len(evidence), excluded, reason, tuple(evidence))
+    return TargetLineResult(
+        line.raw_item_id, "AVAILABLE", target_unit, target_amount, variance_amount, variance_percent,
+        len(evidence), excluded, reason, tuple(evidence),
+        unit_variance_amount=unit_variance_amount,
+    )
 
 
 def _target_line_from_cpi(
@@ -865,16 +875,22 @@ def _target_line_from_cpi(
             rounding=ROUND_HALF_UP,
         )
     )
+    unit_variance_amount = None
     variance_amount = None
     variance_percent = None
     if line.quote_unit_price is not None:
-        variance_amount = (line.quote_unit_price - target_unit).quantize(
+        unit_variance_amount = (line.quote_unit_price - target_unit).quantize(
             KRW_QUANTUM,
             rounding=ROUND_HALF_UP,
         )
-        if target_unit != 0:
+    if line.quote_amount is not None and target_amount is not None:
+        variance_amount = (line.quote_amount - target_amount).quantize(
+            KRW_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        if target_amount != 0:
             variance_percent = (
-                variance_amount / target_unit * Decimal("100")
+                variance_amount / target_amount * Decimal("100")
             ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     reason = (
         f"원본 날짜가 확인된 과거 단가 {len(evidence)}건을 "
@@ -896,6 +912,7 @@ def _target_line_from_cpi(
         excluded,
         reason,
         tuple(evidence),
+        unit_variance_amount=unit_variance_amount,
     )
 
 
