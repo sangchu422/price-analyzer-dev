@@ -1447,6 +1447,19 @@
 .target-price-table td:nth-child(7) strong,
 .target-price-table td:nth-child(7) span { display: block; }
 
+.target-covered-quote-row {
+  background: #fbfcfd;
+  font-weight: 650;
+}
+.target-covered-quote-row td {
+  border-top: 1px dashed #d0d5dd;
+}
+.target-covered-quote-row td:first-child {
+  text-align: left;
+  color: var(--analysis-muted);
+  font-style: italic;
+}
+
 .target-total-row {
   background: #f7f8fa;
   font-weight: 750;

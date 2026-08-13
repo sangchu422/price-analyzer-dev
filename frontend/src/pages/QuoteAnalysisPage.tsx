@@ -763,7 +763,7 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
               <td className="numeric">—</td>
               <td className="numeric">—</td>
               <td className="numeric">—</td>
-              <td aria-label="산정 대상 구매금액 서브토탈">—</td>
+              <td aria-label="산정 대상 구매금액 산정 근거 없음">—</td>
             </tr>
             <tr className="target-total-row">
               <td colSpan={3}>합계</td>
