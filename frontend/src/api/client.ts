@@ -628,6 +628,7 @@ export interface TargetPriceLine {
   target_amount: string | null;
   variance_amount: string | null;
   variance_percent: string | null;
+  unit_variance_amount?: string | null;
   used_observation_count: number;
   excluded_observation_count: number;
   reason: string;
