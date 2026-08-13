@@ -118,8 +118,9 @@ const analysis = {
     status: index < 7 ? "AVAILABLE" : "DATE_UNAVAILABLE",
     target_unit_price: index < 7 ? "90.000000" : null,
     target_amount: index < 7 ? "180.000000" : null,
-    variance_amount: index < 7 ? "40.000000" : null,
+    variance_amount: index < 7 ? "80.000000" : null,
     variance_percent: index < 7 ? "44.444444" : null,
+    unit_variance_amount: index < 7 ? "40.000000" : null,
     used_observation_count: index < 7 ? 2 : 0,
     excluded_observation_count: index < 7 ? 0 : 2,
     reason: index < 7
@@ -262,6 +263,15 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
+  expect(
+    screen.getByRole("columnheader", { name: "구매 목표 단가(개당)" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("columnheader", { name: "목표가 대비(개당)" }),
+  ).toBeVisible();
+  const coveredRow = document.querySelector(".target-covered-quote-row");
+  expect(coveredRow).not.toBeNull();
+  expect(coveredRow).toHaveTextContent("1,820원");
   const totalRow = document.querySelector(".target-total-row");
   expect(totalRow).not.toBeNull();
   expect(totalRow).toHaveTextContent("2,080원");
