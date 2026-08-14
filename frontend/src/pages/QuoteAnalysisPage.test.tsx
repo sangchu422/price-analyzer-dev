@@ -236,6 +236,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   ]);
   const batch = calls.find((call) => call.url === "/api/market/lookup-batch");
   expect(JSON.parse(String(batch?.init?.body))).toEqual({
+    analysis_run_id: 14,
     raw_item_ids: [8],
     force_refresh: false,
   });
@@ -472,6 +473,56 @@ it("applies a collected market assessment to the row and overall summary", async
   expect(await within(row).findByText("시장가 대비 고가")).toBeVisible();
   expect(within(row).getAllByText("100원")).toHaveLength(2);
   expect(screen.getByText("고가 3건")).toBeVisible();
+  expect(screen.getByText("시장가 확인 필요 0건")).toBeVisible();
+});
+
+it("treats a market-sourced REVIEW assessment as 주의, not 판정 대기", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/submissions") {
+        return jsonResponse(successfulSubmission(), { status: 201 });
+      }
+      if (url.includes("/api/analysis/documents/91")) {
+        return jsonResponse(analysis);
+      }
+      if (url.includes("/api/market/lookup/8")) {
+        return jsonResponse({
+          raw_item_id: 8,
+          query: "SERVO MOTOR SGMAH-04AAA61",
+          quote_unit_price: "130",
+          quantity: "2",
+          cache_state: "LIVE",
+          assessment: "REVIEW",
+          minimum_price: "90",
+          median_price: "115",
+          maximum_price: "120",
+          variance_percent: "13",
+          products: [],
+          source_failures: [],
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  renderApp("/analysis");
+
+  await userEvent.upload(
+    screen.getByLabelText("신규 견적서"),
+    new File(["quote"], "신규견적.xlsx"),
+  );
+  await userEvent.type(screen.getByLabelText("접수자"), "설비구매팀");
+  await userEvent.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+  await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  const row = screen.getByRole("row", { name: /SERVO MOTOR/ });
+  await userEvent.click(
+    within(row).getByRole("button", { name: "시장가 조회" }),
+  );
+
+  expect(await within(row).findByText("시장가 대비 주의")).toBeVisible();
+  expect(within(row).queryByText("판정 대기")).not.toBeInTheDocument();
+  expect(screen.getByText("주의 2건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 0건")).toBeVisible();
 });
 
