@@ -153,6 +153,7 @@ export interface StandardItemSummary {
   current_version: StandardItemVersion;
   member_count: number;
   observation_count: number | null;
+  supplier_count?: number | null;
   evidence_quality: EvidenceQuality | null;
   current_price: PriceStatistics | null;
   supplier_summary: string[];
@@ -382,6 +383,7 @@ export interface StandardEvidence {
   standard_item_id: number;
   standard_price_version_id: number;
   observation_count: number;
+  supplier_count?: number | null;
   evidence_quality: EvidenceQuality;
   provenance: StandardBuildProvenance | null;
   observations: Array<{
