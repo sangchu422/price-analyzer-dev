@@ -491,6 +491,7 @@ export interface AnalysisLine {
 export type MarketAssessment =
   | "LOW"
   | "WITHIN_RANGE"
+  | "REVIEW"
   | "HIGH"
   | "REVIEW_REQUIRED";
 
@@ -1016,10 +1017,12 @@ export function submitIncomingBid(
 
 export function lookupMarketPrice(
   rawItemId: number,
+  analysisRunId: number,
   forceRefresh = false,
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
+    analysis_run_id: String(analysisRunId),
     force_refresh: String(forceRefresh),
   });
   return requestJson<MarketLookupResult>(
@@ -1030,12 +1033,14 @@ export function lookupMarketPrice(
 
 export function lookupMarketPriceBatch(
   rawItemIds: number[],
+  analysisRunId: number,
   forceRefresh = false,
   signal?: AbortSignal,
 ) {
   return requestJson<MarketBatchLookupResponse>("/api/market/lookup-batch", {
     method: "POST",
     body: JSON.stringify({
+      analysis_run_id: analysisRunId,
       raw_item_ids: rawItemIds,
       force_refresh: forceRefresh,
     }),
