@@ -69,3 +69,14 @@ def test_automatic_market_batch_404s_when_analysis_run_missing(
     )
 
     assert response.status_code == 404
+
+
+def test_lookup_market_price_404s_when_analysis_run_missing(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/market/lookup/1",
+        params={"analysis_run_id": 999_999},
+    )
+
+    assert response.status_code == 404

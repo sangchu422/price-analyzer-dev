@@ -91,6 +91,7 @@ def _automatic_lookup(
     raw_item_id: int,
     force_refresh: bool,
     bind: object,
+    *,
     review_percent: Decimal,
     high_percent: Decimal,
 ) -> MarketBatchItemResponse:
@@ -164,8 +165,8 @@ def lookup_market_prices_automatically(
                     raw_id,
                     request.force_refresh,
                     bind,
-                    run.review_percent,
-                    run.high_percent,
+                    review_percent=run.review_percent,
+                    high_percent=run.high_percent,
                 ): raw_id
                 for raw_id in eligible_ids
             }
