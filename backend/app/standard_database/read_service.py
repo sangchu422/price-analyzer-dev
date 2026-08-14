@@ -79,7 +79,7 @@ class StandardExplorerSummary:
     def evidence_quality(self) -> EvidenceQuality | None:
         if self.current_price is None:
             return None
-        return evidence_quality(self.current_price.observation_count)
+        return evidence_quality(self.current_price.supplier_count)
 
 
 @dataclass(frozen=True)
@@ -100,8 +100,8 @@ class StandardEvidenceRow:
     cells: str | None
 
 
-def evidence_quality(observation_count: int) -> EvidenceQuality:
-    if observation_count == 1:
+def evidence_quality(supplier_count: int) -> EvidenceQuality:
+    if supplier_count <= 1:
         return EvidenceQuality.SINGLE_OBSERVATION
     return EvidenceQuality.MULTI_OBSERVATION
 
@@ -232,7 +232,7 @@ def list_standard_explorer_items(
                 quality is EvidenceQuality.SINGLE_OBSERVATION
                 and (
                     price is None
-                    or price.observation_count != 1
+                    or price.supplier_count > 1
                 )
             ):
                 continue
@@ -240,7 +240,7 @@ def list_standard_explorer_items(
                 quality is EvidenceQuality.MULTI_OBSERVATION
                 and (
                     price is None
-                    or price.observation_count <= 1
+                    or price.supplier_count <= 1
                 )
             ):
                 continue

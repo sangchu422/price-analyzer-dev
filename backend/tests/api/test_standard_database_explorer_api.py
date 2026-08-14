@@ -1040,3 +1040,53 @@ def test_evidence_rejects_cross_item_price_version(
     )
 
     assert response.status_code == 404
+
+
+def test_evidence_quality_reflects_distinct_suppliers_not_row_count(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    _historical_row(
+        api_session,
+        row=10,
+        name="GASKET",
+        spec="G-100",
+        unit="EA",
+        price="10",
+        supplier="SUPPLIER Z",
+        maker="NOK",
+    )
+    _historical_row(
+        api_session,
+        row=11,
+        name="GASKET",
+        spec="G-100",
+        unit="EA",
+        price="10",
+        supplier="SUPPLIER Z",
+        maker="NOK",
+    )
+    api_session.flush()
+    build_standard_database(api_session)
+    api_session.commit()
+
+    response = client.get(
+        "/api/catalog/standard-items",
+        params={"limit": 20, "search": "GASKET"},
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["observation_count"] == 2
+    assert item["supplier_count"] == 1
+    assert item["evidence_quality"] == "SINGLE_OBSERVATION"
+
+    filtered = client.get(
+        "/api/catalog/standard-items",
+        params={
+            "limit": 20,
+            "search": "GASKET",
+            "evidence_quality": "MULTI_OBSERVATION",
+        },
+    )
+    assert filtered.json()["items"] == []
