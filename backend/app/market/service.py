@@ -9,6 +9,7 @@ from rapidfuzz import fuzz
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.analysis.service import assess_variance
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import Settings
 from app.market.adapters.base import (
@@ -182,6 +183,8 @@ class MarketLookupService:
         middle = Decimal(str(median(prices))) if prices else None
         variance = None
         assessment = "REVIEW_REQUIRED"
+        review = self.settings.price_variance_review_percent
+        high = self.settings.price_variance_high_percent
         if (
             market_model_tokens(query)
             and quote_unit_price is not None
@@ -191,14 +194,11 @@ class MarketLookupService:
             variance = (
                 (quote_unit_price - middle) / middle * Decimal("100")
             )
-            high = self.settings.price_variance_high_percent
-            review = self.settings.price_variance_review_percent
-            if variance > high:
-                assessment = "HIGH"
-            elif variance < -high:
-                assessment = "LOW"
-            elif abs(variance) <= review:
-                assessment = "WITHIN_RANGE"
+            assessment = assess_variance(
+                variance,
+                review_percent=review,
+                high_percent=high,
+            )
         if products and failures:
             state = "PARTIAL"
         elif live_count:

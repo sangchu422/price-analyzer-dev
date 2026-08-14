@@ -323,3 +323,30 @@ def test_both_market_sources_failing_remains_source_unavailable(tmp_path) -> Non
         MarketSource.DEVICEMART,
         MarketSource.MOUSER,
     }
+
+
+def test_market_assessment_uses_review_band_at_exact_boundaries() -> None:
+    from app.analysis.service import assess_variance
+
+    cases = [
+        (Decimal("-25"), "LOW"),
+        (Decimal("-20"), "REVIEW"),
+        (Decimal("-19.999999"), "REVIEW"),
+        (Decimal("-10"), "WITHIN_RANGE"),
+        (Decimal("-9.999999"), "WITHIN_RANGE"),
+        (Decimal("0"), "WITHIN_RANGE"),
+        (Decimal("10"), "WITHIN_RANGE"),
+        (Decimal("10.000001"), "REVIEW"),
+        (Decimal("20"), "REVIEW"),
+        (Decimal("20.000001"), "HIGH"),
+        (Decimal("25"), "HIGH"),
+    ]
+    for percent, expected in cases:
+        assert (
+            assess_variance(
+                percent,
+                review_percent=Decimal("10"),
+                high_percent=Decimal("20"),
+            )
+            == expected
+        ), f"{percent}% expected {expected}"

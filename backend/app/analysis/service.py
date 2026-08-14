@@ -739,7 +739,7 @@ def _classify_line(
         if quote_price is not None and quote_price.is_finite():
             amount = quote_price - price.median_price
             exact_percent = amount / price.median_price * Decimal("100")
-            assessment = _assessment(
+            assessment = assess_variance(
                 exact_percent,
                 review_percent=review_percent,
                 high_percent=high_percent,
@@ -971,7 +971,7 @@ def _analysis_candidates(
     )
 
 
-def _assessment(
+def assess_variance(
     percent: Decimal,
     *,
     review_percent: Decimal,

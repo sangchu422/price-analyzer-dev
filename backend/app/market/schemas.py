@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.market.models import MarketSource
 
 
-MarketAssessment = Literal["LOW", "WITHIN_RANGE", "HIGH", "REVIEW_REQUIRED"]
+MarketAssessment = Literal["LOW", "WITHIN_RANGE", "REVIEW", "HIGH", "REVIEW_REQUIRED"]
 MarketCacheState = Literal["CACHE", "LIVE", "PARTIAL", "UNAVAILABLE"]
 MarketLookupOutcome = Literal[
     "CACHE_HIT",
