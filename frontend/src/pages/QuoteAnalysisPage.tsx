@@ -185,6 +185,7 @@ export function QuoteAnalysisPage({
         });
         return lookupMarketPriceBatch(
           autoMarketLookupIds,
+          analysis!.run_id,
           false,
           controller.signal,
         );
@@ -245,6 +246,7 @@ export function QuoteAnalysisPage({
       }
     };
   }, [
+    analysis,
     autoMarketLookupIds,
     setMarketLookupItems,
     setMarketLookupProgress,
@@ -610,6 +612,7 @@ function AnalysisResults({
                 market={marketResults[line.raw_item_id] ?? null}
                 marketLookup={marketLookupItems[line.raw_item_id]}
                 onMarketResult={onMarketResult}
+                analysisRunId={analysis.run_id}
               />
             ))}
           </tbody>
@@ -970,11 +973,13 @@ function AnalysisRow({
   market,
   marketLookup,
   onMarketResult,
+  analysisRunId,
 }: {
   line: AnalysisLine;
   market: MarketLookupResult | null;
   marketLookup?: MarketLookupProgressItem;
   onMarketResult: (result: MarketLookupResult) => void;
+  analysisRunId: number;
 }) {
   const [marketError, setMarketError] = useState("");
   const [marketLoading, setMarketLoading] = useState(false);
@@ -1008,7 +1013,9 @@ function AnalysisRow({
     setMarketLoading(true);
     setMarketError("");
     try {
-      onMarketResult(await lookupMarketPrice(line.raw_item_id, forceRefresh));
+      onMarketResult(
+        await lookupMarketPrice(line.raw_item_id, analysisRunId, forceRefresh),
+      );
     } catch (error) {
       setMarketError(error instanceof Error ? error.message : "시장가 조회에 실패했습니다.");
     } finally {
@@ -1316,6 +1323,7 @@ function marketAssessmentLabel(assessment: MarketLookupResult["assessment"]) {
   return {
     LOW: "시장가 대비 저가",
     WITHIN_RANGE: "시장가 범위 적정",
+    REVIEW: "시장가 대비 주의",
     HIGH: "시장가 대비 고가",
     REVIEW_REQUIRED: "판정 대기",
   }[assessment];
