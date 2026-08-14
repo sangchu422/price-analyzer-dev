@@ -977,6 +977,7 @@ def assess_variance(
     review_percent: Decimal,
     high_percent: Decimal,
 ) -> Assessment:
+    """Bucket a percent deviation from a reference price into LOW/REVIEW/WITHIN_RANGE/HIGH bands."""
     if percent < -high_percent:
         return "LOW"
     if percent < -review_percent:

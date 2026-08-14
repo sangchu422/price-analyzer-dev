@@ -325,6 +325,43 @@ def test_both_market_sources_failing_remains_source_unavailable(tmp_path) -> Non
     }
 
 
+def test_market_lookup_lands_in_review_band_for_moderate_variance(
+    tmp_path,
+) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        project_root=tmp_path,
+        market_evidence_folder="evidence",
+    )
+    assert settings.price_variance_review_percent == Decimal("10")
+    assert settings.price_variance_high_percent == Decimal("20")
+
+    # FakeAdapter("110") produces tiers: qty>=1 -> 110, qty>=10 -> 100.
+    # Requesting quantity=10 selects the qty>=10 tier (100), so the lone
+    # DeviceMart listing becomes the market median of 100.
+    device = FakeAdapter(MarketSource.DEVICEMART, "110")
+
+    with Session(engine, expire_on_commit=False) as session:
+        result = MarketLookupService(
+            session,
+            settings,
+            [device],
+        ).lookup(
+            "STM32 F407",
+            quote_unit_price=Decimal("115"),
+            quantity=Decimal("10"),
+        )
+
+    # median = 100, quote = 115 -> variance = (115 - 100) / 100 * 100 = 15%,
+    # which sits strictly inside the REVIEW band (10% < 15% <= 20%) under
+    # the default review_percent=10 / high_percent=20 settings -- neither
+    # WITHIN_RANGE nor HIGH.
+    assert result.median_price == Decimal("100")
+    assert result.variance_percent == Decimal("15")
+    assert result.assessment == "REVIEW"
+
+
 def test_market_assessment_uses_review_band_at_exact_boundaries() -> None:
     from app.analysis.service import assess_variance
 
