@@ -164,7 +164,12 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   expect(
     await screen.findByRole("button", { name: /SENSOR/ }),
   ).toBeVisible();
-  expect(screen.getAllByText("근거 1건").length).toBeGreaterThan(0);
+  expect(
+    screen.getAllByText("근거 1건 · 공급사 1곳").length,
+  ).toBeGreaterThan(0);
+  expect(
+    screen.getAllByText("1건 · 공급사 1곳").length,
+  ).toBeGreaterThan(0);
   expect(screen.getByText(/최근 갱신/)).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "최저" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "중앙값" })).toBeVisible();
