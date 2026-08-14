@@ -173,6 +173,10 @@ class MarketLookupService:
             for observation in run.observations
             if observation.currency.upper() == "KRW"
         ]
+        # Applied unconditionally: manual and automatic lookups must agree on
+        # eligibility, even though this means items with no recorded
+        # manufacturer find no price via manual lookup either (deliberate
+        # trade-off, not a bug).
         priced_products = [
             product for product in products if product.automatic_price_eligible
         ]
