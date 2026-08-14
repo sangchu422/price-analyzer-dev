@@ -2,6 +2,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.analysis.models import QuoteAnalysisRun
@@ -80,3 +81,24 @@ def test_lookup_market_price_404s_when_analysis_run_missing(
     )
 
     assert response.status_code == 404
+
+
+def test_lookup_market_price_503s_on_unexpected_storage_error(
+    client: TestClient, api_session: Session, monkeypatch
+) -> None:
+    run = _analysis_run(api_session)
+
+    def _raise_locked(self, *args, **kwargs):
+        raise OperationalError("statement", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(
+        "app.market.service.MarketLookupService.lookup_raw_item", _raise_locked
+    )
+
+    response = client.post(
+        "/api/market/lookup/1",
+        params={"analysis_run_id": run.id},
+    )
+
+    assert response.status_code == 503
+    assert "다시 조회" in response.json()["detail"]

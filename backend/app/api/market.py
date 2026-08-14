@@ -85,6 +85,14 @@ def lookup_market_price(
         )
     except MarketLookupError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        # Mirrors the batch endpoint's handling of SQLite's single-writer
+        # limitation, e.g. when this request races an in-flight automatic
+        # batch lookup for the same item.
+        raise HTTPException(
+            status_code=503,
+            detail="시장가 조회 중 일시적인 저장 오류가 발생했습니다. 다시 조회해 주세요.",
+        ) from exc
 
 
 def _automatic_lookup(
