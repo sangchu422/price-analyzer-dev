@@ -64,7 +64,6 @@ class MarketLookupService:
         raw_item_id: int,
         *,
         force_refresh: bool = False,
-        automatic: bool = False,
         review_percent: Decimal | None = None,
         high_percent: Decimal | None = None,
     ) -> MarketLookupResponse:
@@ -91,7 +90,6 @@ class MarketLookupService:
             quantity=decision.quantity,
             force_refresh=force_refresh,
             raw_item_id=raw_item_id,
-            automatic=automatic,
             required_manufacturer=decision.maker_norm,
             review_percent=review_percent,
             high_percent=high_percent,
@@ -105,7 +103,6 @@ class MarketLookupService:
         quantity: Decimal | None = None,
         force_refresh: bool = False,
         raw_item_id: int = 0,
-        automatic: bool = False,
         required_manufacturer: str | None = None,
         review_percent: Decimal | None = None,
         high_percent: Decimal | None = None,
@@ -176,11 +173,9 @@ class MarketLookupService:
             for observation in run.observations
             if observation.currency.upper() == "KRW"
         ]
-        priced_products = (
-            [product for product in products if product.automatic_price_eligible]
-            if automatic
-            else products
-        )
+        priced_products = [
+            product for product in products if product.automatic_price_eligible
+        ]
         prices = sorted(
             product.applicable_unit_price for product in priced_products
         )

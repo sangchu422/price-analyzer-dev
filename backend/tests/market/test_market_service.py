@@ -25,10 +25,23 @@ from app.quotes.models import RawQuoteItem
 
 
 class FakeAdapter:
-    def __init__(self, source: MarketSource, price: str) -> None:
+    def __init__(
+        self,
+        source: MarketSource,
+        price: str,
+        *,
+        manufacturer: str | None = None,
+        model_number: str | None = None,
+        stock_quantity: int | None = None,
+        moq: int | None = None,
+    ) -> None:
         self.source = source
         self.price = Decimal(price)
         self.calls = 0
+        self.manufacturer = manufacturer
+        self.model_number = model_number
+        self.stock_quantity = stock_quantity
+        self.moq = moq
 
     def search(self, query: str) -> list[CollectedProduct]:
         self.calls += 1
@@ -42,6 +55,10 @@ class FakeAdapter:
                 unit_price=self.price,
                 raw_payload=b'{"source":"fixture"}',
                 raw_extension=".json",
+                manufacturer=self.manufacturer,
+                model_number=self.model_number,
+                stock_quantity=self.stock_quantity,
+                moq=self.moq,
                 tiers=(
                     CollectedTier(1, self.price, "KRW"),
                     CollectedTier(10, self.price - Decimal("10"), "KRW"),
@@ -58,7 +75,7 @@ class FailingAdapter:
         raise RuntimeError(f"{self.source.value} unavailable")
 
 
-def _raw_item(session: Session) -> RawQuoteItem:
+def _raw_item(session: Session, *, maker_norm: str | None = None) -> RawQuoteItem:
     document = SourceDocument(logical_name="incoming.xlsx")
     variant = SourceVariant(
         document=document,
@@ -87,6 +104,7 @@ def _raw_item(session: Session) -> RawQuoteItem:
             reason_code="VALID",
             item_name_norm="STM32",
             spec_norm="F407",
+            maker_norm=maker_norm,
             unit_norm="EA",
             quantity=Decimal("10"),
             unit_price=Decimal("130"),
@@ -105,11 +123,15 @@ def test_market_lookup_collects_then_reuses_fresh_cache(tmp_path) -> None:
         market_evidence_folder="evidence",
         market_price_ttl_hours=168,
     )
-    device = FakeAdapter(MarketSource.DEVICEMART, "100")
-    mouser = FakeAdapter(MarketSource.MOUSER, "120")
+    device = FakeAdapter(
+        MarketSource.DEVICEMART, "100", manufacturer="ACME", stock_quantity=10
+    )
+    mouser = FakeAdapter(
+        MarketSource.MOUSER, "120", manufacturer="ACME", stock_quantity=10
+    )
 
     with Session(engine, expire_on_commit=False) as session:
-        raw = _raw_item(session)
+        raw = _raw_item(session, maker_norm="ACME")
         first = MarketLookupService(
             session,
             settings,
@@ -245,8 +267,15 @@ def test_generic_family_search_remains_review_required(tmp_path) -> None:
             [device],
         ).lookup("PLC MELSEC Q", quote_unit_price=Decimal("500"))
 
+    # A generic family search has no model tokens by construction, so the
+    # matched product can never be automatic_price_eligible either (the same
+    # MODEL_NUMBER_REQUIRED reason that skips the variance calculation below
+    # also excludes it from min/median/max) -- unlike other eligibility gaps
+    # in this file, this one cannot be closed with fixture data without
+    # defeating the point of a "generic search" test, so median_price is
+    # correctly None rather than a price this search cannot actually vouch for.
     assert result.products
-    assert result.median_price == Decimal("100")
+    assert result.median_price is None
     assert result.variance_percent is None
     assert result.assessment == "REVIEW_REQUIRED"
 
@@ -292,7 +321,7 @@ def test_missing_mouser_adapter_keeps_devicemart_reference_and_reports_setup(
             session,
             settings,
             [FakeAdapter(MarketSource.DEVICEMART, "100")],
-        ).lookup_raw_item(raw.id, automatic=True)
+        ).lookup_raw_item(raw.id)
 
     assert result.outcome == "REFERENCE_ONLY"
     assert [failure.source for failure in result.source_failures] == [
@@ -315,7 +344,7 @@ def test_both_market_sources_failing_remains_source_unavailable(tmp_path) -> Non
                 FailingAdapter(MarketSource.DEVICEMART),
                 FailingAdapter(MarketSource.MOUSER),
             ],
-        ).lookup_raw_item(raw.id, automatic=True)
+        ).lookup_raw_item(raw.id)
 
     assert result.outcome == "SOURCE_UNAVAILABLE"
     assert result.assessment == "REVIEW_REQUIRED"
@@ -340,7 +369,13 @@ def test_market_lookup_lands_in_review_band_for_moderate_variance(
     # FakeAdapter("110") produces tiers: qty>=1 -> 110, qty>=10 -> 100.
     # Requesting quantity=10 selects the qty>=10 tier (100), so the lone
     # DeviceMart listing becomes the market median of 100.
-    device = FakeAdapter(MarketSource.DEVICEMART, "110")
+    # manufacturer/stock_quantity are set (and required_manufacturer passed
+    # below) so this product is automatic_price_eligible -- eligibility
+    # filtering now applies unconditionally, so an ineligible product would
+    # not count toward the median at all.
+    device = FakeAdapter(
+        MarketSource.DEVICEMART, "110", manufacturer="ACME", stock_quantity=10
+    )
 
     with Session(engine, expire_on_commit=False) as session:
         result = MarketLookupService(
@@ -351,6 +386,7 @@ def test_market_lookup_lands_in_review_band_for_moderate_variance(
             "STM32 F407",
             quote_unit_price=Decimal("115"),
             quantity=Decimal("10"),
+            required_manufacturer="ACME",
         )
 
     # median = 100, quote = 115 -> variance = (115 - 100) / 100 * 100 = 15%,
@@ -368,8 +404,15 @@ def test_market_assessment_uses_caller_supplied_thresholds_not_global_defaults(
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     settings = Settings(project_root=tmp_path, market_evidence_folder="evidence")
-    device = FakeAdapter(MarketSource.DEVICEMART, "115")
-    mouser = FakeAdapter(MarketSource.MOUSER, "115")
+    # manufacturer/stock_quantity are set (and required_manufacturer/quantity
+    # passed below) so both products are automatic_price_eligible --
+    # eligibility filtering now applies unconditionally.
+    device = FakeAdapter(
+        MarketSource.DEVICEMART, "115", manufacturer="OMRON", stock_quantity=5
+    )
+    mouser = FakeAdapter(
+        MarketSource.MOUSER, "115", manufacturer="OMRON", stock_quantity=5
+    )
 
     with Session(engine, expire_on_commit=False) as session:
         result_default = MarketLookupService(
@@ -377,12 +420,16 @@ def test_market_assessment_uses_caller_supplied_thresholds_not_global_defaults(
         ).lookup(
             "OMRON E3Z-D61",
             quote_unit_price=Decimal("100"),
+            quantity=Decimal("1"),
+            required_manufacturer="OMRON",
         )
         result_custom = MarketLookupService(
             session, settings, [device, mouser],
         ).lookup(
             "OMRON E3Z-D61",
             quote_unit_price=Decimal("100"),
+            quantity=Decimal("1"),
+            required_manufacturer="OMRON",
             force_refresh=True,
             review_percent=Decimal("30"),
             high_percent=Decimal("40"),
@@ -400,6 +447,27 @@ def test_market_assessment_uses_caller_supplied_thresholds_not_global_defaults(
     assert result_custom.variance_percent is not None
     assert result_default.assessment == "REVIEW"
     assert result_custom.assessment == "WITHIN_RANGE"
+
+
+def test_manual_and_automatic_lookup_use_the_same_eligible_only_population(
+    tmp_path,
+) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(project_root=tmp_path, market_evidence_folder="evidence")
+    device = FakeAdapter(MarketSource.DEVICEMART, "100")
+
+    with Session(engine, expire_on_commit=False) as session:
+        # maker_norm not set -> this product can never be eligible.
+        raw = _raw_item(session)
+        manual = MarketLookupService(
+            session, settings, [device],
+        ).lookup_raw_item(raw.id)
+
+    # An item with no recorded manufacturer must not get a price verdict on
+    # manual lookup either -- eligibility filtering now applies unconditionally.
+    assert manual.median_price is None
+    assert manual.assessment == "REVIEW_REQUIRED"
 
 
 def test_market_assessment_uses_review_band_at_exact_boundaries() -> None:

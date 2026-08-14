@@ -104,7 +104,6 @@ def _automatic_lookup(
             result = _service(worker_session).lookup_raw_item(
                 raw_item_id,
                 force_refresh=force_refresh,
-                automatic=True,
                 review_percent=review_percent,
                 high_percent=high_percent,
             )
