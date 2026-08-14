@@ -242,7 +242,7 @@ def _draft_payload(
         "canonical_unit": draft.canonical_unit,
         "observation_count": draft.observation_count,
         "evidence_quality": evidence_quality(
-            draft.observation_count
+            draft.supplier_count
         ).value,
         "supplier_count": draft.supplier_count,
         "latest_quote_date": draft.latest_quote_date,
@@ -325,7 +325,7 @@ def _version_payload(
         "version_number": version.version_number,
         "observation_count": version.observation_count,
         "evidence_quality": evidence_quality(
-            version.observation_count
+            version.supplier_count
         ).value,
         "supplier_count": version.supplier_count,
         "latest_quote_date": version.latest_quote_date,
