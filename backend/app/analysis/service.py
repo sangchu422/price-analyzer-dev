@@ -37,6 +37,7 @@ from app.standard_database.operational import (
     current_standard_member_counts,
     operational_standard_prices,
 )
+from app.standard_database.read_service import evidence_quality
 
 
 MatchStatus = Literal[
@@ -764,11 +765,7 @@ def _classify_line(
             standard_price_version_id=price.id,
             standard_price_item_version_id=price.standard_item_version_id,
             standard_observation_count=price.observation_count,
-            evidence_quality=(
-                "SINGLE_OBSERVATION"
-                if price.observation_count == 1
-                else "MULTI_OBSERVATION"
-            ),
+            evidence_quality=evidence_quality(price.supplier_count).value,
             market_price_lookup_required=False,
             market_price_lookup_status="NOT_REQUIRED",
             candidates=(),

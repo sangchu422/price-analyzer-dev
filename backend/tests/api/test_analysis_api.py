@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import app.analysis.target_price as target_price
@@ -7,7 +8,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.catalog.models import ItemMembershipDecision, StandardPriceVersion
+from app.catalog.models import (
+    DocumentMetadataVersion,
+    ItemMembershipDecision,
+    StandardPriceVersion,
+)
 from app.analysis.models import (
     InflationIndexPoint,
     InflationSyncRun,
@@ -668,3 +673,74 @@ def test_target_price_export_rejects_missing_run(client: TestClient) -> None:
     assert (
         client.get("/api/analysis/runs/999/target-price-export").status_code == 404
     )
+
+
+def test_matched_line_evidence_quality_reflects_distinct_suppliers(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    for row, supplier in [(1, "SUPPLIER Z"), (2, "SUPPLIER Z")]:
+        historical = SourceDocument(logical_name=f"historical-{row}.xlsx")
+        variant = SourceVariant(
+            document=historical,
+            path=f"historical-{row}.xlsx",
+            sha256=f"{row:064x}",
+            extension=".xlsx",
+            security_state="UNLOCKED",
+            selected_for_parsing_at_ingest=True,
+        )
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="Sheet1",
+            source_row=1,
+            item_name_raw="CUSTOM ITEM 1",
+            spec_raw="ZZ-1",
+            unit_raw="EA",
+            unit_price_raw="80",
+            parser_name="xlsx",
+            parser_version="reader-v1",
+        )
+        api_session.add_all(
+            [
+                CleanDecision(
+                    raw_item=raw,
+                    status=CleanStatus.INCLUDED,
+                    reason_code="VALID",
+                    item_name_norm="CUSTOM ITEM 1",
+                    spec_norm="ZZ-1",
+                    unit_norm="EA",
+                    unit_price=Decimal("80"),
+                    rule_version="clean-v1",
+                ),
+                DocumentMetadataVersion(
+                    source_document=historical,
+                    version_number=1,
+                    supplier_name=supplier,
+                    quote_date=date(2026, 7, row),
+                    project_name=None,
+                    decided_by="data-owner",
+                ),
+            ]
+        )
+        api_session.flush()
+        api_session.add(
+            QuoteDocumentRole(
+                document_id=historical.id,
+                purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+                decided_by="data-owner",
+                reason_detail="training evidence",
+            )
+        )
+    build_standard_database(api_session)
+    api_session.commit()
+    incoming = _document(api_session, rows=1)
+
+    response = client.get(
+        f"/api/analysis/documents/{incoming.id}?limit=100"
+    )
+
+    assert response.status_code == 200
+    line = response.json()["lines"][0]
+    assert line["match_status"] == "MATCHED"
+    assert line["standard_observation_count"] == 2
+    assert line["evidence_quality"] == "SINGLE_OBSERVATION"
