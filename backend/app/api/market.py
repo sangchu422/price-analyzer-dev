@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_session
+from app.analysis.models import QuoteAnalysisRun
 from app.analysis.service import market_lookup_eligibilities
 from app.market.adapters import DeviceMartAdapter, MouserAdapter
 from app.market.evidence import EvidenceStore
@@ -67,13 +69,19 @@ def _service(session: Session) -> MarketLookupService:
 )
 def lookup_market_price(
     raw_item_id: int,
+    analysis_run_id: int = Query(...),
     force_refresh: bool = Query(False),
     session: Session = Depends(get_session),
 ) -> MarketLookupResponse:
+    run = session.get(QuoteAnalysisRun, analysis_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
     try:
         return _service(session).lookup_raw_item(
             raw_item_id,
             force_refresh=force_refresh,
+            review_percent=run.review_percent,
+            high_percent=run.high_percent,
         )
     except MarketLookupError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -83,6 +91,8 @@ def _automatic_lookup(
     raw_item_id: int,
     force_refresh: bool,
     bind: object,
+    review_percent: Decimal,
+    high_percent: Decimal,
 ) -> MarketBatchItemResponse:
     with Session(
         bind=bind,
@@ -94,6 +104,8 @@ def _automatic_lookup(
                 raw_item_id,
                 force_refresh=force_refresh,
                 automatic=True,
+                review_percent=review_percent,
+                high_percent=high_percent,
             )
         except MarketLookupError as exc:
             return MarketBatchItemResponse(
@@ -121,6 +133,9 @@ def lookup_market_prices_automatically(
     request: MarketBatchLookupRequest,
     session: Session = Depends(get_session),
 ) -> MarketBatchLookupResponse:
+    run = session.get(QuoteAnalysisRun, request.analysis_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
     raw_ids = list(dict.fromkeys(request.raw_item_ids))
     eligibility = market_lookup_eligibilities(session, raw_ids)
     by_id: dict[int, MarketBatchItemResponse] = {}
@@ -149,6 +164,8 @@ def lookup_market_prices_automatically(
                     raw_id,
                     request.force_refresh,
                     bind,
+                    run.review_percent,
+                    run.high_percent,
                 ): raw_id
                 for raw_id in eligible_ids
             }

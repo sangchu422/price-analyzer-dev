@@ -86,6 +86,7 @@ class MarketLookupResponse(BaseModel):
 
 
 class MarketBatchLookupRequest(BaseModel):
+    analysis_run_id: int
     raw_item_ids: list[int] = Field(min_length=1, max_length=100)
     force_refresh: bool = False
 

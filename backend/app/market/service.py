@@ -65,6 +65,8 @@ class MarketLookupService:
         *,
         force_refresh: bool = False,
         automatic: bool = False,
+        review_percent: Decimal | None = None,
+        high_percent: Decimal | None = None,
     ) -> MarketLookupResponse:
         raw_item = self.session.get(RawQuoteItem, raw_item_id)
         if raw_item is None:
@@ -91,6 +93,8 @@ class MarketLookupService:
             raw_item_id=raw_item_id,
             automatic=automatic,
             required_manufacturer=decision.maker_norm,
+            review_percent=review_percent,
+            high_percent=high_percent,
         )
 
     def lookup(
@@ -103,6 +107,8 @@ class MarketLookupService:
         raw_item_id: int = 0,
         automatic: bool = False,
         required_manufacturer: str | None = None,
+        review_percent: Decimal | None = None,
+        high_percent: Decimal | None = None,
     ) -> MarketLookupResponse:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         ttl = timedelta(hours=self.settings.market_price_ttl_hours)
@@ -183,8 +189,16 @@ class MarketLookupService:
         middle = Decimal(str(median(prices))) if prices else None
         variance = None
         assessment = "REVIEW_REQUIRED"
-        review = self.settings.price_variance_review_percent
-        high = self.settings.price_variance_high_percent
+        review = (
+            self.settings.price_variance_review_percent
+            if review_percent is None
+            else review_percent
+        )
+        high = (
+            self.settings.price_variance_high_percent
+            if high_percent is None
+            else high_percent
+        )
         if (
             market_model_tokens(query)
             and quote_unit_price is not None

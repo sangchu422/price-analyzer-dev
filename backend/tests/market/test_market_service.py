@@ -362,6 +362,46 @@ def test_market_lookup_lands_in_review_band_for_moderate_variance(
     assert result.assessment == "REVIEW"
 
 
+def test_market_assessment_uses_caller_supplied_thresholds_not_global_defaults(
+    tmp_path,
+) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(project_root=tmp_path, market_evidence_folder="evidence")
+    device = FakeAdapter(MarketSource.DEVICEMART, "115")
+    mouser = FakeAdapter(MarketSource.MOUSER, "115")
+
+    with Session(engine, expire_on_commit=False) as session:
+        result_default = MarketLookupService(
+            session, settings, [device, mouser],
+        ).lookup(
+            "OMRON E3Z-D61",
+            quote_unit_price=Decimal("100"),
+        )
+        result_custom = MarketLookupService(
+            session, settings, [device, mouser],
+        ).lookup(
+            "OMRON E3Z-D61",
+            quote_unit_price=Decimal("100"),
+            force_refresh=True,
+            review_percent=Decimal("30"),
+            high_percent=Decimal("40"),
+        )
+
+    # median = 115, quote = 100 -> variance = (100 - 115) / 115 * 100 ~= -13.04%.
+    # Default settings (review=10%, high=20%) put -13.04% in the REVIEW band
+    # (-20% < -13.04% < -10%). The caller-supplied thresholds (review=30%,
+    # high=40%) widen the WITHIN_RANGE band to +/-30%, so the same variance
+    # now lands as WITHIN_RANGE -- proving the parameters (not the global
+    # settings default) drove the assessment.
+    assert result_default.median_price == Decimal("115")
+    assert result_custom.median_price == Decimal("115")
+    assert result_default.variance_percent is not None
+    assert result_custom.variance_percent is not None
+    assert result_default.assessment == "REVIEW"
+    assert result_custom.assessment == "WITHIN_RANGE"
+
+
 def test_market_assessment_uses_review_band_at_exact_boundaries() -> None:
     from app.analysis.service import assess_variance
 
