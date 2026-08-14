@@ -298,8 +298,8 @@ export function StandardPricesPage() {
             }}
           >
             <option value="">전체</option>
-            <option value="SINGLE_OBSERVATION">근거 1건</option>
-            <option value="MULTI_OBSERVATION">근거 2건 이상</option>
+            <option value="SINGLE_OBSERVATION">공급사 1곳</option>
+            <option value="MULTI_OBSERVATION">공급사 2곳 이상</option>
           </select>
         </label>
         <button type="submit" className="standard-search-submit">
@@ -566,6 +566,9 @@ function StandardItemDetail({
   const observationCount = pinned
     ? snapshotVersion?.observation_count ?? 0
     : item.observation_count ?? 0;
+  const supplierCount = pinned
+    ? snapshotVersion?.supplier_count
+    : item.supplier_count;
   return (
     <div className="standard-db-detail-content">
       {snapshotPending && (
@@ -597,6 +600,7 @@ function StandardItemDetail({
         <EvidenceBadge
           quality={evidenceQuality}
           count={observationCount}
+          supplierCount={supplierCount}
         />
       </header>
 
@@ -748,6 +752,7 @@ function StandardItemDetail({
               <EvidenceBadge
                 quality={version.evidence_quality}
                 count={version.observation_count}
+                supplierCount={version.supplier_count}
               />
               <dl>
                 <div><dt>중앙값</dt><dd>{formatWon(version.prices.median)}</dd></div>
@@ -791,7 +796,8 @@ function displaySpec(item: StandardItemSummary) {
 
 function formatObservationCount(item: StandardItemSummary) {
   if (item.observation_count !== null) {
-    return `${item.observation_count.toLocaleString("ko-KR")}건`;
+    const suppliers = item.supplier_count ?? item.observation_count;
+    return `${item.observation_count.toLocaleString("ko-KR")}건 · 공급사 ${suppliers.toLocaleString("ko-KR")}곳`;
   }
   return item.operational_status === "NO_ELIGIBLE_EVIDENCE"
     ? "근거 없음"
