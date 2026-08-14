@@ -297,6 +297,7 @@ def test_standard_catalog_explorer_exposes_current_price_and_provenance(
     item = payload["items"][0]
     assert item["current_version"]["canonical_name"] == "BEARING"
     assert item["observation_count"] == 2
+    assert item["supplier_count"] == 2
     assert item["evidence_quality"] == "MULTI_OBSERVATION"
     assert item["current_price"] == {
         "minimum": "100.000000",
@@ -371,6 +372,7 @@ def test_standard_catalog_explorer_returns_single_observation_evidence_links(
     payload = response.json()
     assert payload["evidence_quality"] == "SINGLE_OBSERVATION"
     assert payload["observation_count"] == 1
+    assert payload["supplier_count"] == 1
     assert payload["provenance"]["build_run_id"] == run_id
     assert payload["observations"] == [
         {

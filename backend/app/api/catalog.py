@@ -54,6 +54,7 @@ from app.standard_database.read_service import (
     StandardBuildProvenance,
     StandardExplorerNotFound,
     StandardExplorerSummary,
+    evidence_quality,
     list_standard_explorer_items,
     standard_item_evidence,
 )
@@ -248,6 +249,7 @@ class StandardItemResponse(BaseModel):
 class StandardItemSummaryResponse(StandardItemResponse):
     member_count: int
     observation_count: int | None
+    supplier_count: int | None
     current_price_version_id: int | None
     captured_price_version_id: int | None
     operational_status: str
@@ -311,6 +313,7 @@ class StandardEvidenceResponse(BaseModel):
     standard_item_id: int
     standard_price_version_id: int
     observation_count: int
+    supplier_count: int
     evidence_quality: EvidenceQuality
     provenance: BuildProvenanceResponse | None
     observations: list[StandardEvidenceRowResponse]
@@ -653,11 +656,13 @@ def _explorer_summary_payload(
 ) -> dict[str, object]:
     price = summary.current_price
     observation_count = None if price is None else price.observation_count
+    supplier_count = None if price is None else price.supplier_count
     return {
         "id": summary.current_version.standard_item_id,
         "current_version": _version_payload(summary.current_version),
         "member_count": summary.member_count,
         "observation_count": observation_count,
+        "supplier_count": supplier_count,
         "current_price_version_id": None if price is None else price.id,
         "captured_price_version_id": summary.captured_price_version_id,
         "operational_status": summary.operational_status.value,
@@ -962,11 +967,8 @@ def get_standard_item_evidence(
         "standard_item_id": standard_item_id,
         "standard_price_version_id": price.id,
         "observation_count": price.observation_count,
-        "evidence_quality": (
-            EvidenceQuality.SINGLE_OBSERVATION.value
-            if price.observation_count == 1
-            else EvidenceQuality.MULTI_OBSERVATION.value
-        ),
+        "supplier_count": price.supplier_count,
+        "evidence_quality": evidence_quality(price.supplier_count).value,
         "provenance": _build_provenance_payload(provenance),
         "observations": [
             {
