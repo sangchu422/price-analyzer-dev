@@ -198,8 +198,10 @@ export interface SourceCoverageSummary {
 }
 
 export type EvidenceQuality =
+  | "SUPPLIER_UNKNOWN"
   | "SINGLE_OBSERVATION"
-  | "MULTI_OBSERVATION";
+  | "MULTI_OBSERVATION"
+  | "NON_COMPARABLE";
 
 export type QuoteDateQuality =
   | "CONFIRMED"
@@ -554,6 +556,7 @@ export interface MarketLookupResult {
 
 export type MarketBatchLookupStatus =
   | "STANDARD_APPLIED"
+  | "IDENTIFIER_REQUIRED"
   | "CACHE_HIT"
   | "LIVE_HIT"
   | "REFERENCE_ONLY"
@@ -625,6 +628,7 @@ export interface TargetPriceLine {
     | "DATE_UNAVAILABLE"
     | "INDEX_UNAVAILABLE"
     | "RATE_GAP"
+    | "COMPARABILITY_REVIEW_REQUIRED"
     | "MARKET_REFERENCE_REQUIRED"
     | "NOT_APPLICABLE";
   target_unit_price: string | null;

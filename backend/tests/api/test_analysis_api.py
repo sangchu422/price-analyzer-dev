@@ -657,12 +657,11 @@ def test_target_price_export_reads_stored_run_without_side_effects(
     rows = list(sheet.iter_rows(values_only=True))
     assert rows[0] == (
         "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
-        "구매 목표 단가(개당)", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
-        "목표가 대비 개당차액",
-        "산정 상태",
+        "협상 목표 단가(개당)", "협상 목표금액", "네고 가능금액", "산정 상태",
     )
-    assert len(rows) == 3
-    assert {row[0] for row in rows[1:]} == {"CUSTOM ITEM 1", "CUSTOM ITEM 2"}
+    assert len(rows) == 4
+    assert {row[0] for row in rows[1:-1]} == {"CUSTOM ITEM 1", "CUSTOM ITEM 2"}
+    assert rows[-1][0] == "합계"
 
     api_session.expire_all()
     run_count_after = api_session.scalar(select(func.count(QuoteAnalysisRun.id)))

@@ -35,6 +35,7 @@ EXPLORER_SCAN_CHUNK_SIZE = 128
 
 
 class EvidenceQuality(StrEnum):
+    SUPPLIER_UNKNOWN = "SUPPLIER_UNKNOWN"
     SINGLE_OBSERVATION = "SINGLE_OBSERVATION"
     MULTI_OBSERVATION = "MULTI_OBSERVATION"
 
@@ -101,7 +102,9 @@ class StandardEvidenceRow:
 
 
 def evidence_quality(supplier_count: int) -> EvidenceQuality:
-    if supplier_count <= 1:
+    if supplier_count <= 0:
+        return EvidenceQuality.SUPPLIER_UNKNOWN
+    if supplier_count == 1:
         return EvidenceQuality.SINGLE_OBSERVATION
     return EvidenceQuality.MULTI_OBSERVATION
 
@@ -229,10 +232,18 @@ def list_standard_explorer_items(
             state = states[version.standard_item_id]
             price = state.current_price
             if (
+                quality is EvidenceQuality.SUPPLIER_UNKNOWN
+                and (
+                    price is None
+                    or price.supplier_count != 0
+                )
+            ):
+                continue
+            if (
                 quality is EvidenceQuality.SINGLE_OBSERVATION
                 and (
                     price is None
-                    or price.supplier_count > 1
+                    or price.supplier_count != 1
                 )
             ):
                 continue

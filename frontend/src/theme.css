@@ -537,6 +537,7 @@ textarea::placeholder {
 }
 
 .evidence-badge.is-single,
+.evidence-badge.is-unknown,
 .assessment.is-review,
 .assessment.is-pending,
 .market-state.is-stale {

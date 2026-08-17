@@ -203,6 +203,13 @@ if %INGEST_EXIT% GEQ 2 (
   echo Quote ingestion failed with exit code %INGEST_EXIT%.
   exit /b 1
 )
+"%PYTHON%" -m app.cleansing.reassess
+set "REASSESS_EXIT=%errorlevel%"
+if not "%REASSESS_EXIT%"=="0" (
+  popd
+  echo Cleansing reassessment failed with exit code %REASSESS_EXIT%.
+  exit /b 1
+)
 "%PYTHON%" -m app.cli standard-db-build --database-file "%DATABASE_FILE%" --report "%BUILD_REPORT%"
 set "BUILD_EXIT=%errorlevel%"
 popd

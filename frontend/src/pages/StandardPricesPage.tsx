@@ -219,7 +219,7 @@ export function StandardPricesPage() {
           <summary>
             <span>데이터 구축 현황</span>
             <small>
-              활용 {sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개 · 확인 필요{" "}
+              원본 문서 {sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개 활용 · 확인 필요{" "}
               {(
                 sourceCoverageData.parser_required_files +
                 sourceCoverageData.ocr_required_files +
@@ -298,8 +298,9 @@ export function StandardPricesPage() {
             }}
           >
             <option value="">전체</option>
-            <option value="SINGLE_OBSERVATION">공급사 1곳</option>
-            <option value="MULTI_OBSERVATION">공급사 2곳 이상</option>
+            <option value="SUPPLIER_UNKNOWN">제출사 확인 필요</option>
+            <option value="SINGLE_OBSERVATION">견적 제출사 1곳</option>
+            <option value="MULTI_OBSERVATION">견적 제출사 2곳 이상</option>
           </select>
         </label>
         <button type="submit" className="standard-search-submit">
@@ -796,8 +797,11 @@ function displaySpec(item: StandardItemSummary) {
 
 function formatObservationCount(item: StandardItemSummary) {
   if (item.observation_count !== null) {
-    const suppliers = item.supplier_count ?? item.observation_count;
-    return `${item.observation_count.toLocaleString("ko-KR")}건 · 공급사 ${suppliers.toLocaleString("ko-KR")}곳`;
+    const suppliers = item.supplier_count ?? 0;
+    const supplierLabel = suppliers > 0
+      ? `견적 제출사 ${suppliers.toLocaleString("ko-KR")}곳`
+      : "견적 제출사 확인 필요";
+    return `${item.observation_count.toLocaleString("ko-KR")}건 · ${supplierLabel}`;
   }
   return item.operational_status === "NO_ELIGIBLE_EVIDENCE"
     ? "근거 없음"

@@ -741,6 +741,19 @@ def _target_line_from_cpi(
             reason,
             (),
         )
+    if line.evidence_quality == "NON_COMPARABLE":
+        return TargetLineResult(
+            line.raw_item_id,
+            "COMPARABILITY_REVIEW_REQUIRED",
+            None,
+            None,
+            None,
+            None,
+            0,
+            len(rows),
+            "규격이 없고 과거 가격 범위가 넓어 같은 품목인지 먼저 확인해야 합니다.",
+            (),
+        )
     if latest_confirmed_year is None or sync_run_id is None:
         return TargetLineResult(
             line.raw_item_id,
@@ -823,6 +836,7 @@ def _target_line_from_cpi(
             )
         )
 
+    evidence = _independent_target_evidence(evidence)
     excluded = len(rows) - len(evidence)
     if not evidence:
         if rate_gap_count:
@@ -893,7 +907,7 @@ def _target_line_from_cpi(
                 variance_amount / target_amount * Decimal("100")
             ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
     reason = (
-        f"원본 날짜가 확인된 과거 단가 {len(evidence)}건을 "
+        f"서로 다른 원본 견적의 과거 단가 {len(evidence)}건을 "
         f"{latest_confirmed_year}년 확정 소비자물가로 보정한 뒤 "
         "가장 낮은 금액을 협상 목표로 채택했습니다."
     )
@@ -914,6 +928,33 @@ def _target_line_from_cpi(
         tuple(evidence),
         unit_variance_amount=unit_variance_amount,
     )
+
+
+def _independent_target_evidence(
+    evidence: list[TargetEvidenceResult],
+) -> list[TargetEvidenceResult]:
+    """Count a logical quote document once for negotiation evidence.
+
+    Repeated pages or re-parsed rows from one submitted quote are not
+    independent market observations.  For the aggressive negotiation target,
+    retain the lowest CPI-adjusted line from each logical source document and
+    keep the choice deterministic for audit/replay.
+    """
+
+    by_document: dict[int, TargetEvidenceResult] = {}
+    for item in evidence:
+        current = by_document.get(item.source_document_id)
+        if current is None or (
+            item.adjusted_unit_price,
+            -item.quote_date.toordinal(),
+            item.raw_item_id,
+        ) < (
+            current.adjusted_unit_price,
+            -current.quote_date.toordinal(),
+            current.raw_item_id,
+        ):
+            by_document[item.source_document_id] = item
+    return list(by_document.values())
 
 
 def _stored_target_evidence_fields(

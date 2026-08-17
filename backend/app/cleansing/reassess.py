@@ -25,7 +25,7 @@ from app.parsing.projection import current_raw_item_ids
 from app.quotes.models import RawQuoteItem
 from app.documents.models import SourceVariant
 
-REASSESSMENT_VERSION = "clean-v2-audit-v5"
+REASSESSMENT_VERSION = "clean-v2-audit-v6"
 
 
 def run_reassessment(session: Session, report_dir: Path) -> dict[str, object]:

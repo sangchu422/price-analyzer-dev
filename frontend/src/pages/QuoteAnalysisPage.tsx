@@ -596,8 +596,7 @@ function AnalysisResults({
               <th>단위·수량</th>
               <th>개당 단가</th>
               <th>구매 금액</th>
-              <th>참조 기준가</th>
-              <th>참조 최저·기준·최고</th>
+              <th>참조 최저·중앙값·최고</th>
               <th>편차 금액</th>
               <th>편차율</th>
               <th>매칭 / 근거</th>
@@ -640,20 +639,6 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
     () => analysis.lines.reduce((sum, line) => sum + Number(line.quote_amount ?? 0), 0),
     [analysis.lines],
   );
-  const totalTargetUnitPrice = useMemo(() => {
-    const available = analysis.target_lines.filter(
-      (target) => target.target_unit_price !== null,
-    );
-    return available.length === 0
-      ? null
-      : available.reduce(
-          (sum, target) => sum + Number(target.target_unit_price),
-          0,
-        );
-  }, [analysis.target_lines]);
-  const totalTargetAmount = analysis.target_total_amount === null
-    ? null
-    : Number(analysis.target_total_amount);
   const targetCoveredQuoteAmount = useMemo(
     () => analysis.target_lines.reduce((sum, target) => {
       if (target.target_amount === null) return sum;
@@ -662,13 +647,14 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
     }, 0),
     [analysis.target_lines, lineById],
   );
-  const totalTargetVariance = totalTargetAmount === null
-    ? null
-    : targetCoveredQuoteAmount - totalTargetAmount;
-  const totalTargetVariancePercent =
-    totalTargetVariance === null || totalTargetAmount === null || totalTargetAmount === 0
-      ? null
-      : (totalTargetVariance / totalTargetAmount) * 100;
+  const totalNegotiableAmount = useMemo(
+    () => analysis.target_lines.reduce(
+      (sum, target) => sum + negotiationAmount(target),
+      0,
+    ),
+    [analysis.target_lines],
+  );
+  const overallNegotiationTarget = totalQuoteAmount - totalNegotiableAmount;
 
   return (
     <section className="target-price-panel" role="tabpanel">
@@ -684,14 +670,14 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
           <small>날짜·지수·표준 DB 근거 부족</small>
         </div>
         <div>
-          <span>협상 목표금액</span>
-          <strong>{formatMoney(analysis.target_total_amount)}</strong>
-          <small>계산 가능한 품목만 합산</small>
+          <span>네고 가능금액</span>
+          <strong>{formatMoney(String(totalNegotiableAmount))}</strong>
+          <small>제시가가 목표가보다 높은 품목만 합산</small>
         </div>
-        <div className={totalTargetVariance !== null && totalTargetVariance > 0 ? "is-saving" : ""}>
-          <span>목표가 대비 차액</span>
-          <strong>{formatSignedMoney(numberString(totalTargetVariance))}</strong>
-          <small>목표가가 산정된 품목끼리 비교</small>
+        <div className={totalNegotiableAmount > 0 ? "is-saving" : ""}>
+          <span>전체 협상 목표금액</span>
+          <strong>{formatMoney(String(overallNegotiationTarget))}</strong>
+          <small>전체 견적에서 네고 가능금액을 차감</small>
         </div>
       </div>
 
@@ -701,7 +687,7 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
           <strong>
             {isLegacyPpi
               ? "이 결과는 과거 목표가 정책으로 계산된 기록입니다."
-              : "실제로 구매했던 가격 중 현재 가치로 환산한 최저값을 협상 목표로 사용합니다."}
+              : "서로 다른 과거 견적에서 실제 확인된 최저 단가를 물가 보정해 협상 목표로 사용합니다."}
           </strong>
           <p>
             {isLegacyPpi
@@ -713,7 +699,10 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
               <> 최종 공표일은 {analysis.inflation_source_last_changed}입니다.</>
             ) : null}
           </p>
-          <p>중앙값과 가격 범위는 ‘가격 적정성’ 탭에서 별도로 확인할 수 있습니다.</p>
+          <p>
+            현재 제시가가 이미 과거 최저가보다 낮으면 네고 가능금액은 0원으로 처리합니다.
+            중앙값과 가격 범위는 ‘가격 적정성’ 탭에서 별도로 확인할 수 있습니다.
+          </p>
           {analysis.inflation_source_url ? (
             <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
               KOSIS 공식 통계 보기
@@ -740,10 +729,9 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
               <th>수량</th>
               <th>개당 단가</th>
               <th>구매 금액</th>
-              <th>구매 목표 단가(개당)</th>
-              <th>목표 금액</th>
-              <th>목표가 대비</th>
-              <th>목표가 대비(개당)</th>
+              <th>협상 목표 단가(개당)</th>
+              <th>협상 목표금액</th>
+              <th>네고 가능금액</th>
               <th>산정 근거</th>
             </tr>
           </thead>
@@ -759,29 +747,15 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
             ))}
           </tbody>
           <tfoot>
-            <tr className="target-covered-quote-row">
-              <td colSpan={3}>산정 대상 구매금액(목표가 있는 품목만)</td>
-              <td className="numeric"><strong>{formatMoney(String(targetCoveredQuoteAmount))}</strong></td>
-              <td className="numeric">{formatMoney(numberString(totalTargetUnitPrice))}</td>
-              <td className="numeric">{formatMoney(numberString(totalTargetAmount))}</td>
-              <td className="numeric">
-                {formatSignedMoney(numberString(totalTargetVariance))}
-                <span>{formatSignedPercent(numberString(totalTargetVariancePercent))}</span>
-              </td>
-              <td className="numeric">—</td>
-              <td aria-label="산정 대상 구매금액 산정 근거 없음">—</td>
-            </tr>
             <tr className="target-total-row">
-              <td colSpan={3}>합계</td>
+              <td colSpan={3}>전체 견적 합계</td>
               <td className="numeric"><strong>{formatMoney(String(totalQuoteAmount))}</strong></td>
-              <td className="numeric"><strong>{formatMoney(numberString(totalTargetUnitPrice))}</strong></td>
-              <td className="numeric"><strong>{formatMoney(numberString(totalTargetAmount))}</strong></td>
-              <td className="numeric">
-                <strong>{formatSignedMoney(numberString(totalTargetVariance))}</strong>
-                <span>{formatSignedPercent(numberString(totalTargetVariancePercent))}</span>
-              </td>
               <td className="numeric">—</td>
-              <td aria-label="합계 산정 근거 없음">—</td>
+              <td className="numeric"><strong>{formatMoney(String(overallNegotiationTarget))}</strong></td>
+              <td className="numeric"><strong>{formatMoney(String(totalNegotiableAmount))}</strong></td>
+              <td>
+                목표가 산정 가능 품목의 구매금액 {formatMoney(String(targetCoveredQuoteAmount))}
+              </td>
             </tr>
           </tfoot>
         </table>
@@ -812,6 +786,15 @@ function TargetPriceRow({
           left.raw_item_id - right.raw_item_id,
       )
     : target.evidence;
+  const effectiveTargetUnitPrice = buyerTargetValue(
+    line?.quote_unit_price ?? null,
+    target.target_unit_price,
+  );
+  const effectiveTargetAmount = buyerTargetValue(
+    line?.quote_amount ?? null,
+    target.target_amount,
+  );
+  const negotiableAmount = negotiationAmount(target);
 
   useEffect(() => {
     if (!open) return;
@@ -833,13 +816,20 @@ function TargetPriceRow({
       <td className="numeric">{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</td>
       <td className="numeric">{formatMoney(line?.quote_unit_price ?? null)}</td>
       <td className="numeric">{formatMoney(line?.quote_amount ?? null)}</td>
-      <td className="numeric target-unit-price">{formatMoney(target.target_unit_price)}</td>
-      <td className="numeric">{formatMoney(target.target_amount)}</td>
+      <td className="numeric target-unit-price">{formatMoney(effectiveTargetUnitPrice)}</td>
+      <td className="numeric">{formatMoney(effectiveTargetAmount)}</td>
       <td className="numeric">
-        <strong>{formatSignedMoney(target.variance_amount)}</strong>
-        <span>{formatSignedPercent(target.variance_percent)}</span>
+        <strong>
+          {formatMoney(
+            target.status === "AVAILABLE"
+              ? numberString(negotiableAmount)
+              : null,
+          )}
+        </strong>
+        {target.status === "AVAILABLE" && negotiableAmount === 0 ? (
+          <span>이미 목표 이하</span>
+        ) : null}
       </td>
-      <td className="numeric">{formatSignedMoney(target.unit_variance_amount ?? null)}</td>
       <td className="target-evidence-trigger" ref={cellRef}>
         <button
           type="button"
@@ -848,7 +838,7 @@ function TargetPriceRow({
           onClick={() => setOpen((value) => !value)}
         >
           {target.status === "AVAILABLE"
-            ? `${usesAggressiveMinimum ? "최저가 근거 · " : ""}원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
+            ? `${usesAggressiveMinimum ? "최저가 근거 · " : ""}독립 원본 ${target.used_observation_count}건${target.used_observation_count === 1 ? " · 신뢰도 낮음" : ""}`
             : targetStatusLabel(target.status)}
         </button>
         {open && (
@@ -963,6 +953,7 @@ function targetStatusLabel(status: QuoteAnalysisRun["target_lines"][number]["sta
     DATE_UNAVAILABLE: "원본 견적일 확인 필요",
     INDEX_UNAVAILABLE: "물가지수 갱신 필요",
     RATE_GAP: "연간 소비자물가 자료 누락",
+    COMPARABILITY_REVIEW_REQUIRED: "규격·가격 범위 확인 필요",
     MARKET_REFERENCE_REQUIRED: "표준 DB 없음 · 시장가 별도 확인",
     NOT_APPLICABLE: "산정 제외",
   }[status];
@@ -1022,9 +1013,8 @@ function AnalysisRow({
       setMarketLoading(false);
     }
   };
-  const referencePrice = market?.median_price ?? line.reference_price;
   const minimumPrice = market?.minimum_price ?? line.minimum_price;
-  const middlePrice = market?.median_price ?? line.average_price;
+  const middlePrice = market?.median_price ?? line.reference_price;
   const maximumPrice = market?.maximum_price ?? line.maximum_price;
   const varianceAmount =
     market?.median_price && line.quote_unit_price
@@ -1042,7 +1032,6 @@ function AnalysisRow({
       <td className="numeric">{formatUnitQuantity(line.unit, line.quantity)}</td>
       <td className="numeric">{formatMoney(line.quote_unit_price)}</td>
       <td className="numeric">{formatMoney(line.quote_amount)}</td>
-      <td className="numeric reference-basis">{formatMoney(referencePrice)}</td>
       <td
         className="reference-range reference-evidence-trigger"
         tabIndex={hasPriceEvidence ? 0 : undefined}
@@ -1060,7 +1049,7 @@ function AnalysisRow({
               <strong>{formatMoney(minimumPrice)}</strong>
             </span>
             <span className="reference-range-value is-basis">
-              <small>기준</small>
+              <small>중앙값</small>
               <strong>{formatMoney(middlePrice)}</strong>
             </span>
             <span className="reference-range-value">
@@ -1070,7 +1059,9 @@ function AnalysisRow({
             {hasPriceEvidence && (
               <span className="reference-evidence-count">
                 근거 {line.standard_observation_count ?? 0}건
-                {line.evidence_quality === "SINGLE_OBSERVATION" ? " · 신뢰도 낮음" : ""}
+                {line.evidence_quality === "SINGLE_OBSERVATION" ? " · 제출사 1곳" : ""}
+                {line.evidence_quality === "SUPPLIER_UNKNOWN" ? " · 제출사 확인 필요" : ""}
+                {line.evidence_quality === "NON_COMPARABLE" ? " · 규격·가격 범위 확인 필요" : ""}
               </span>
             )}
           </div>
@@ -1163,7 +1154,7 @@ function AnalysisRow({
     </tr>
     {(market || marketError) && (
       <tr className="market-detail-row">
-        <td colSpan={10}>
+        <td colSpan={9}>
           {marketError ? (
             <div className="market-error">
               <span>{marketError}</span>
@@ -1252,6 +1243,16 @@ function MarketResultPanel({
                   재고 {product.stock_quantity ?? product.stock_text ?? "미표시"} · MOQ {product.moq ?? "미표시"}
                 </small>
                 <small>수집 {formatCollectedAt(product.collected_at)}</small>
+                {!product.automatic_price_eligible && (
+                  <div className="market-product-exclusions">
+                    <strong>자동 판정에는 미사용</strong>
+                    <span>
+                      {(product.automatic_price_exclusion_reasons ?? [])
+                        .map(marketExclusionLabel)
+                        .join(" · ") || "상품 조건을 확인해 주세요."}
+                    </span>
+                  </div>
+                )}
                 <div className="market-evidence-links">
                   <a href={product.product_url} target="_blank" rel="noreferrer">
                     원본 상품 보기
@@ -1299,6 +1300,7 @@ function marketBatchStatusLabel(status: MarketLookupProgressItem["status"]) {
   return {
     PENDING: "시장가 자동 조회 중",
     STANDARD_APPLIED: "표준 기준 적용",
+    IDENTIFIER_REQUIRED: "정확한 모델명 확인 필요",
     CACHE_HIT: "저장된 시장가 적용",
     LIVE_HIT: "실시간 시장가 적용",
     REFERENCE_ONLY: "참고가만 확인",
@@ -1438,6 +1440,41 @@ function formatUnitQuantity(unit: string | null, quantity: string | null) {
     normalizedUnit,
   ].filter((value): value is string => value !== null);
   return values.length > 0 ? values.join(" ") : "정보 없음";
+}
+
+function marketExclusionLabel(reason: string) {
+  return {
+    MODEL_NUMBER_REQUIRED: "정확한 모델명 없음",
+    MODEL_NUMBER_NOT_EXACT: "모델명이 정확히 일치하지 않음",
+    MANUFACTURER_REQUIRED: "제품 제조사 확인 필요",
+    MANUFACTURER_MISMATCH: "제품 제조사 불일치",
+    QUANTITY_REQUIRED: "수량 확인 필요",
+    MOQ_NOT_MET: "최소 주문수량 미충족",
+    STOCK_UNCONFIRMED: "재고 미확인",
+    INSUFFICIENT_STOCK: "요청 수량 재고 부족",
+  }[reason] ?? reason;
+}
+
+function buyerTargetValue(
+  quotedValue: string | null,
+  calculatedTarget: string | null,
+) {
+  if (calculatedTarget === null) return null;
+  const target = Number(calculatedTarget);
+  const quote = quotedValue === null ? null : Number(quotedValue);
+  if (!Number.isFinite(target)) return null;
+  if (quote === null || !Number.isFinite(quote)) return calculatedTarget;
+  return String(Math.min(quote, target));
+}
+
+function negotiationAmount(
+  target: QuoteAnalysisRun["target_lines"][number],
+) {
+  if (target.status !== "AVAILABLE" || target.variance_amount === null) {
+    return 0;
+  }
+  const amount = Number(target.variance_amount);
+  return Number.isFinite(amount) ? Math.max(0, amount) : 0;
 }
 
 function numberString(value: number | null) {

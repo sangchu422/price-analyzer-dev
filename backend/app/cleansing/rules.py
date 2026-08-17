@@ -32,6 +32,10 @@ _PLAIN_NUMBER = re.compile(
     r"^[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)"
     r"(?:\.[0-9]+)?$"
 )
+_QUANTITY_WITH_UNIT = re.compile(
+    r"^\s*([+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)"
+    r"\s*([A-Za-z가-힣][A-Za-z0-9가-힣/ ]{0,15})\s*$"
+)
 _SUMMARY_NAMES = {
     "합계",
     "소계",
@@ -221,9 +225,10 @@ def parse_number(value: str | None) -> ParsedNumber:
 def evaluate(raw: object) -> Evaluation:
     name = normalize_text(getattr(raw, "item_name_raw", None))
     spec = normalize_text(getattr(raw, "spec_raw", None))
-    unit = normalize_text(getattr(raw, "unit_raw", None))
+    quantity_raw, recovered_unit = _quantity_and_unit(raw)
+    unit = normalize_text(getattr(raw, "unit_raw", None) or recovered_unit)
     maker = normalize_text(getattr(raw, "maker_raw", None))
-    quantity = parse_number(getattr(raw, "quantity_raw", None))
+    quantity = parse_number(quantity_raw)
     unit_price = parse_number(getattr(raw, "unit_price_raw", None))
     amount = parse_number(getattr(raw, "amount_raw", None))
     common = {
@@ -332,6 +337,20 @@ def evaluate(raw: object) -> Evaluation:
             **common,
         )
     return Evaluation(CleanStatus.INCLUDED, "VALID", None, **common)
+
+
+def _quantity_and_unit(raw: object) -> tuple[object, str | None]:
+    quantity_raw = getattr(raw, "quantity_raw", None)
+    unit_raw = normalize_text(getattr(raw, "unit_raw", None))
+    if unit_raw or quantity_raw is None:
+        return quantity_raw, None
+    match = _QUANTITY_WITH_UNIT.fullmatch(str(quantity_raw))
+    if match is None:
+        return quantity_raw, None
+    recovered_unit = normalize_text(match.group(2))
+    if recovered_unit.upper() not in {unit.upper() for unit in _KNOWN_UNITS}:
+        return quantity_raw, None
+    return match.group(1), recovered_unit
 
 
 def mad_outlier_ids(rows: list[tuple[int, Decimal]]) -> set[int]:

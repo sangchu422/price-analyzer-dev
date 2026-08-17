@@ -6,12 +6,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_session
 from app.analysis.models import QuoteAnalysisRun
 from app.analysis.service import market_lookup_eligibilities
+from app.documents.models import SourceVariant
 from app.market.adapters import DeviceMartAdapter, MouserAdapter
 from app.market.evidence import EvidenceStore
 from app.market.models import MarketPriceObservation
@@ -25,6 +27,7 @@ from app.market.schemas import (
     MarketPrecollectResponse,
 )
 from app.market.service import MarketLookupError, MarketLookupService
+from app.quotes.models import RawQuoteItem
 
 
 router = APIRouter()
@@ -76,6 +79,10 @@ def lookup_market_price(
     run = session.get(QuoteAnalysisRun, analysis_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
+    _ensure_run_contains_raw_items(session, run, [raw_item_id])
+    eligibility = market_lookup_eligibilities(session, [raw_item_id])[0]
+    if eligibility.status != "ELIGIBLE":
+        raise HTTPException(status_code=422, detail=eligibility.detail)
     try:
         return _service(session).lookup_raw_item(
             raw_item_id,
@@ -145,6 +152,7 @@ def lookup_market_prices_automatically(
     if run is None:
         raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
     raw_ids = list(dict.fromkeys(request.raw_item_ids))
+    _ensure_run_contains_raw_items(session, run, raw_ids)
     eligibility = market_lookup_eligibilities(session, raw_ids)
     by_id: dict[int, MarketBatchItemResponse] = {}
     eligible_ids: list[int] = []
@@ -191,6 +199,7 @@ def lookup_market_prices_automatically(
     unavailable_statuses = {
         "NO_REFERENCE",
         "SOURCE_UNAVAILABLE",
+        "IDENTIFIER_REQUIRED",
         "CLEANING_REQUIRED",
         "EXCLUDED",
         "NOT_FOUND",
@@ -200,6 +209,33 @@ def lookup_market_prices_automatically(
         completed=sum(item.status not in unavailable_statuses for item in items),
         unavailable=sum(item.status in unavailable_statuses for item in items),
     )
+
+
+def _ensure_run_contains_raw_items(
+    session: Session,
+    run: QuoteAnalysisRun,
+    raw_item_ids: list[int],
+) -> None:
+    if not raw_item_ids:
+        return
+    belonging_ids = set(
+        session.scalars(
+            select(RawQuoteItem.id)
+            .join(
+                SourceVariant,
+                SourceVariant.id == RawQuoteItem.source_variant_id,
+            )
+            .where(
+                RawQuoteItem.id.in_(raw_item_ids),
+                SourceVariant.document_id == run.document_id,
+            )
+        )
+    )
+    if belonging_ids != set(raw_item_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="해당 분석 실행에 포함된 품목만 시장가를 조회할 수 있습니다.",
+        )
 
 
 @router.post("/precollect", response_model=MarketPrecollectResponse)

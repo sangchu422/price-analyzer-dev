@@ -28,6 +28,7 @@ from app.matching.candidates import (
     rank_candidate_batch,
 )
 from app.matching.normalization import normalize_search_text
+from app.market.adapters.base import market_model_tokens
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
@@ -60,12 +61,15 @@ MarketLookupStatus = Literal["NOT_REQUIRED", "FUTURE_MARKET_LOOKUP"]
 MarketEligibilityStatus = Literal[
     "ELIGIBLE",
     "STANDARD_APPLIED",
+    "IDENTIFIER_REQUIRED",
     "CLEANING_REQUIRED",
     "EXCLUDED",
     "NOT_FOUND",
 ]
 
 PERCENT_QUANTUM = Decimal("0.000001")
+MAX_UNSPECIFIED_PRICE_SPREAD_RATIO = Decimal("2")
+_NON_PRODUCT_MODEL_MARKERS = ("CUSTOM", "JIG", "제작", "가공")
 
 
 class AnalysisNotFound(LookupError):
@@ -604,6 +608,25 @@ def _market_lookup_eligibility(
             "STANDARD_APPLIED",
             "활성 표준 단가가 있어 시장가를 조회하지 않았습니다.",
         )
+    market_query = " ".join(
+        value
+        for value in (
+            clean.maker_norm,
+            clean.item_name_norm,
+            clean.spec_norm,
+        )
+        if value
+    )
+    model_tokens = market_model_tokens(market_query)
+    if not model_tokens or all(
+        any(marker in token for marker in _NON_PRODUCT_MODEL_MARKERS)
+        for token in model_tokens
+    ):
+        return MarketLookupEligibility(
+            raw_item_id,
+            "IDENTIFIER_REQUIRED",
+            "정확한 제품 모델명이 없어 자동 시장가 조회에서 제외했습니다.",
+        )
     return MarketLookupEligibility(
         raw_item_id,
         "ELIGIBLE",
@@ -735,9 +758,17 @@ def _classify_line(
             )
         quote_price = clean.unit_price
         assessment: Assessment = "REVIEW_REQUIRED"
+        comparison_requires_review = _comparison_requires_review(
+            item_version,
+            price,
+        )
         amount = None
         percent = None
-        if quote_price is not None and quote_price.is_finite():
+        if (
+            not comparison_requires_review
+            and quote_price is not None
+            and quote_price.is_finite()
+        ):
             amount = quote_price - price.median_price
             exact_percent = amount / price.median_price * Decimal("100")
             assessment = assess_variance(
@@ -765,7 +796,11 @@ def _classify_line(
             standard_price_version_id=price.id,
             standard_price_item_version_id=price.standard_item_version_id,
             standard_observation_count=price.observation_count,
-            evidence_quality=evidence_quality(price.supplier_count).value,
+            evidence_quality=(
+                "NON_COMPARABLE"
+                if comparison_requires_review
+                else evidence_quality(price.supplier_count).value
+            ),
             market_price_lookup_required=False,
             market_price_lookup_status="NOT_REQUIRED",
             candidates=(),
@@ -843,6 +878,22 @@ def _unpriced_line(
         ),
         candidates=candidates,
         source=source,
+    )
+
+
+def _comparison_requires_review(
+    item_version: StandardItemVersion | None,
+    price: StandardPriceVersion,
+) -> bool:
+    """Do not automate a broad price comparison when the model/spec is absent."""
+
+    if item_version is None or normalize_search_text(item_version.canonical_spec):
+        return False
+    if price.minimum_price <= 0:
+        return True
+    return (
+        price.maximum_price / price.minimum_price
+        > MAX_UNSPECIFIED_PRICE_SPREAD_RATIO
     )
 
 

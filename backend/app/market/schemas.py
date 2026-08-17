@@ -20,6 +20,7 @@ MarketLookupOutcome = Literal[
 ]
 MarketBatchStatus = Literal[
     "STANDARD_APPLIED",
+    "IDENTIFIER_REQUIRED",
     "CACHE_HIT",
     "LIVE_HIT",
     "REFERENCE_ONLY",

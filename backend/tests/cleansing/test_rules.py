@@ -67,6 +67,29 @@ def test_zero_quantity_and_zero_amount_keep_valid_unit_price(make_raw) -> None:
 
 
 @pytest.mark.parametrize(
+    ("quantity", "expected_unit"),
+    [("3SET", "SET"), ("3식", "식")],
+)
+def test_quantity_cell_with_known_unit_is_split(
+    make_raw,
+    quantity: str,
+    expected_unit: str,
+) -> None:
+    result = evaluate(
+        make_raw(
+            quantity=quantity,
+            unit=None,
+            unit_price="1000",
+            amount="3000",
+        )
+    )
+
+    assert result.status is CleanStatus.INCLUDED
+    assert result.quantity == Decimal("3")
+    assert result.unit_norm == expected_unit
+
+
+@pytest.mark.parametrize(
     "item_name",
     [
         "합계",

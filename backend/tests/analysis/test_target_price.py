@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -62,6 +63,7 @@ def _observation(
     quality: str,
     *,
     unit_price: Decimal | None = None,
+    document_id: int | None = None,
 ) -> tuple:
     evidence = json.dumps(
         {
@@ -77,7 +79,7 @@ def _observation(
         unit_price if unit_price is not None else Decimal("100") if raw_id == 1 else Decimal("1000"),
         date(2016, 1, 15),
         evidence,
-        20 + raw_id,
+        document_id if document_id is not None else 20 + raw_id,
         f"historical-{raw_id}.xlsx",
         30 + raw_id,
         "Sheet1",
@@ -210,6 +212,47 @@ def test_cpi_purchase_target_uses_lowest_adjusted_historical_price() -> None:
     assert result.target_amount == Decimal("2433088")
     assert [item.raw_item_id for item in result.evidence] == [1, 2]
     assert "가장 낮은 금액을 협상 목표로 채택" in result.reason
+
+
+def test_cpi_target_counts_repeated_rows_from_one_quote_once() -> None:
+    result = _target_line_from_cpi(
+        _matched_line(),
+        (
+            _observation(
+                1,
+                "SOURCE_CONFIRMED",
+                unit_price=Decimal("1000000"),
+                document_id=41,
+            ),
+            _observation(
+                2,
+                "SOURCE_CONFIRMED",
+                unit_price=Decimal("1200000"),
+                document_id=41,
+            ),
+        ),
+        _cpi_rates_2017_to_2025(),
+        "2025",
+        77,
+    )
+
+    assert result.status == "AVAILABLE"
+    assert result.used_observation_count == 1
+    assert result.excluded_observation_count == 1
+    assert result.evidence[0].raw_item_id == 1
+
+
+def test_cpi_target_waits_when_standard_group_is_not_comparable() -> None:
+    result = _target_line_from_cpi(
+        replace(_matched_line(), evidence_quality="NON_COMPARABLE"),
+        (_observation(1, "SOURCE_CONFIRMED"),),
+        _cpi_rates_2017_to_2025(),
+        "2025",
+        77,
+    )
+
+    assert result.status == "COMPARABILITY_REVIEW_REQUIRED"
+    assert result.target_unit_price is None
 
 
 def test_cpi_target_reports_rate_gap_without_ppi_fallback() -> None:

@@ -1442,7 +1442,7 @@
 .target-method-disclosure p { margin: 0; }
 .target-method-disclosure a { color: var(--analysis-accent); font-weight: 750; }
 .target-price-toolbar { padding-top: 0; }
-.target-price-table { min-width: 1320px; }
+.target-price-table { min-width: 1120px; }
 .target-price-table .target-unit-price { color: #197451; font-weight: 800; }
 .target-price-table td:nth-child(7) strong,
 .target-price-table td:nth-child(7) span { display: block; }
@@ -1691,7 +1691,7 @@
 
 .analysis-result-table {
   width: 100%;
-  min-width: 1460px;
+  min-width: 1320px;
   border-collapse: collapse;
   font-size: 10px;
 }
@@ -1979,6 +1979,22 @@
 .market-product-price {
   color: #101828;
   font: 800 15px/1.2 var(--font-sans);
+}
+
+.market-product-exclusions {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: #7a4d0b;
+  background: #fffaeb;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.market-product-exclusions strong {
+  font-size: 9px;
 }
 
 .market-evidence-links {

@@ -165,10 +165,10 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
     await screen.findByRole("button", { name: /SENSOR/ }),
   ).toBeVisible();
   expect(
-    screen.getAllByText("근거 1건 · 공급사 1곳").length,
+    screen.getAllByText("가격 근거 1건 · 제출사 1곳").length,
   ).toBeGreaterThan(0);
   expect(
-    screen.getAllByText("1건 · 공급사 1곳").length,
+    screen.getAllByText("1건 · 견적 제출사 확인 필요").length,
   ).toBeGreaterThan(0);
   expect(screen.getByText(/최근 갱신/)).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "최저" })).toBeVisible();

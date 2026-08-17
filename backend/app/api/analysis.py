@@ -223,6 +223,7 @@ class TargetLineResponse(BaseModel):
         "DATE_UNAVAILABLE",
         "INDEX_UNAVAILABLE",
         "RATE_GAP",
+        "COMPARABILITY_REVIEW_REQUIRED",
         "MARKET_REFERENCE_REQUIRED",
         "NOT_APPLICABLE",
     ]
@@ -569,6 +570,7 @@ _TARGET_STATUS_LABELS = {
     "DATE_UNAVAILABLE": "원본 견적일 확인 필요",
     "INDEX_UNAVAILABLE": "물가지수 갱신 필요",
     "RATE_GAP": "연간 소비자물가 자료 누락",
+    "COMPARABILITY_REVIEW_REQUIRED": "규격·가격 범위 확인 필요",
     "MARKET_REFERENCE_REQUIRED": "표준 DB 없음 · 시장가 별도 확인",
     "NOT_APPLICABLE": "산정 제외",
 }
@@ -614,13 +616,30 @@ def export_target_price_run(
 
     headers = [
         "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
-        "구매 목표 단가(개당)", "목표 금액", "목표가 대비 금액", "목표가 대비 비율(%)",
-        "목표가 대비 개당차액",
-        "산정 상태",
+        "협상 목표 단가(개당)", "협상 목표금액", "네고 가능금액", "산정 상태",
     ]
     rows = []
+    total_negotiable = Decimal("0")
     for line in lines:
         target = target_by_raw_item_id.get(line.raw_item_id)
+        negotiable = Decimal("0")
+        if (
+            target is not None
+            and target.target_status == "AVAILABLE"
+            and target.target_variance_amount is not None
+            and target.target_variance_amount > 0
+        ):
+            negotiable = target.target_variance_amount
+        total_negotiable += negotiable
+        target_unit = target.target_unit_price if target else None
+        if (
+            target_unit is not None
+            and line.quote_unit_price is not None
+        ):
+            target_unit = min(target_unit, line.quote_unit_price)
+        target_amount = target.target_amount if target else None
+        if target_amount is not None and line.quote_amount is not None:
+            target_amount = min(target_amount, line.quote_amount)
         rows.append([
             line.item_name or "",
             line.spec or "",
@@ -628,15 +647,30 @@ def export_target_price_run(
             line.quantity,
             line.quote_unit_price,
             line.quote_amount,
-            target.target_unit_price if target else None,
-            target.target_amount if target else None,
-            target.target_variance_amount if target else None,
-            target.target_variance_percent if target else None,
-            target.target_unit_variance_amount if target else None,
+            target_unit,
+            target_amount,
+            negotiable,
             _TARGET_STATUS_LABELS.get(target.target_status, target.target_status)
             if target
             else "—",
         ])
+    overall_target = (
+        None
+        if run.quote_total_amount is None
+        else run.quote_total_amount - total_negotiable
+    )
+    rows.append([
+        "합계",
+        "",
+        "",
+        None,
+        None,
+        run.quote_total_amount,
+        None,
+        overall_target,
+        total_negotiable,
+        "전체 견적 - 네고 가능금액",
+    ])
     return build_xlsx_response(
         sheet_title="구매 목표가 분석 결과",
         headers=headers,

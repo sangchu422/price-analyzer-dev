@@ -12,6 +12,20 @@ export function EvidenceBadge({
   if (quality === null) {
     return <span className="evidence-badge is-empty">가격 근거 없음</span>;
   }
+  if (quality === "SUPPLIER_UNKNOWN") {
+    return (
+      <span className="evidence-badge is-unknown">
+        {`가격 근거 ${count}건 · 제출사 확인 필요`}
+      </span>
+    );
+  }
+  if (quality === "NON_COMPARABLE") {
+    return (
+      <span className="evidence-badge is-unknown">
+        규격·가격 범위 확인 필요
+      </span>
+    );
+  }
   const suppliers = supplierCount ?? count;
   return (
     <span
@@ -19,7 +33,7 @@ export function EvidenceBadge({
         quality === "SINGLE_OBSERVATION" ? "is-single" : "is-multiple"
       }`}
     >
-      {`근거 ${count}건 · 공급사 ${suppliers}곳`}
+      {`가격 근거 ${count}건 · 제출사 ${suppliers}곳`}
     </span>
   );
 }

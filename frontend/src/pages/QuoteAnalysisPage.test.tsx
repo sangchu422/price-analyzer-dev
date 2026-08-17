@@ -254,7 +254,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(screen.getByText("DeviceMart·Mouser 캐시 우선 조회")).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "개당 단가" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "구매 금액" })).toBeVisible();
-  expect(screen.getByRole("columnheader", { name: "참조 최저·기준·최고" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "참조 최저·중앙값·최고" })).toBeVisible();
   expect(screen.getAllByText("2 EA").length).toBeGreaterThan(0);
   expect(screen.queryByText("EA · —")).not.toBeInTheDocument();
   const servo = screen.getByRole("row", { name: /SERVO MOTOR/ });
@@ -265,43 +265,33 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
   expect(
-    screen.getByRole("columnheader", { name: "구매 목표 단가(개당)" }),
+    screen.getByRole("columnheader", { name: "협상 목표 단가(개당)" }),
   ).toBeVisible();
   expect(
-    screen.getByRole("columnheader", { name: "목표가 대비(개당)" }),
+    screen.getByRole("columnheader", { name: "네고 가능금액" }),
   ).toBeVisible();
-  const coveredRow = document.querySelector(".target-covered-quote-row");
-  expect(coveredRow).not.toBeNull();
-  expect(coveredRow).toHaveTextContent("1,820원");
-  expect(coveredRow).toHaveTextContent("630원");
-  expect(coveredRow).toHaveTextContent("1,260원");
-  expect(coveredRow).toHaveTextContent("+560원");
-  expect(coveredRow).toHaveTextContent("(+44.44%)");
   const targetTable = document.querySelector(".target-price-table");
   expect(targetTable).not.toBeNull();
   const targetItem1Row = within(targetTable as HTMLElement).getByRole("row", {
     name: /ITEM 1/,
   });
   const targetItem1Cells = within(targetItem1Row).getAllByRole("cell");
-  expect(targetItem1Cells[6]).toHaveTextContent("+80원");
-  expect(targetItem1Cells[7]).toHaveTextContent("+40원");
+  expect(targetItem1Cells[6]).toHaveTextContent("80원");
   const totalRow = document.querySelector(".target-total-row");
   expect(totalRow).not.toBeNull();
   expect(totalRow).toHaveTextContent("2,080원");
-  expect(totalRow).toHaveTextContent("630원");
-  expect(totalRow).toHaveTextContent("1,260원");
-  expect(totalRow).toHaveTextContent("+560원");
-  expect(totalRow).toHaveTextContent("(+44.44%)");
+  expect(totalRow).toHaveTextContent("1,520원");
+  expect(totalRow).toHaveTextContent("560원");
   expect(screen.queryByText("물가보정 기준")).not.toBeInTheDocument();
   await user.click(screen.getByText("구매 목표가 산정 방식 보기"));
-  expect(screen.getByText(/현재 가치로 환산한 최저값을 협상 목표/)).toBeVisible();
+  expect(screen.getByText(/실제 확인된 최저 단가를 물가 보정해 협상 목표/)).toBeVisible();
   expect(screen.getByText(/2025년 확정 소비자물가까지 보정한 뒤 가장 낮은 단가/)).toBeVisible();
   expect(screen.getByText("전체 품목의 77.8%")).toBeVisible();
   expect(screen.getByRole("link", { name: "KOSIS 공식 통계 보기" })).toHaveAttribute(
     "href",
     expect.stringContaining("DT_1J22041"),
   );
-  await user.click(screen.getAllByText("최저가 근거 · 원본 2건")[0]);
+  await user.click(screen.getAllByText("최저가 근거 · 독립 원본 2건")[0]);
   expect(screen.getByText("협상 목표로 채택")).toBeVisible();
   expect(screen.getByText(/보정계수 ×1.034285/)).toBeVisible();
   expect(document.querySelector(".inflation-evidence-detail")).toHaveTextContent(
@@ -471,7 +461,7 @@ it("applies a collected market assessment to the row and overall summary", async
   );
 
   expect(await within(row).findByText("시장가 대비 고가")).toBeVisible();
-  expect(within(row).getAllByText("100원")).toHaveLength(2);
+  expect(within(row).getByText("100원")).toBeVisible();
   expect(screen.getByText("고가 3건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 0건")).toBeVisible();
 });
