@@ -412,6 +412,25 @@ def test_malformed_upload_preserves_evidence_without_database_rows(
     assert api_session.scalar(select(func.count(RawQuoteItem.id))) == 0
 
 
+def test_irm_protected_upload_reports_a_clear_error(
+    client: TestClient,
+    api_session: Session,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    submission_root = tmp_path / "submitted"
+    monkeypatch.setattr(settings, "submission_folder", submission_root)
+    content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64
+
+    response = _post(client, content, filename="irm-protected.xlsx")
+
+    assert response.status_code == 422
+    body = response.json()["detail"]
+    assert body["error_code"] == "IRM_PROTECTED_SOURCE"
+    assert "IRM" in body["message"]
+    assert api_session.scalar(select(func.count(SourceDocument.id))) == 0
+
+
 def test_database_failure_rolls_back_ingestion_but_preserves_evidence(
     client: TestClient,
     api_session: Session,

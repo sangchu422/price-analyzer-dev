@@ -27,6 +27,7 @@ from app.ingestion.service import (
     sha256,
 )
 from app.ingestion.readers import (
+    EncryptedQuoteFileError,
     OcrReviewRequiredError,
     OcrUnavailableError,
     SUPPORTED_QUOTE_EXTENSIONS,
@@ -464,6 +465,7 @@ def prepare_source_groups(
 EXPECTED_INGESTION_ERRORS = (
     UnsupportedQuoteLayoutError,
     UnsafeQuoteFileError,
+    EncryptedQuoteFileError,
     OcrUnavailableError,
     OcrReviewRequiredError,
     SourceFileChangedError,
@@ -498,6 +500,12 @@ def ingestion_issue(
     elif isinstance(exc, SourceFileChangedError):
         code = "SOURCE_CHANGED"
         detail = "source file changed during ingestion"
+    elif isinstance(exc, EncryptedQuoteFileError):
+        code = "IRM_PROTECTED_SOURCE"
+        detail = (
+            "IRM 보안이 걸린 파일이거나 지원하지 않는 구버전 형식입니다. "
+            "보안해제 후 최신 xlsx로 다시 저장해서 업로드해 주세요."
+        )
     elif isinstance(
         exc,
         (

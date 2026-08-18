@@ -98,6 +98,18 @@ class OcrReviewRequiredError(ValueError):
     """OCR ran safely, but no supported quote table could be confirmed."""
 
 
+class EncryptedQuoteFileError(ValueError):
+    """A quote file is IRM/DRM-protected or an unreadable legacy container."""
+
+
+_OLE2_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_ole2_container(path: Path) -> bool:
+    with path.open("rb") as handle:
+        return handle.read(len(_OLE2_SIGNATURE)) == _OLE2_SIGNATURE
+
+
 @dataclass(frozen=True)
 class ParsedRow:
     sheet: str | None
@@ -402,7 +414,15 @@ def _safe_archive_member_name(name: str) -> str:
 
 
 def _validate_xlsx_archive(path: Path) -> None:
-    with zipfile.ZipFile(path) as archive:
+    try:
+        archive_handle = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        if _is_ole2_container(path):
+            raise EncryptedQuoteFileError(
+                "xlsx source is an IRM-protected or legacy OLE2 container"
+            ) from None
+        raise
+    with archive_handle as archive:
         entries = archive.infolist()
         if len(entries) > MAX_XLSX_ARCHIVE_ENTRIES:
             raise UnsafeQuoteFileError("xlsx archive has too many entries")
