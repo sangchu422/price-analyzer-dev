@@ -1123,3 +1123,19 @@ export function syncPpiSeries(signal?: AbortSignal) {
     { method: "POST", signal },
   );
 }
+
+export interface HchatSettings {
+  enabled: boolean;
+  has_key: boolean;
+}
+
+export function getHchatSettings(signal?: AbortSignal) {
+  return requestJson<HchatSettings>("/api/settings/hchat", { signal });
+}
+
+export function updateHchatSettings(apiKey: string) {
+  return requestJson<HchatSettings>("/api/settings/hchat", {
+    method: "PUT",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}

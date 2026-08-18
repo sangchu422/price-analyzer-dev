@@ -34,6 +34,7 @@ from app.pricing.service import (
     calculate_standard_prices,
 )
 from app.quotes.models import RawQuoteItem
+from app.settings.service import resolve_settings_with_stored_hchat_key
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -415,6 +416,8 @@ def build_catalog_embedding_index(
 
     fingerprint = catalog_fingerprint(session)
     item_ids, texts = _catalog_index_rows(session)
+    if not mock:
+        settings = resolve_settings_with_stored_hchat_key(session, settings)
     if mock:
         client = DeterministicMockEmbeddingClient()
         status = "MOCK_ONLY"

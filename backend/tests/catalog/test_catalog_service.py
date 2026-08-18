@@ -34,6 +34,7 @@ from app.documents.models import SourceDocument, SourceVariant
 from app.embeddings.index import IndexMetadata, save_index
 from app.parsing.models import ParseRunStatus, SourceParseOutput, SourceParseRun
 from app.quotes.models import RawQuoteItem
+from app.settings.service import HCHAT_API_KEY_SETTING, set_setting
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -282,6 +283,64 @@ def test_valid_configured_openai_index_enriches_candidates(
     assert result.candidates[0].score.embedding_status == "AVAILABLE"
     assert result.candidates[0].score.embedding_score == Decimal("1.000000")
     assert len(requests) == 1
+
+
+def test_stored_hchat_key_overrides_the_env_key(
+    session: Session,
+    tmp_path,
+) -> None:
+    raw = _raw_item(session)
+    item = _standard_item(session)
+    index_path = tmp_path / "standard-items.npz"
+    save_index(
+        index_path,
+        item_ids=np.array([item.id]),
+        vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+        metadata=IndexMetadata(
+            model="office-model",
+            dimension=2,
+            item_count=1,
+            catalog_fingerprint=catalog_fingerprint(session),
+            normalization_version="match-v1",
+            created_at=datetime.now(timezone.utc),
+        ),
+    )
+    set_setting(session, HCHAT_API_KEY_SETTING, "personal-key")
+    session.commit()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "office-model",
+                "data": [{"index": 0, "embedding": [1.0, 0.0]}],
+            },
+        )
+
+    runtime = build_candidate_embedding_runtime(
+        session,
+        settings=Settings(
+            hchat_embedding_enabled=True,
+            hchat_embedding_endpoint="https://intranet.invalid/embeddings",
+            hchat_embedding_api_key=SecretStr("env-key"),
+            hchat_embedding_model="office-model",
+            hchat_embedding_api_style="openai",
+            embedding_index_file=index_path,
+        ),
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    candidate_matches(
+        session,
+        raw.id,
+        top_n=5,
+        embedding_runtime=runtime,
+    )
+
+    assert len(requests) == 1
+    assert requests[0].headers["authorization"] == "Bearer personal-key"
 
 
 def test_index_mismatch_falls_back_without_http(

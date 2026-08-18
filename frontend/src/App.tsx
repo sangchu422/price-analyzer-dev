@@ -4,6 +4,7 @@ import { AppNavigation } from "./components/AppNavigation";
 import { CleansingReviewPage } from "./pages/CleansingReviewPage";
 import { GroupingReviewPage } from "./pages/GroupingReviewPage";
 import { QuoteAnalysisPage } from "./pages/QuoteAnalysisPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { StandardPricesPage } from "./pages/StandardPricesPage";
 import { useQuoteAnalysisWorkflowState } from "./state/quoteAnalysisState";
 import { applyTheme, getStoredTheme, type AppTheme } from "./theme";
@@ -64,6 +65,9 @@ export function App() {
       break;
     case "/analysis":
       page = <QuoteAnalysisPage workflow={quoteAnalysisWorkflow} />;
+      break;
+    case "/settings":
+      page = <SettingsPage />;
       break;
     default:
       page = (

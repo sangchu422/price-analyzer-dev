@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from openpyxl import Workbook
+from pydantic import SecretStr
 import pytest
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import OperationalError
@@ -19,7 +20,7 @@ from app.catalog.cli import (
     report_standard_price_drafts,
     seed_exact_catalog,
 )
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.catalog.models import (
     ItemMembershipDecision,
     MembershipStatus,
@@ -41,6 +42,7 @@ from app.pricing.service import (
     calculate_standard_price,
 )
 from app.quotes.models import RawQuoteItem
+from app.settings.service import HCHAT_API_KEY_SETTING, set_setting
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -270,6 +272,55 @@ def test_seed_holds_exact_subgroups_when_units_conflict(
         assert report.memberships_created == 0
         assert report.conflicts_held_for_review == 4
         assert session.scalar(select(func.count(StandardItem.id))) == 0
+
+
+def test_embedding_index_build_prefers_the_stored_hchat_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.catalog.cli as catalog_cli
+
+    root = tmp_path / "quotes"
+    _write_quote(
+        root / "a.xlsx",
+        [["SERVO MOTOR", "SGMAH-04AAA61", "EA", 1, 100, 100]],
+    )
+    index_path = tmp_path / "index.npz"
+    captured_settings: list[Settings] = []
+
+    def fake_build_embedding_client(passed_settings, *args, **kwargs):
+        captured_settings.append(passed_settings)
+        from app.embeddings.mock import DeterministicMockEmbeddingClient
+
+        return DeterministicMockEmbeddingClient()
+
+    monkeypatch.setattr(
+        catalog_cli, "build_embedding_client", fake_build_embedding_client
+    )
+
+    with _session() as session:
+        ingest_corpus(session, root)
+        seed_exact_catalog(session)
+        set_setting(session, HCHAT_API_KEY_SETTING, "stored-key")
+        session.commit()
+
+        catalog_cli.build_catalog_embedding_index(
+            session,
+            index_path=index_path,
+            settings=Settings(
+                hchat_embedding_enabled=True,
+                hchat_embedding_endpoint="https://intranet.invalid/embeddings",
+                hchat_embedding_api_key=SecretStr("env-key"),
+                hchat_embedding_model="office-model",
+                hchat_embedding_api_style="openai",
+            ),
+        )
+
+    assert len(captured_settings) == 1
+    assert (
+        captured_settings[0].hchat_embedding_api_key.get_secret_value()
+        == "stored-key"
+    )
 
 
 def test_mock_index_is_labeled_and_repeatable_while_drafts_are_read_only(

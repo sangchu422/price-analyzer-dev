@@ -38,6 +38,7 @@ from app.matching.candidates import (
 )
 from app.parsing.projection import current_raw_item_ids
 from app.quotes.models import RawQuoteItem
+from app.settings.service import resolve_settings_with_stored_hchat_key
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -278,6 +279,7 @@ def build_candidate_embedding_runtime(
 
     if not settings.hchat_embedding_enabled:
         return CandidateEmbeddingRuntime(None, None, None)
+    settings = resolve_settings_with_stored_hchat_key(session, settings)
     fully_configured = bool(
         settings.hchat_embedding_endpoint
         and settings.hchat_embedding_api_key

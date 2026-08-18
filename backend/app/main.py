@@ -7,6 +7,7 @@ from app.api import (
     documents,
     market,
     pricing,
+    settings,
     submissions,
 )
 from app.db import models as _models
@@ -49,6 +50,11 @@ app.include_router(
     market.router,
     prefix="/api/market",
     tags=["market"],
+)
+app.include_router(
+    settings.router,
+    prefix="/api/settings",
+    tags=["settings"],
 )
 
 

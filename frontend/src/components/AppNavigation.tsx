@@ -1,4 +1,11 @@
-import { Database, Moon, ScanSearch, ShieldCheck, Sun } from "lucide-react";
+import {
+  Database,
+  Moon,
+  ScanSearch,
+  Settings,
+  ShieldCheck,
+  Sun,
+} from "lucide-react";
 
 import type { AppTheme } from "../theme";
 
@@ -6,6 +13,7 @@ const destinations = [
   { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
   { path: "/standard-prices", label: "표준 DB", icon: Database },
   { path: "/analysis", label: "신규 견적 분석", icon: ScanSearch },
+  { path: "/settings", label: "설정", icon: Settings },
 ] as const;
 
 export function AppNavigation({

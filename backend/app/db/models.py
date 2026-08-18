@@ -38,8 +38,10 @@ from app.analysis.models import (
     QuoteAnalysisRun,
     QuoteAnalysisTargetEvidence,
 )
+from app.settings.models import AppSetting
 
 __all__ = [
+    "AppSetting",
     "CleanDecision",
     "CleanStatus",
     "DocumentMetadataVersion",
