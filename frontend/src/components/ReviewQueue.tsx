@@ -80,7 +80,7 @@ export function ReviewQueue({
       <div className="queue-heading">
         <span>검토 항목</span>
         {isSearching ? (
-          <span className="queue-progress" role="status" aria-live="polite">
+          <span className="queue-progress shimmer-text" role="status" aria-live="polite">
             검색 중…
           </span>
         ) : (
@@ -134,7 +134,11 @@ export function ReviewQueue({
           disabled={isFetchingNextPage || resultsLocked}
           onClick={onLoadMore}
         >
-          {isFetchingNextPage ? "불러오는 중…" : "다음 항목 불러오기"}
+          {isFetchingNextPage ? (
+            <span className="shimmer-text">불러오는 중…</span>
+          ) : (
+            "다음 항목 불러오기"
+          )}
         </button>
       )}
     </aside>

@@ -215,6 +215,44 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   );
 });
 
+it("shows a shimmering status message while the catalog is still loading", async () => {
+  let resolveCatalog!: (response: Response) => void;
+  const catalogResponse = new Promise<Response>((resolve) => {
+    resolveCatalog = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/metadata-audit/summary")) {
+        return jsonResponse(sourceCoverage);
+      }
+      if (url.includes("/api/catalog/standard-items?")) {
+        return catalogResponse;
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+
+  renderApp("/standard-prices");
+
+  expect(screen.getByText("목록을 불러오는 중…")).toHaveClass("shimmer-text");
+
+  resolveCatalog(
+    await jsonResponse({
+      items: [sensor],
+      next_cursor: null,
+      limit: 50,
+      latest_build: build,
+    }),
+  );
+
+  expect(
+    await screen.findByRole("button", { name: /SENSOR/ }),
+  ).toBeVisible();
+  expect(screen.queryByText("목록을 불러오는 중…")).not.toBeInTheDocument();
+});
+
 it("keeps an analysis evidence link pinned to its immutable price version", async () => {
   const requests: string[] = [];
   const snapshot = {

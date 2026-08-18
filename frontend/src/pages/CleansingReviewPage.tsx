@@ -301,7 +301,7 @@ function StateScreen({
       aria-busy={busy}
     >
       <span className="brand-mark" aria-hidden="true">P</span>
-      <p>{message}</p>
+      <p className={busy ? "shimmer-text" : undefined}>{message}</p>
       {action}
     </main>
   );

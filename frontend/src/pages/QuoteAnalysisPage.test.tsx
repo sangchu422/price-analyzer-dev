@@ -466,6 +466,84 @@ it("applies a collected market assessment to the row and overall summary", async
   expect(screen.getByText("시장가 확인 필요 0건")).toBeVisible();
 });
 
+it("shows a busy label on the market panel while a refresh is in flight", async () => {
+  let resolveRefresh!: (response: Response) => void;
+  const refreshResponse = new Promise<Response>((resolve) => {
+    resolveRefresh = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/submissions") {
+        return jsonResponse(successfulSubmission(), { status: 201 });
+      }
+      if (url.includes("/api/analysis/documents/91")) {
+        return jsonResponse(analysis);
+      }
+      if (url.includes("/api/market/lookup/8")) {
+        if (url.includes("force_refresh=true")) {
+          return refreshResponse;
+        }
+        return jsonResponse({
+          raw_item_id: 8,
+          query: "SERVO MOTOR SGMAH-04AAA61",
+          quote_unit_price: "130",
+          quantity: "2",
+          cache_state: "LIVE",
+          assessment: "HIGH",
+          minimum_price: "90",
+          median_price: "100",
+          maximum_price: "110",
+          variance_percent: "30",
+          products: [],
+          source_failures: [],
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }),
+  );
+  renderApp("/analysis");
+
+  await userEvent.upload(
+    screen.getByLabelText("신규 견적서"),
+    new File(["quote"], "신규견적.xlsx"),
+  );
+  await userEvent.type(screen.getByLabelText("접수자"), "설비구매팀");
+  await userEvent.click(screen.getByRole("button", { name: "견적 분석 시작" }));
+  await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  const row = screen.getByRole("row", { name: /SERVO MOTOR/ });
+  await userEvent.click(
+    within(row).getByRole("button", { name: "시장가 조회" }),
+  );
+  await within(row).findByText("시장가 대비 고가");
+
+  await userEvent.click(
+    screen.getByRole("button", { name: "실시간 갱신" }),
+  );
+
+  expect(screen.getByRole("button", { name: "갱신 중…" })).toBeDisabled();
+
+  resolveRefresh(
+    await jsonResponse({
+      raw_item_id: 8,
+      query: "SERVO MOTOR SGMAH-04AAA61",
+      quote_unit_price: "130",
+      quantity: "2",
+      cache_state: "LIVE",
+      assessment: "REVIEW",
+      minimum_price: "90",
+      median_price: "100",
+      maximum_price: "110",
+      variance_percent: "10",
+      products: [],
+      source_failures: [],
+    }),
+  );
+
+  expect(await within(row).findByText("시장가 대비 주의")).toBeVisible();
+});
+
 it("treats a market-sourced REVIEW assessment as 주의, not 판정 대기", async () => {
   vi.stubGlobal(
     "fetch",

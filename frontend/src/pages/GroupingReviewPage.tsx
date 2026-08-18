@@ -280,7 +280,9 @@ export function GroupingReviewPage() {
             <strong>미분류 품목</strong>
             <span>{items.length}건</span>
           </header>
-          {unmatched.isPending && <p className="inline-state">불러오는 중…</p>}
+          {unmatched.isPending && (
+            <p className="inline-state shimmer-text" role="status">불러오는 중…</p>
+          )}
           {unmatched.isError && (
             <p className="inline-state is-error">목록을 불러오지 못했습니다.</p>
           )}
@@ -315,9 +317,11 @@ export function GroupingReviewPage() {
               disabled={unmatched.isFetchingNextPage || busy}
               onClick={() => void unmatched.fetchNextPage()}
             >
-              {unmatched.isFetchingNextPage
-                ? "다음 품목 불러오는 중…"
-                : "다음 품목 불러오기"}
+              {unmatched.isFetchingNextPage ? (
+                <span className="shimmer-text">다음 품목 불러오는 중…</span>
+              ) : (
+                "다음 품목 불러오기"
+              )}
             </button>
           )}
           {!unmatched.isPending && items.length === 0 && (
@@ -333,7 +337,9 @@ export function GroupingReviewPage() {
             </div>
           )}
           {selectedId !== null && detail.isPending && (
-            <div className="empty-detail"><p>후보와 근거를 불러오는 중…</p></div>
+            <div className="empty-detail">
+              <p className="shimmer-text" role="status">후보와 근거를 불러오는 중…</p>
+            </div>
           )}
           {selectedId !== null && detail.isError && (
             <div className="empty-detail is-error" role="alert">

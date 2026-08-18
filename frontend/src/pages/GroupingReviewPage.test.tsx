@@ -89,6 +89,62 @@ const candidate = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GroupingReviewPage", () => {
+  it("shows a shimmering status message while the unmatched list is loading", async () => {
+    let resolveUnmatched!: (response: Response) => void;
+    const unmatchedResponse = new Promise<Response>((resolve) => {
+      resolveUnmatched = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/unmatched")) return unmatchedResponse;
+        throw new Error(`unexpected request: ${url}`);
+      }),
+    );
+    renderApp("/grouping");
+
+    expect(screen.getByText("불러오는 중…")).toHaveClass("shimmer-text");
+
+    resolveUnmatched(await jsonResponse(unmatched));
+
+    expect(
+      await screen.findByRole("button", { name: /BEARING/ }),
+    ).toBeVisible();
+    expect(screen.queryByText("불러오는 중…")).not.toBeInTheDocument();
+  });
+
+  it("shows a shimmering status message while candidate detail is loading", async () => {
+    let resolveCandidate!: (response: Response) => void;
+    const candidateResponse = new Promise<Response>((resolve) => {
+      resolveCandidate = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/unmatched")) return jsonResponse(unmatched);
+        if (url.includes("/candidates")) return candidateResponse;
+        throw new Error(`unexpected request: ${url}`);
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/grouping");
+
+    await user.click(await screen.findByRole("button", { name: /BEARING/ }));
+
+    expect(
+      screen.getByText("후보와 근거를 불러오는 중…"),
+    ).toHaveClass("shimmer-text");
+
+    resolveCandidate(await jsonResponse(candidate));
+
+    expect(await screen.findByText("단위 호환")).toBeVisible();
+    expect(
+      screen.queryByText("후보와 근거를 불러오는 중…"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows provenance and submits a human-approved candidate match", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     vi.stubGlobal(

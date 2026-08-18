@@ -326,7 +326,9 @@ export function StandardPricesPage() {
               </a>
             </div>
           </header>
-          {catalog.isPending && <p className="inline-state">목록을 불러오는 중…</p>}
+          {catalog.isPending && (
+            <p className="inline-state shimmer-text" role="status">목록을 불러오는 중…</p>
+          )}
           {catalog.isError && !isFetchNextCatalogPageError && (
             <div className="inline-state is-error" role="alert">
               <p>표준 품목을 불러오지 못했습니다.</p>
@@ -401,7 +403,11 @@ export function StandardPricesPage() {
               disabled={isFetchingNextCatalogPage}
               onClick={() => void fetchNextCatalogPage()}
             >
-              {isFetchingNextCatalogPage ? "불러오는 중…" : "품목 더 보기"}
+              {isFetchingNextCatalogPage ? (
+                <span className="shimmer-text">불러오는 중…</span>
+              ) : (
+                "품목 더 보기"
+              )}
             </button>
           )}
         </section>
@@ -573,7 +579,7 @@ function StandardItemDetail({
   return (
     <div className="standard-db-detail-content">
       {snapshotPending && (
-        <p className="inline-state" role="status">
+        <p className="inline-state shimmer-text" role="status">
           분석 당시 가격 버전을 불러오는 중입니다.
         </p>
       )}
@@ -640,7 +646,9 @@ function StandardItemDetail({
           </div>
           <span>{observationCount}건</span>
         </div>
-        {evidencePending && <p className="inline-state">근거를 불러오는 중…</p>}
+        {evidencePending && (
+          <p className="inline-state shimmer-text">근거를 불러오는 중…</p>
+        )}
         {evidenceError && !evidenceNextError && (
           <div className="inline-state is-error" role="alert">
             <p>가격 근거를 불러오지 못했습니다.</p>
@@ -702,7 +710,11 @@ function StandardItemDetail({
             disabled={evidenceLoadingMore}
             onClick={loadMoreEvidence}
           >
-            {evidenceLoadingMore ? "불러오는 중…" : "근거 더 보기"}
+            {evidenceLoadingMore ? (
+              <span className="shimmer-text">불러오는 중…</span>
+            ) : (
+              "근거 더 보기"
+            )}
           </button>
         )}
       </section>
@@ -715,7 +727,9 @@ function StandardItemDetail({
           </div>
           <span>{versionGroups.length}건</span>
         </div>
-        {historyPending && <p className="inline-state">이력을 불러오는 중…</p>}
+        {historyPending && (
+          <p className="inline-state shimmer-text">이력을 불러오는 중…</p>
+        )}
         {historyError && !historyNextError && (
           <div className="inline-state is-error" role="alert">
             <p>가격 버전 이력을 불러오지 못했습니다.</p>
@@ -769,7 +783,11 @@ function StandardItemDetail({
             disabled={historyLoadingMore}
             onClick={loadMoreHistory}
           >
-            {historyLoadingMore ? "불러오는 중…" : "가격 이력 더 보기"}
+            {historyLoadingMore ? (
+              <span className="shimmer-text">불러오는 중…</span>
+            ) : (
+              "가격 이력 더 보기"
+            )}
           </button>
         )}
       </section>

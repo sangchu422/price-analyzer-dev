@@ -381,9 +381,11 @@ export function QuoteAnalysisPage({
 
       {stage !== "IDLE" && (
         <div className="analysis-progress-message" role="status" aria-live="polite">
-          {stage === "PARSING"
-            ? "견적서를 업로드하고 품목을 파싱하는 중입니다."
-            : "표준 DB와 견적 품목을 비교하는 중입니다."}
+          <span className="shimmer-text">
+            {stage === "PARSING"
+              ? "견적서를 업로드하고 품목을 파싱하는 중입니다."
+              : "표준 DB와 견적 품목을 비교하는 중입니다."}
+          </span>
         </div>
       )}
 
@@ -1070,7 +1072,7 @@ function AnalysisRow({
           <div className="reference-evidence-popover" role="tooltip">
             <strong>표준단가 원본 근거</strong>
             {standardEvidence.isFetching && !standardEvidence.isFetchingNextPage && (
-              <span>불러오는 중…</span>
+              <span className="shimmer-text">불러오는 중…</span>
             )}
             {standardEvidenceObservations.map((row) => (
               <a
@@ -1091,7 +1093,11 @@ function AnalysisRow({
                 disabled={standardEvidence.isFetchingNextPage}
                 onClick={() => void standardEvidence.fetchNextPage()}
               >
-                {standardEvidence.isFetchingNextPage ? "불러오는 중…" : "근거 더 보기"}
+                {standardEvidence.isFetchingNextPage ? (
+                  <span className="shimmer-text">불러오는 중…</span>
+                ) : (
+                  "근거 더 보기"
+                )}
               </button>
             )}
           </div>
@@ -1133,7 +1139,13 @@ function AnalysisRow({
                 aria-busy={marketLoading}
                 onClick={() => void requestMarket(false)}
               >
-                {marketLoading ? "조회 중…" : market ? "캐시 다시 보기" : "시장가 조회"}
+                {marketLoading ? (
+                  <span className="shimmer-text">조회 중…</span>
+                ) : market ? (
+                  "캐시 다시 보기"
+                ) : (
+                  "시장가 조회"
+                )}
               </button>
             </>
           )}
@@ -1208,8 +1220,15 @@ function MarketResultPanel({
           <span className={`assessment is-${result.assessment.toLowerCase()}`}>
             {marketAssessmentLabel(result.assessment)}
           </span>
-          <button type="button" disabled={loading} onClick={onRefresh}>
-            실시간 갱신
+          <button
+            type="button"
+            disabled={loading}
+            aria-busy={loading}
+            onClick={onRefresh}
+          >
+            <span className={loading ? "shimmer-text" : undefined}>
+              {loading ? "갱신 중…" : "실시간 갱신"}
+            </span>
           </button>
         </div>
       </header>

@@ -607,6 +607,22 @@
   color: var(--danger);
 }
 
+@keyframes shimmer-text-pulse {
+  0%, 100% { color: var(--muted); }
+  50% { color: var(--ink); }
+}
+
+.shimmer-text {
+  animation: shimmer-text-pulse 1.3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    color: var(--muted);
+  }
+}
+
 .price-metrics {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
