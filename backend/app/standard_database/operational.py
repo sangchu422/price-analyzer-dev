@@ -15,6 +15,7 @@ from app.catalog.models import (
 )
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
+from app.parsing.projection import current_raw_item_ids
 from app.pricing.service import (
     calculate_standard_prices,
     price_version_matches_draft,
@@ -59,6 +60,7 @@ def current_standard_member_counts_subquery(*, name: str):
         QuoteDocumentRole.id,
         name=f"{name}_latest_role",
     )
+    current_raw = current_raw_item_ids()
     return (
         select(
             ItemMembershipDecision.standard_item_id.label(
@@ -80,6 +82,7 @@ def current_standard_member_counts_subquery(*, name: str):
             RawQuoteItem,
             RawQuoteItem.id == ItemMembershipDecision.raw_item_id,
         )
+        .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
         .join(
             SourceVariant,
             SourceVariant.id == RawQuoteItem.source_variant_id,

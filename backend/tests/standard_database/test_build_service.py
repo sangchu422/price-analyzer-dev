@@ -37,7 +37,9 @@ from app.standard_database import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
     StandardBuildStatus,
+    StandardDatabaseBuildProjection,
     StandardDatabaseBuildRun,
+    StandardOperationalStatus,
     build_standard_database,
     eligible_historical_rows,
     standard_build_fingerprint,
@@ -1123,3 +1125,63 @@ def test_build_flushes_pending_latest_clean_before_evidence_snapshot(
     assert run.input_fingerprint != included_fingerprint
     session.rollback()
     assert session.get(StandardDatabaseBuildRun, result.run_id) is None
+
+
+def test_item_losing_all_evidence_projects_null_price_version(
+    session: Session,
+) -> None:
+    variant = _source(
+        session,
+        name="quotes/loses-evidence.xlsx",
+        purpose=QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+    )
+    raw, _ = _row(
+        session,
+        variant,
+        row_number=2,
+        name="Relay",
+        spec="24VDC",
+        unit="EA",
+        price="12",
+    )
+    first = build_standard_database(session)
+    session.commit()
+    item_id = session.scalar(select(StandardItem.id))
+    assert item_id is not None
+    first_price_version_id = session.scalar(
+        select(StandardPriceVersion.id).where(
+            StandardPriceVersion.standard_item_id == item_id
+        )
+    )
+    assert first_price_version_id is not None
+
+    session.add(
+        CleanDecision(
+            raw_item=raw,
+            status=CleanStatus.EXCLUDED,
+            reason_code="LATEST_EXCLUDED",
+            item_name_norm="Relay",
+            spec_norm="24VDC",
+            unit_norm="EA",
+            unit_price=Decimal("12"),
+            rule_version="clean-v2",
+        )
+    )
+    session.commit()
+
+    second = build_standard_database(session)
+    session.commit()
+
+    assert second.run_id != first.run_id
+    projection = session.scalar(
+        select(StandardDatabaseBuildProjection).where(
+            StandardDatabaseBuildProjection.build_run_id == second.run_id,
+            StandardDatabaseBuildProjection.standard_item_id == item_id,
+        )
+    )
+    assert projection is not None
+    assert (
+        projection.operational_status
+        is StandardOperationalStatus.NO_ELIGIBLE_EVIDENCE
+    )
+    assert projection.standard_price_version_id is None

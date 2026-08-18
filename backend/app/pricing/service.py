@@ -35,6 +35,7 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.types import EXACT_DECIMAL_MAX, EXACT_DECIMAL_QUANTUM
 from app.documents.models import SourceDocument, SourceVariant
 from app.matching.normalization import normalize_search_text
+from app.parsing.projection import current_raw_item_ids
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
@@ -636,8 +637,13 @@ def _current_evidence_rows(
         DocumentMetadataVersion | None,
     ]
 ]:
+    current_raw = current_raw_item_ids()
     candidate_statement = (
         select(ItemMembershipDecision.raw_item_id)
+        .join(
+            current_raw,
+            current_raw.c.raw_item_id == ItemMembershipDecision.raw_item_id,
+        )
         .where(
         ItemMembershipDecision.standard_item_id == standard_item_id,
         ItemMembershipDecision.status == MembershipStatus.MATCHED,
@@ -1056,12 +1062,17 @@ def _current_evidence_rows_for_items(
         ]
     ],
 ]:
+    current_raw = current_raw_item_ids()
     candidate_rows = (
         select(
             ItemMembershipDecision.standard_item_id.label(
                 "target_standard_item_id"
             ),
             ItemMembershipDecision.raw_item_id.label("raw_item_id"),
+        )
+        .join(
+            current_raw,
+            current_raw.c.raw_item_id == ItemMembershipDecision.raw_item_id,
         )
         .where(
             ItemMembershipDecision.standard_item_id.in_(standard_item_ids),

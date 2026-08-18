@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.analysis.service import analyze_document
 from app.catalog.cli import (
+    _matched_row_ids,
+    _membership_row_ids,
     build_catalog_embedding_index,
     report_standard_price_drafts,
     seed_exact_catalog,
@@ -22,6 +24,7 @@ from app.catalog.models import (
     ItemMembershipDecision,
     MembershipStatus,
     StandardItem,
+    StandardItemVersion,
     StandardPriceVersion,
 )
 from app.catalog.service import candidate_matches
@@ -29,9 +32,10 @@ from app.cli import main
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
 from app.db.sqlite import configure_sqlite
-from app.documents.models import SourceDocument
+from app.documents.models import SourceDocument, SourceVariant
 from app.embeddings.index import load_index
 from app.ingestion.corpus import ingest_corpus
+from app.parsing.models import ParseRunStatus, SourceParseOutput, SourceParseRun
 from app.pricing.service import (
     approve_standard_price,
     calculate_standard_price,
@@ -1082,3 +1086,107 @@ def test_standard_price_draft_report_query_count_is_chunk_bounded(
         assert report.drafts_available == 120
         assert report.observations_available == 240
         assert statements <= 6
+
+
+def test_seed_report_row_id_helpers_exclude_stale_reparsed_duplicate() -> None:
+    """`_membership_row_ids` and `_matched_row_ids` back the seed report's
+    prior-decision and unmatched-row counters; a superseded reader-v1 row
+    must not be counted alongside its reader-v2 reparse."""
+
+    with _session() as session:
+        document = SourceDocument(logical_name="quotes/reparsed.xlsx")
+        variant = SourceVariant(
+            document=document,
+            path="quotes/reparsed.xlsx",
+            sha256="d" * 64,
+            extension=".xlsx",
+            security_state="UNLOCKED",
+            selected_for_parsing_at_ingest=True,
+        )
+        session.add_all([document, variant])
+        session.flush()
+
+        stale_raw = RawQuoteItem(
+            source_variant=variant,
+            source_row=2,
+            item_name_raw="BEARING",
+            parser_name="xlsx",
+            parser_version="reader-v1",
+        )
+        fresh_raw = RawQuoteItem(
+            source_variant=variant,
+            source_row=2,
+            item_name_raw="BEARING",
+            parser_name="xlsx",
+            parser_version="reader-v2",
+        )
+        session.add_all([stale_raw, fresh_raw])
+        session.flush()
+
+        stale_run = SourceParseRun(
+            source_variant_id=variant.id,
+            parser_name="xlsx",
+            parser_version="reader-v1",
+            code_fingerprint="a" * 64,
+            status=ParseRunStatus.SUCCEEDED,
+        )
+        session.add(stale_run)
+        session.flush()
+        session.add(
+            SourceParseOutput(parse_run_id=stale_run.id, raw_item_id=stale_raw.id)
+        )
+        session.flush()
+
+        fresh_run = SourceParseRun(
+            source_variant_id=variant.id,
+            parser_name="xlsx",
+            parser_version="reader-v2",
+            code_fingerprint="b" * 64,
+            status=ParseRunStatus.SUCCEEDED,
+        )
+        session.add(fresh_run)
+        session.flush()
+        session.add(
+            SourceParseOutput(parse_run_id=fresh_run.id, raw_item_id=fresh_raw.id)
+        )
+        session.flush()
+        assert fresh_run.id > stale_run.id
+
+        item = StandardItem()
+        session.add(item)
+        session.flush()
+        session.add(
+            StandardItemVersion(
+                standard_item=item,
+                version_number=1,
+                canonical_name="BEARING",
+                canonical_spec=None,
+                canonical_unit=None,
+                aliases_json="[]",
+                created_by="buyer-1",
+            )
+        )
+        session.add_all(
+            [
+                ItemMembershipDecision(
+                    raw_item=stale_raw,
+                    standard_item=item,
+                    status=MembershipStatus.MATCHED,
+                    method="MANUAL",
+                    evidence_json="{}",
+                    decided_by="buyer-1",
+                ),
+                ItemMembershipDecision(
+                    raw_item=fresh_raw,
+                    standard_item=item,
+                    status=MembershipStatus.MATCHED,
+                    method="MANUAL",
+                    evidence_json="{}",
+                    decided_by="buyer-1",
+                ),
+            ]
+        )
+        session.commit()
+
+        assert _membership_row_ids(session) == {fresh_raw.id}
+        assert _matched_row_ids(session) == {fresh_raw.id}

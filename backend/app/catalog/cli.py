@@ -29,6 +29,7 @@ from app.embeddings.hchat import build_embedding_client
 from app.embeddings.index import IndexMetadata, save_index
 from app.embeddings.mock import DeterministicMockEmbeddingClient
 from app.matching.normalization import model_tokens, normalize_search_text
+from app.parsing.projection import current_raw_item_ids
 from app.pricing.service import (
     calculate_standard_prices,
 )
@@ -211,9 +212,16 @@ def _group_has_conflict(rows: list[_IncludedRow]) -> bool:
 
 
 def _membership_row_ids(session: Session) -> set[int]:
+    current_raw = current_raw_item_ids()
     return set(
         session.scalars(
-            select(ItemMembershipDecision.raw_item_id).distinct()
+            select(ItemMembershipDecision.raw_item_id)
+            .join(
+                current_raw,
+                current_raw.c.raw_item_id
+                == ItemMembershipDecision.raw_item_id,
+            )
+            .distinct()
         )
     )
 
@@ -227,12 +235,18 @@ def _matched_row_ids(session: Session) -> set[int]:
         .group_by(ItemMembershipDecision.raw_item_id)
         .subquery()
     )
+    current_raw = current_raw_item_ids()
     return set(
         session.scalars(
             select(ItemMembershipDecision.raw_item_id)
             .join(
                 latest,
                 latest.c.decision_id == ItemMembershipDecision.id,
+            )
+            .join(
+                current_raw,
+                current_raw.c.raw_item_id
+                == ItemMembershipDecision.raw_item_id,
             )
             .where(
                 ItemMembershipDecision.status == MembershipStatus.MATCHED

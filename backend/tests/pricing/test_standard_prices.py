@@ -21,12 +21,14 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
+from app.parsing.models import ParseRunStatus, SourceParseOutput, SourceParseRun
 from app.pricing.service import (
     NoEligiblePriceObservations,
     PriceDraftChanged,
     PriceStatistics,
     approve_standard_price,
     calculate_standard_price,
+    calculate_standard_prices,
     price_version_matches_draft,
 )
 from app.quotes.models import RawQuoteItem
@@ -259,6 +261,164 @@ def test_semantically_identical_quotes_with_different_file_hashes_count_once() -
             first.id,
             copied.id,
         )
+
+
+def test_stale_reparse_duplicate_counts_once() -> None:
+    with _session() as session:
+        item = _item(session)
+        stale, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            price="47000000",
+            source_row=44,
+            supplier="HANRO",
+            quote_date=date(2025, 11, 15),
+        )
+        variant = stale.source_variant
+        fresh = RawQuoteItem(
+            source_variant=variant,
+            source_sheet=stale.source_sheet,
+            source_row=44,
+            source_cells="C44:I44",
+            item_name_raw="BEARING",
+            maker_raw="ACME",
+            parser_name="xlsx",
+            parser_version="2",
+        )
+        clean = CleanDecision(
+            raw_item=fresh,
+            status=CleanStatus.INCLUDED,
+            reason_code="TEST",
+            item_name_norm="BEARING",
+            spec_norm="6204 ZZ",
+            unit_norm="EA",
+            unit_price=Decimal("47000000"),
+            rule_version="clean-v1",
+        )
+        membership = ItemMembershipDecision(
+            raw_item=fresh,
+            standard_item=item,
+            status=MembershipStatus.MATCHED,
+            method="MANUAL",
+            evidence_json="{}",
+            decided_by="buyer",
+        )
+        session.add_all([fresh, clean, membership])
+        session.flush()
+
+        stale_run = SourceParseRun(
+            source_variant_id=variant.id,
+            parser_name="quote-reader",
+            parser_version="reader-v1",
+            code_fingerprint="a" * 64,
+            status=ParseRunStatus.SUCCEEDED,
+        )
+        session.add(stale_run)
+        session.flush()
+        session.add(
+            SourceParseOutput(parse_run_id=stale_run.id, raw_item_id=stale.id)
+        )
+
+        fresh_run = SourceParseRun(
+            source_variant_id=variant.id,
+            parser_name="quote-reader",
+            parser_version="reader-v2",
+            code_fingerprint="b" * 64,
+            status=ParseRunStatus.SUCCEEDED,
+        )
+        session.add(fresh_run)
+        session.flush()
+        session.add(
+            SourceParseOutput(parse_run_id=fresh_run.id, raw_item_id=fresh.id)
+        )
+        session.flush()
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 1
+        assert tuple(row.raw_item_id for row in draft.observations) == (
+            fresh.id,
+        )
+
+
+def test_stale_reparse_duplicate_counts_once_in_bulk() -> None:
+    with _session() as session:
+        item = _item(session)
+        stale, _, _ = _observation(
+            session,
+            item,
+            row=1,
+            price="47000000",
+            source_row=44,
+            supplier="HANRO",
+            quote_date=date(2025, 11, 15),
+        )
+        variant = stale.source_variant
+        fresh = RawQuoteItem(
+            source_variant=variant,
+            source_sheet=stale.source_sheet,
+            source_row=44,
+            source_cells="C44:I44",
+            item_name_raw="BEARING",
+            maker_raw="ACME",
+            parser_name="xlsx",
+            parser_version="2",
+        )
+        clean = CleanDecision(
+            raw_item=fresh,
+            status=CleanStatus.INCLUDED,
+            reason_code="TEST",
+            item_name_norm="BEARING",
+            spec_norm="6204 ZZ",
+            unit_norm="EA",
+            unit_price=Decimal("47000000"),
+            rule_version="clean-v1",
+        )
+        membership = ItemMembershipDecision(
+            raw_item=fresh,
+            standard_item=item,
+            status=MembershipStatus.MATCHED,
+            method="MANUAL",
+            evidence_json="{}",
+            decided_by="buyer",
+        )
+        session.add_all([fresh, clean, membership])
+        session.flush()
+
+        stale_run = SourceParseRun(
+            source_variant_id=variant.id,
+            parser_name="quote-reader",
+            parser_version="reader-v1",
+            code_fingerprint="a" * 64,
+            status=ParseRunStatus.SUCCEEDED,
+        )
+        session.add(stale_run)
+        session.flush()
+        session.add(
+            SourceParseOutput(parse_run_id=stale_run.id, raw_item_id=stale.id)
+        )
+
+        fresh_run = SourceParseRun(
+            source_variant_id=variant.id,
+            parser_name="quote-reader",
+            parser_version="reader-v2",
+            code_fingerprint="b" * 64,
+            status=ParseRunStatus.SUCCEEDED,
+        )
+        session.add(fresh_run)
+        session.flush()
+        session.add(
+            SourceParseOutput(parse_run_id=fresh_run.id, raw_item_id=fresh.id)
+        )
+        session.flush()
+
+        drafts = calculate_standard_prices(session, [item.id])
+
+        assert drafts[item.id].observation_count == 1
+        assert tuple(
+            row.raw_item_id for row in drafts[item.id].observations
+        ) == (fresh.id,)
 
 
 def test_same_row_from_distinct_quote_dates_counts_twice() -> None:

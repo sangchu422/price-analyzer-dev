@@ -722,7 +722,11 @@ def _append_build_projections(
                 ),
                 standard_price_version_id=(
                     None
-                    if state.captured_price is None
+                    if (
+                        state.status
+                        is StandardOperationalStatus.NO_ELIGIBLE_EVIDENCE
+                        or state.captured_price is None
+                    )
                     else state.captured_price.id
                 ),
                 operational_status=state.status,

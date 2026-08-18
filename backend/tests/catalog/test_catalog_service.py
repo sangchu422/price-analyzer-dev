@@ -22,7 +22,9 @@ from app.catalog.service import (
     build_candidate_embedding_runtime,
     candidate_matches,
     catalog_fingerprint,
+    list_standard_items,
     standard_item_members,
+    unmatched_included,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.core.config import Settings
@@ -30,6 +32,7 @@ from app.db.base import Base
 from app.db.sqlite import configure_sqlite
 from app.documents.models import SourceDocument, SourceVariant
 from app.embeddings.index import IndexMetadata, save_index
+from app.parsing.models import ParseRunStatus, SourceParseOutput, SourceParseRun
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
@@ -117,6 +120,96 @@ def _standard_item(session: Session) -> StandardItem:
     )
     session.commit()
     return item
+
+
+def _reparsed_raw_pair(
+    session: Session,
+    *,
+    purpose: QuoteDocumentPurpose = QuoteDocumentPurpose.HISTORICAL_REFERENCE,
+) -> tuple[RawQuoteItem, RawQuoteItem]:
+    """Two raw rows for one physical line: a stale reader-v1 parse superseded
+    by a fresh reader-v2 reparse of the same source variant."""
+
+    document = SourceDocument(logical_name="quotes/reparsed.xlsx")
+    variant = SourceVariant(
+        document=document,
+        path="quotes/reparsed.xlsx",
+        sha256="c" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    session.add_all([document, variant])
+    session.flush()
+    session.add(
+        QuoteDocumentRole(
+            document_id=document.id,
+            purpose=purpose,
+            decided_by="buyer-1",
+            reason_detail="test document purpose",
+        )
+    )
+    session.flush()
+
+    def _row(parser_version: str) -> RawQuoteItem:
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="Sheet1",
+            source_row=2,
+            item_name_raw="Bearing",
+            spec_raw="6204 ZZ",
+            unit_raw="EA",
+            parser_name="xlsx",
+            parser_version=parser_version,
+        )
+        session.add(
+            CleanDecision(
+                raw_item=raw,
+                status=CleanStatus.INCLUDED,
+                reason_code="VALID",
+                item_name_norm="BEARING",
+                spec_norm="6204 ZZ",
+                unit_norm="EA",
+                unit_price=Decimal("120"),
+                rule_version="clean-v1",
+            )
+        )
+        session.flush()
+        return raw
+
+    stale_raw = _row("reader-v1")
+    fresh_raw = _row("reader-v2")
+
+    stale_run = SourceParseRun(
+        source_variant_id=variant.id,
+        parser_name="xlsx",
+        parser_version="reader-v1",
+        code_fingerprint="a" * 64,
+        status=ParseRunStatus.SUCCEEDED,
+    )
+    session.add(stale_run)
+    session.flush()
+    session.add(
+        SourceParseOutput(parse_run_id=stale_run.id, raw_item_id=stale_raw.id)
+    )
+    session.flush()
+
+    fresh_run = SourceParseRun(
+        source_variant_id=variant.id,
+        parser_name="xlsx",
+        parser_version="reader-v2",
+        code_fingerprint="b" * 64,
+        status=ParseRunStatus.SUCCEEDED,
+    )
+    session.add(fresh_run)
+    session.flush()
+    session.add(
+        SourceParseOutput(parse_run_id=fresh_run.id, raw_item_id=fresh_raw.id)
+    )
+    session.flush()
+    assert fresh_run.id > stale_run.id
+
+    return stale_raw, fresh_raw
 
 
 def test_candidate_search_never_creates_membership(session: Session) -> None:
@@ -457,3 +550,105 @@ def test_member_projection_eager_loads_source_in_constant_queries(
 
     assert counts[0] == counts[1]
     assert counts[1] <= 2
+
+
+def test_standard_item_members_excludes_stale_reparsed_duplicate(
+    session: Session,
+) -> None:
+    """A superseded reader-v1 row must not appear alongside its reader-v2
+    reparse as a phantom duplicate member of the same standard item."""
+
+    stale_raw, fresh_raw = _reparsed_raw_pair(session)
+    item = _standard_item(session)
+    session.add_all(
+        [
+            ItemMembershipDecision(
+                raw_item=stale_raw,
+                standard_item=item,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json="{}",
+                decided_by="buyer-1",
+            ),
+            ItemMembershipDecision(
+                raw_item=fresh_raw,
+                standard_item=item,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json="{}",
+                decided_by="buyer-1",
+            ),
+        ]
+    )
+    session.commit()
+
+    page, next_cursor = standard_item_members(
+        session,
+        item.id,
+        after_id=None,
+        limit=10,
+    )
+
+    assert next_cursor is None
+    assert [raw.id for raw, _clean, _membership in page] == [fresh_raw.id]
+
+
+def test_unmatched_included_excludes_stale_reparsed_duplicate(
+    session: Session,
+) -> None:
+    """A superseded reader-v1 row must not surface as a second, phantom
+    'unmatched' review entry alongside its reader-v2 reparse."""
+
+    stale_raw, fresh_raw = _reparsed_raw_pair(session)
+    session.commit()
+
+    page, next_cursor = unmatched_included(
+        session,
+        after_id=None,
+        limit=10,
+        search=None,
+    )
+
+    assert next_cursor is None
+    assert [raw.id for raw, _clean, _membership_id in page] == [fresh_raw.id]
+
+
+def test_list_standard_items_member_count_excludes_stale_reparsed_duplicate(
+    session: Session,
+) -> None:
+    """The catalog list's member count must not double-count a superseded
+    reader-v1 row alongside its reader-v2 reparse."""
+
+    stale_raw, fresh_raw = _reparsed_raw_pair(session)
+    item = _standard_item(session)
+    session.add_all(
+        [
+            ItemMembershipDecision(
+                raw_item=stale_raw,
+                standard_item=item,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json="{}",
+                decided_by="buyer-1",
+            ),
+            ItemMembershipDecision(
+                raw_item=fresh_raw,
+                standard_item=item,
+                status=MembershipStatus.MATCHED,
+                method="MANUAL",
+                evidence_json="{}",
+                decided_by="buyer-1",
+            ),
+        ]
+    )
+    session.commit()
+
+    summaries, next_cursor = list_standard_items(
+        session,
+        after_id=None,
+        limit=10,
+    )
+
+    assert next_cursor is None
+    assert len(summaries) == 1
+    assert summaries[0].member_count == 1

@@ -36,6 +36,7 @@ from app.matching.candidates import (
     MatchQuery,
     rank_candidates,
 )
+from app.parsing.projection import current_raw_item_ids
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
@@ -434,6 +435,7 @@ def list_standard_items(
         .group_by(CleanDecision.raw_item_id)
         .subquery()
     )
+    current_raw = current_raw_item_ids()
     counts = dict(
         session.execute(
             select(
@@ -456,6 +458,11 @@ def list_standard_items(
                     CleanDecision.id == latest_clean.c.decision_id,
                     CleanDecision.status == CleanStatus.INCLUDED,
                 ),
+            )
+            .join(
+                current_raw,
+                current_raw.c.raw_item_id
+                == ItemMembershipDecision.raw_item_id,
             )
             .where(
                 ItemMembershipDecision.standard_item_id.in_(item_ids),
@@ -689,10 +696,12 @@ def unmatched_included(
         .group_by(QuoteDocumentRole.document_id)
         .subquery()
     )
+    current_raw = current_raw_item_ids()
     query = (
         select(RawQuoteItem, CleanDecision, current_membership.c.id)
         .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
         .join(CleanDecision, CleanDecision.id == latest_clean.c.decision_id)
+        .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
         .outerjoin(
             latest_membership,
             latest_membership.c.raw_item_id == RawQuoteItem.id,
@@ -785,6 +794,7 @@ def standard_item_members(
         .group_by(CleanDecision.raw_item_id)
         .subquery()
     )
+    current_raw = current_raw_item_ids()
     query = (
         select(RawQuoteItem, CleanDecision, ItemMembershipDecision)
         .options(
@@ -802,6 +812,7 @@ def standard_item_members(
         )
         .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
         .join(CleanDecision, CleanDecision.id == latest_clean.c.decision_id)
+        .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
         .where(
             ItemMembershipDecision.standard_item_id == standard_item_id,
             ItemMembershipDecision.status == MembershipStatus.MATCHED,
