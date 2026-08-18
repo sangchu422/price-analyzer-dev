@@ -178,11 +178,14 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   expect(screen.getAllByText("50,000원").length).toBeGreaterThan(0);
   const coverage = screen.getByRole("group", { name: "데이터 구축 현황" });
   expect(coverage).not.toHaveAttribute("open");
+  expect(within(coverage).getAllByText(/품목 미추출 492개/)[0]).toBeVisible();
   await userEvent.click(within(coverage).getByText("데이터 구축 현황"));
   expect(screen.getByText("품목 추출 완료")).toBeVisible();
   expect(screen.getByText("185개")).toBeVisible();
-  expect(screen.getByText("복구본 반영")).toBeVisible();
-  expect(screen.getByText("보안해제·정상본 필요")).toBeVisible();
+  expect(screen.getByText("열기 실패")).toBeVisible();
+  expect(screen.getByText("미지원 형식")).toBeVisible();
+  expect(screen.getByText(/열기 실패본 중 복구본 4개/)).toBeVisible();
+  expect(screen.getByText(/나머지 53개는/)).toBeVisible();
   expect(
     within(screen.getByRole("region", { name: "표준 품목 목록" }))
       .getByRole("columnheader", { name: "견적 제출사" }),
@@ -237,6 +240,9 @@ it("shows a shimmering status message while the catalog is still loading", async
   renderApp("/standard-prices");
 
   expect(screen.getByText("목록을 불러오는 중…")).toHaveClass("shimmer-text");
+  expect(
+    within(screen.getByLabelText("최근 갱신 상태")).getByText("불러오는 중…"),
+  ).toBeVisible();
 
   resolveCatalog(
     await jsonResponse({

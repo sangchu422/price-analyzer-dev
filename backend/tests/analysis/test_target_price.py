@@ -255,6 +255,25 @@ def test_cpi_target_waits_when_standard_group_is_not_comparable() -> None:
     assert result.target_unit_price is None
 
 
+def test_cpi_target_explains_that_cleansing_review_must_finish_first() -> None:
+    result = _target_line_from_cpi(
+        replace(
+            _matched_line(),
+            match_status="REVIEW_REQUIRED",
+            standard_price_version_id=None,
+            market_price_lookup_required=False,
+        ),
+        (),
+        _cpi_rates_2017_to_2025(),
+        "2025",
+        77,
+    )
+
+    assert result.status == "NOT_APPLICABLE"
+    assert result.target_unit_price is None
+    assert result.reason == "정제 검토가 끝나지 않아 원본 확인 후에 목표가를 산정할 수 있습니다."
+
+
 def test_cpi_target_reports_rate_gap_without_ppi_fallback() -> None:
     rates = _cpi_rates_2017_to_2025()
     del rates["2021"]

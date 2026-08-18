@@ -41,6 +41,13 @@ export function CleansingReviewPage() {
   const focusAfterDecisionRef = useRef(false);
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
 
+  useEffect(() => {
+    document.title = "정제 검토 · Price Analyzer";
+    return () => {
+      document.title = "Price Analyzer";
+    };
+  }, []);
+
   const queue = useInfiniteQuery({
     queryKey: ["cleansing-review", debouncedSearch, reason],
     initialPageParam: undefined as number | undefined,

@@ -20,13 +20,16 @@ from app.catalog.models import (
 )
 from app.cleansing.models import CleanDecision
 from app.documents.models import SourceDocument, SourceVariant
+from app.matching.normalization import normalize_search_text
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     StandardBuildStatus,
+    StandardDatabaseBuildProjection,
     StandardDatabaseBuildRun,
     StandardOperationalStatus,
 )
 from app.standard_database.operational import (
+    current_operational_build_context,
     current_standard_member_counts_subquery,
     operational_standard_price_states,
 )
@@ -107,6 +110,24 @@ def evidence_quality(supplier_count: int) -> EvidenceQuality:
     if supplier_count == 1:
         return EvidenceQuality.SINGLE_OBSERVATION
     return EvidenceQuality.MULTI_OBSERVATION
+
+
+def _distinct_supplier_names(values: set[str]) -> tuple[str, ...]:
+    """Collapse cosmetic spellings of the same submitting company."""
+
+    grouped: dict[str, str] = {}
+    for value in values:
+        cleaned = value.strip()
+        identity = normalize_search_text(cleaned)
+        if not identity:
+            continue
+        current = grouped.get(identity)
+        if current is None or (len(cleaned), cleaned.casefold()) < (
+            len(current),
+            current.casefold(),
+        ):
+            grouped[identity] = cleaned
+    return tuple(sorted(grouped.values(), key=str.casefold))
 
 
 def latest_build_provenance(
@@ -198,6 +219,50 @@ def list_standard_explorer_items(
                 StandardItemVersion.canonical_unit.ilike(pattern),
             )
         )
+    # Computing the operational build fingerprint scans the historical input.
+    # Reuse it for every explorer chunk; otherwise a selective filter near the
+    # end of the catalogue repeats the same full scan dozens of times.
+    operational_context = current_operational_build_context(session)
+    if quality is not None and operational_context.matching_build_run_id is not None:
+        filter_price = StandardPriceVersion.__table__.alias(
+            "explorer_filter_price"
+        )
+        base_statement = (
+            base_statement
+            .join(
+                StandardDatabaseBuildProjection,
+                (
+                    StandardDatabaseBuildProjection.standard_item_id
+                    == StandardItemVersion.standard_item_id
+                )
+                & (
+                    StandardDatabaseBuildProjection.build_run_id
+                    == operational_context.matching_build_run_id
+                )
+                & (
+                    StandardDatabaseBuildProjection.operational_status
+                    == StandardOperationalStatus.ACTIVE
+                ),
+            )
+            .join(
+                filter_price,
+                filter_price.c.id
+                == StandardDatabaseBuildProjection.standard_price_version_id,
+            )
+        )
+        if quality is EvidenceQuality.SUPPLIER_UNKNOWN:
+            base_statement = base_statement.where(
+                filter_price.c.supplier_count == 0
+            )
+        elif quality is EvidenceQuality.SINGLE_OBSERVATION:
+            base_statement = base_statement.where(
+                filter_price.c.supplier_count == 1
+            )
+        else:
+            base_statement = base_statement.where(
+                filter_price.c.supplier_count > 1
+            )
+
     page_candidates: list[
         tuple[
             StandardItemVersion,
@@ -227,6 +292,7 @@ def list_standard_explorer_items(
         states = operational_standard_price_states(
             session,
             (version.standard_item_id for version, _ in chunk),
+            context=operational_context,
         )
         for version, member_count in chunk:
             state = states[version.standard_item_id]
@@ -345,7 +411,9 @@ def list_standard_explorer_items(
             operational_status=operational_status,
             member_count=member_count,
             supplier_summary=(
-                () if price is None else tuple(sorted(suppliers[price.id]))
+                ()
+                if price is None
+                else _distinct_supplier_names(suppliers[price.id])
             ),
             maker_summary=(
                 () if price is None else tuple(sorted(makers[price.id]))

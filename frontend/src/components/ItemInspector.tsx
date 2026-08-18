@@ -37,6 +37,12 @@ function rawValue(value: string | null | undefined) {
   return value?.trim() || "원본에 없음";
 }
 
+function numericValue(value: string | null | undefined) {
+  if (value === null || value === undefined || !value.trim()) return null;
+  const number = Number(value.replaceAll(",", "").trim());
+  return Number.isFinite(number) ? number : null;
+}
+
 function reasonSummary(item: ReviewQueueItem) {
   const evidence = item.reason_evidence;
   switch (item.reason_code) {
@@ -54,12 +60,41 @@ function reasonSummary(item: ReviewQueueItem) {
       return "수량 × 단가로 계산한 값과 견적서 금액이 일치하지 않습니다.";
     case "COLUMN_SHIFT_SUSPECTED":
       return "견적서의 열 위치가 어긋난 것으로 보여 품명·수량·단가를 확인해 주세요.";
-    case "INVALID_AMOUNT":
+    case "INVALID_AMOUNT": {
+      const amount = numericValue(item.raw.amount);
+      const quantity = numericValue(item.raw.quantity);
+      const unitPrice = numericValue(item.raw.unit_price);
+      if (amount === 0 && quantity !== null && quantity > 0 && unitPrice !== null && unitPrice > 0) {
+        return `수량은 ${rawValue(item.raw.quantity)}이고 개당 단가는 ${formatWon(item.raw.unit_price)}인데 구매 금액이 0원이라 원본 확인이 필요합니다.`;
+      }
       return "견적 금액을 숫자로 확인할 수 없어 원본 확인이 필요합니다.";
+    }
     case "INVALID_QUANTITY":
       return "수량을 숫자로 확인할 수 없어 원본 확인이 필요합니다.";
-    case "NUMERIC_OUT_OF_RANGE":
-      return "수량 또는 가격이 일반적인 입력 범위를 벗어나 원본 확인이 필요합니다.";
+    case "NUMERIC_OUT_OF_RANGE": {
+      const field = item.reason_detail?.split(" ", 1)[0];
+      const labels: Record<string, string> = {
+        unit_price: "개당 단가",
+        amount: "구매 금액",
+        quantity: "수량",
+      };
+      const values: Record<string, string | null | undefined> = {
+        unit_price: item.raw.unit_price,
+        amount: item.raw.amount,
+        quantity: item.raw.quantity,
+      };
+      const label = field ? labels[field] : null;
+      const value = field ? values[field] : null;
+      if (label && value) {
+        const display = field === "quantity" ? rawValue(value) : formatWon(value);
+        return `${label}로 읽힌 ${display}이 저장 가능한 자릿수를 넘어섰습니다. 같은 행의 값이 붙어 읽혔는지 원본을 확인해 주세요.`;
+      }
+      return "수량 또는 가격이 저장 가능한 자릿수를 넘어 원본 확인이 필요합니다.";
+    }
+    case "OCR_SOURCE_REVIEW_REQUIRED":
+      return "이미지 문서에서 품명·수량·단가 후보를 읽었지만 원문 대조가 끝나지 않아 가격 DB에 자동 반영하지 않습니다.";
+    case "PARSER_SOURCE_REVIEW_REQUIRED":
+      return "표의 선과 글자 위치를 기준으로 항목을 복원했습니다. 열 구분이 맞는지 문서 단위로 확인한 뒤 반영합니다.";
     case "MISSING_ITEM_NAME":
       return "품명이 비어 있어 표준 품목으로 분류할 수 없습니다.";
     default:

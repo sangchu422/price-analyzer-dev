@@ -181,10 +181,13 @@ export function StandardPricesPage() {
     sourceCoverageData &&
       Number.isFinite(sourceCoverageData.scanned_files) &&
       Number.isFinite(sourceCoverageData.parsed_files) &&
+      Number.isFinite(sourceCoverageData.unparsed_files) &&
       Number.isFinite(sourceCoverageData.parser_required_files) &&
       Number.isFinite(sourceCoverageData.ocr_required_files) &&
+      Number.isFinite(sourceCoverageData.recollection_required_files) &&
       Number.isFinite(sourceCoverageData.recovered_copy_files) &&
-      Number.isFinite(sourceCoverageData.security_release_required_files),
+      Number.isFinite(sourceCoverageData.security_release_required_files) &&
+      Number.isFinite(sourceCoverageData.unsupported_files),
   );
 
   const exportParams = new URLSearchParams();
@@ -206,7 +209,11 @@ export function StandardPricesPage() {
         <div className="build-status" aria-label="최근 갱신 상태">
           <span>최근 갱신</span>
           <strong>
-            {latestBuild ? formatDateTime(latestBuild.built_at) : "구축 기록 없음"}
+            {latestBuild
+              ? formatDateTime(latestBuild.built_at)
+              : isFetchingCatalog
+                ? "불러오는 중…"
+                : "구축 기록 없음"}
           </strong>
         </div>
       </header>
@@ -219,12 +226,8 @@ export function StandardPricesPage() {
           <summary>
             <span>데이터 구축 현황</span>
             <small>
-              원본 문서 {sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개 활용 · 확인 필요{" "}
-              {(
-                sourceCoverageData.parser_required_files +
-                sourceCoverageData.ocr_required_files +
-                sourceCoverageData.security_release_required_files
-              ).toLocaleString("ko-KR")}개
+              원본 문서 {sourceCoverageData.parsed_files.toLocaleString("ko-KR")}개 활용 · 품목 미추출{" "}
+              {sourceCoverageData.unparsed_files.toLocaleString("ko-KR")}개
             </small>
           </summary>
           <section className="source-coverage" aria-label="원본 견적 활용 현황">
@@ -245,16 +248,19 @@ export function StandardPricesPage() {
               <strong>{sourceCoverageData.ocr_required_files.toLocaleString("ko-KR")}개</strong>
             </div>
             <div className="is-warning">
-              <span>복구본 반영</span>
-              <strong>{sourceCoverageData.recovered_copy_files.toLocaleString("ko-KR")}개</strong>
+              <span>열기 실패</span>
+              <strong>{sourceCoverageData.recollection_required_files.toLocaleString("ko-KR")}개</strong>
             </div>
             <div className="is-warning">
-              <span>보안해제·정상본 필요</span>
-              <strong>{sourceCoverageData.security_release_required_files.toLocaleString("ko-KR")}개</strong>
+              <span>미지원 형식</span>
+              <strong>{sourceCoverageData.unsupported_files.toLocaleString("ko-KR")}개</strong>
             </div>
             <p>
-              품목 추출이 완료된 원본만 표준단가 계산 후보가 됩니다. 나머지는
-              OCR·양식 보완 또는 보안해제본 재수집 후 다시 반영합니다.
+              품목 미추출 {sourceCoverageData.unparsed_files.toLocaleString("ko-KR")}개는 추가 파서,
+              OCR, 열기 실패, 미지원 형식으로 모두 분류했습니다. 열기 실패본 중 복구본{" "}
+              {sourceCoverageData.recovered_copy_files.toLocaleString("ko-KR")}개는 별도 확보됐고,
+              나머지 {sourceCoverageData.security_release_required_files.toLocaleString("ko-KR")}개는
+              보안해제본 또는 정상본 재수집이 필요합니다.
             </p>
           </section>
         </details>
@@ -320,7 +326,11 @@ export function StandardPricesPage() {
               <small>품명·사양·단위별로 묶은 가격 기준</small>
             </div>
             <div className="table-panel-actions">
-              <span>{items.length.toLocaleString("ko-KR")}건 표시</span>
+              <span>
+                {catalog.isPending
+                  ? "불러오는 중…"
+                  : `${items.length.toLocaleString("ko-KR")}건 표시`}
+              </span>
               <a className="table-export-link" href={catalogExportHref}>
                 엑셀 다운로드
               </a>

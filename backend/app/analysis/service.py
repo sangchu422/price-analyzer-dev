@@ -480,10 +480,12 @@ def _catalog_projection(session: Session) -> _CatalogProjection:
             .order_by(StandardItemVersion.standard_item_id)
         )
     )
-    member_counts = current_standard_member_counts(
-        session,
-        (version.standard_item_id for version in versions),
-    )
+    # The catalog above already contains every current standard item. Passing
+    # all of those IDs back as one large ``IN (...)`` predicate makes SQLite
+    # choose a pathological plan for the grouped member-count projection.
+    # Reading the complete count projection once is both equivalent and much
+    # faster for this full-catalog path.
+    member_counts = current_standard_member_counts(session)
     versions = [
         version
         for version in versions

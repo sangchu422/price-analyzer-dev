@@ -43,9 +43,15 @@ from app.standard_database.models import (
 )
 
 
-CALCULATION_VERSION = "INTERNAL_STANDARD_PRICE_V4_LATEST_QUOTE_BUSINESS_SOURCE_DEDUP"
+CALCULATION_VERSION = (
+    "INTERNAL_STANDARD_PRICE_V5_NORMALIZED_SUPPLIER_IDENTITY"
+)
+_V3_CALCULATION_VERSION = "INTERNAL_STANDARD_PRICE_V3_SEMANTIC_SOURCE_DEDUP"
+_V4_CALCULATION_VERSION = (
+    "INTERNAL_STANDARD_PRICE_V4_LATEST_QUOTE_BUSINESS_SOURCE_DEDUP"
+)
 _COMPATIBLE_PREVIOUS_CALCULATION_VERSIONS = frozenset(
-    {"INTERNAL_STANDARD_PRICE_V3_SEMANTIC_SOURCE_DEDUP"}
+    {_V3_CALCULATION_VERSION, _V4_CALCULATION_VERSION}
 )
 _EXPLICIT_REVISION_PATTERN = re.compile(
     r"(?:^|[\s_.()\-])(?:rev(?:ision)?|ver(?:sion)?|개정|수정)"
@@ -617,7 +623,9 @@ def price_version_matches_draft(
         list(draft.observations),
         list(draft.exclusions),
         calculation_version=version.calculation_version,
-        include_lineage=False,
+        include_lineage=(
+            version.calculation_version != _V3_CALCULATION_VERSION
+        ),
     )
     return version.draft_fingerprint == legacy_fingerprint
 
@@ -887,9 +895,9 @@ def _draft_from_evidence_rows(
         )
     supplier_count = len(
         {
-            row.supplier_name.strip().casefold()
+            normalize_search_text(row.supplier_name)
             for row in observations
-            if row.supplier_name is not None and row.supplier_name.strip()
+            if normalize_search_text(row.supplier_name)
         }
     )
     quote_dates = [

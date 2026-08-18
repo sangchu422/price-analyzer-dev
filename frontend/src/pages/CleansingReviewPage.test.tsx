@@ -156,6 +156,7 @@ describe("CleansingReviewPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "BEARING", level: 1 })).toBeVisible();
+    expect(document.title).toBe("정제 검토 · Price Analyzer");
     expect(await screen.findByLabelText("원본 견적서 셀 미리보기")).toBeVisible();
     expect(screen.getByTitle("A12")).toHaveClass("is-source-target");
     expect(screen.getByTitle("E12")).toHaveTextContent("2,800");
@@ -223,6 +224,59 @@ describe("CleansingReviewPage", () => {
     expect(screen.getAllByText("400,000원")).toHaveLength(2);
     expect(screen.getAllByText("1,000,000원").length).toBeGreaterThan(0);
     expect(screen.queryByText(/outlier-mad-v1/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      reasonCode: "INVALID_AMOUNT",
+      raw: { quantity: "2", unit_price: "19500000", amount: "0" },
+      detail: "amount is unparseable or nonpositive",
+      expected: "수량은 2이고 개당 단가는 19,500,000원인데 구매 금액이 0원이라 원본 확인이 필요합니다.",
+    },
+    {
+      reasonCode: "NUMERIC_OUT_OF_RANGE",
+      raw: { unit_price: "178000000178000000" },
+      detail: "unit_price cannot be represented by ExactDecimal; constraint=OUT_OF_RANGE",
+      expected: "개당 단가로 읽힌 178,000,000,178,000,000원이 저장 가능한 자릿수를 넘어섰습니다. 같은 행의 값이 붙어 읽혔는지 원본을 확인해 주세요.",
+    },
+    {
+      reasonCode: "OCR_SOURCE_REVIEW_REQUIRED",
+      raw: {},
+      detail: "OCR extraction requires review",
+      expected: "이미지 문서에서 품명·수량·단가 후보를 읽었지만 원문 대조가 끝나지 않아 가격 DB에 자동 반영하지 않습니다.",
+    },
+    {
+      reasonCode: "PARSER_SOURCE_REVIEW_REQUIRED",
+      raw: {},
+      detail: "layout-derived extraction requires review",
+      expected: "표의 선과 글자 위치를 기준으로 항목을 복원했습니다. 열 구분이 맞는지 문서 단위로 확인한 뒤 반영합니다.",
+    },
+  ])("explains $reasonCode with the value and the next operator action", async ({
+    reasonCode,
+    raw,
+    detail,
+    expected,
+  }) => {
+    const item = {
+      ...firstItem,
+      raw: { ...firstItem.raw, ...raw },
+      reason_code: reasonCode,
+      reason_detail: detail,
+      decision: {
+        ...firstItem.decision,
+        reason_code: reasonCode,
+        reason_detail: detail,
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("/preview")
+        ? jsonResponse(sourcePreview)
+        : jsonResponse(queue([item])),
+    ));
+
+    renderPage();
+
+    expect(await screen.findByText(expected)).toBeVisible();
   });
 
   it.each([

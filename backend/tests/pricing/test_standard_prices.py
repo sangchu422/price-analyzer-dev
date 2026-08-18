@@ -185,6 +185,30 @@ def test_price_draft_uses_exact_statistics_and_current_metadata() -> None:
         ]
 
 
+def test_supplier_count_collapses_cosmetic_company_name_variants() -> None:
+    with _session() as session:
+        item = _item(session)
+        _observation(
+            session,
+            item,
+            row=1,
+            price="100",
+            supplier="㈜ 지이엠",
+        )
+        _observation(
+            session,
+            item,
+            row=2,
+            price="120",
+            supplier="㈜지이엠",
+        )
+
+        draft = calculate_standard_price(session, item.id)
+
+        assert draft.observation_count == 2
+        assert draft.supplier_count == 1
+
+
 def test_identical_file_row_at_different_paths_counts_once() -> None:
     with _session() as session:
         item = _item(session)

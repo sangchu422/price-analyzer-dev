@@ -1530,18 +1530,17 @@
 }
 
 .target-evidence-popover {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 4px);
-  right: 0;
-  width: min(360px, 70vw);
-  max-height: min(360px, 60vh);
+  position: static;
+  width: 100%;
+  max-height: min(280px, 45vh);
   overflow-y: auto;
+  margin-top: 8px;
   padding: 12px;
+  box-sizing: border-box;
   border: 1px solid #d0d5dd;
   border-radius: 8px;
   background: #fff;
-  box-shadow: 0 14px 36px rgb(16 24 40 / 16%);
+  box-shadow: none;
   color: var(--analysis-ink);
   font-size: 12px;
   line-height: 1.5;

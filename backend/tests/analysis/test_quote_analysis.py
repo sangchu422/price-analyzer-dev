@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
+from app.analysis import service as analysis_service
 from app.analysis.service import analyze_document
 from app.catalog.models import (
     ItemMembershipDecision,
@@ -877,3 +878,34 @@ def test_analysis_query_count_does_not_grow_per_row() -> None:
     one = _select_count(1)
     many = _select_count(40)
     assert many == one
+
+
+def test_full_catalog_projection_does_not_send_all_ids_back_to_member_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _session() as session:
+        items = [_item(session, name=f"ITEM {index}") for index in range(3)]
+        requested_ids: list[object] = []
+
+        def member_counts(
+            _session: Session,
+            standard_item_ids: object = None,
+        ) -> dict[int, int]:
+            requested_ids.append(standard_item_ids)
+            return {item.id: 1 for item, _ in items}
+
+        monkeypatch.setattr(
+            analysis_service,
+            "current_standard_member_counts",
+            member_counts,
+        )
+        monkeypatch.setattr(
+            analysis_service,
+            "operational_standard_prices",
+            lambda _session, _item_ids: {},
+        )
+
+        projection = analysis_service._catalog_projection(session)
+
+        assert requested_ids == [None]
+        assert set(projection.versions) == {item.id for item, _ in items}

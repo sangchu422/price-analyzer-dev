@@ -451,7 +451,10 @@ def test_standard_catalog_materializes_only_a_fixed_page_chunk(
     def no_prices(
         session: Session,
         standard_item_ids: object,
+        *,
+        context: object | None = None,
     ) -> dict[int, OperationalStandardPriceState]:
+        assert context is not None
         item_ids = list(standard_item_ids)
         price_batch_sizes.append(len(item_ids))
         return {
@@ -1055,7 +1058,7 @@ def test_evidence_quality_reflects_distinct_suppliers_not_row_count(
         spec="G-100",
         unit="EA",
         price="10",
-        supplier="SUPPLIER Z",
+        supplier="㈜ 지이엠",
         maker="NOK",
     )
     _historical_row(
@@ -1065,7 +1068,7 @@ def test_evidence_quality_reflects_distinct_suppliers_not_row_count(
         spec="G-100",
         unit="EA",
         price="10",
-        supplier="SUPPLIER Z",
+        supplier="㈜지이엠",
         maker="NOK",
     )
     api_session.flush()
@@ -1082,6 +1085,7 @@ def test_evidence_quality_reflects_distinct_suppliers_not_row_count(
     assert item["observation_count"] == 2
     assert item["supplier_count"] == 1
     assert item["evidence_quality"] == "SINGLE_OBSERVATION"
+    assert item["supplier_summary"] in (["㈜ 지이엠"], ["㈜지이엠"])
 
     filtered = client.get(
         "/api/catalog/standard-items",

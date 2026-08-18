@@ -32,4 +32,12 @@ describe("responsive root styles", () => {
     expect(styles).not.toMatch(/\.app-wordmark\s*>\s*span\s*\{/);
     expect(styles).toMatch(/\.app-wordmark\s*>\s*span:first-child\s*\{/);
   });
+
+  it("keeps target evidence inside its row instead of covering later actions", () => {
+    const popoverRule = styles.match(/\.target-evidence-popover\s*\{([^}]*)\}/)?.[1];
+
+    expect(popoverRule).toBeDefined();
+    expect(popoverRule).toContain("position: static");
+    expect(popoverRule).not.toContain("position: absolute");
+  });
 });

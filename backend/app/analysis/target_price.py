@@ -662,6 +662,30 @@ def _load_target_observations(session: Session, price_ids: set[int]) -> dict[int
     return {key: tuple(value) for key, value in grouped.items()}
 
 
+def _unavailable_target_reason(line: AnalysisLine) -> tuple[str, str]:
+    """Explain why a non-matched line cannot become a negotiation target."""
+
+    if line.match_status == "REVIEW_REQUIRED":
+        return (
+            "NOT_APPLICABLE",
+            "정제 검토가 끝나지 않아 원본 확인 후에 목표가를 산정할 수 있습니다.",
+        )
+    if line.match_status == "EXCLUDED":
+        return (
+            "NOT_APPLICABLE",
+            "합계·소계 등 가격 비교 대상이 아닌 행이라 목표가 산정에서 제외했습니다.",
+        )
+    if line.market_price_lookup_required:
+        return (
+            "MARKET_REFERENCE_REQUIRED",
+            "표준 DB에 기준 가격이 없어 외부 시장가를 별도로 확인합니다. 외부 가격은 구매 목표가로 자동 대입하지 않습니다.",
+        )
+    return (
+        "NOT_APPLICABLE",
+        "표준 DB 가격과 연결되지 않아 현재 근거만으로 목표가를 산정할 수 없습니다.",
+    )
+
+
 def _target_line(
     line: AnalysisLine,
     rows: tuple[tuple, ...],
@@ -670,8 +694,19 @@ def _target_line(
     target_index: Decimal | None,
 ) -> TargetLineResult:
     if line.match_status != "MATCHED" or line.standard_price_version_id is None:
-        status = "MARKET_REFERENCE_REQUIRED" if line.market_price_lookup_required else "NOT_APPLICABLE"
-        return TargetLineResult(line.raw_item_id, status, None, None, None, None, 0, 0, "표준 DB 매칭이 없어 시장가를 별도로 확인해야 합니다." if status == "MARKET_REFERENCE_REQUIRED" else "구매 목표가 산정 대상이 아닙니다.", ())
+        status, reason = _unavailable_target_reason(line)
+        return TargetLineResult(
+            line.raw_item_id,
+            status,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            reason,
+            (),
+        )
     if target_period is None or target_index is None:
         return TargetLineResult(line.raw_item_id, "INDEX_UNAVAILABLE", None, None, None, None, 0, len(rows), "저장된 생산자물가지수가 없어 목표가를 계산할 수 없습니다.", ())
     evidence: list[TargetEvidenceResult] = []
@@ -719,16 +754,7 @@ def _target_line_from_cpi(
     """Create a CPI-backed target without consulting the legacy PPI series."""
 
     if line.match_status != "MATCHED" or line.standard_price_version_id is None:
-        status = (
-            "MARKET_REFERENCE_REQUIRED"
-            if line.market_price_lookup_required
-            else "NOT_APPLICABLE"
-        )
-        reason = (
-            "표준 DB에 기준 가격이 없어 시장가를 확인한 뒤 구매 목표가를 검토해야 합니다."
-            if status == "MARKET_REFERENCE_REQUIRED"
-            else "구매 목표가 산정 대상이 아닙니다."
-        )
+        status, reason = _unavailable_target_reason(line)
         return TargetLineResult(
             line.raw_item_id,
             status,
