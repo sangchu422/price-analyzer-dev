@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
+import { LoadingLabel } from "../components/LoadingLabel";
 import {
   ApiError,
   createQuoteAnalysisRun,
@@ -381,11 +382,11 @@ export function QuoteAnalysisPage({
 
       {stage !== "IDLE" && (
         <div className="analysis-progress-message" role="status" aria-live="polite">
-          <span className="shimmer-text">
+          <LoadingLabel>
             {stage === "PARSING"
               ? "견적서를 업로드하고 품목을 파싱하는 중입니다."
               : "표준 DB와 견적 품목을 비교하는 중입니다."}
-          </span>
+          </LoadingLabel>
         </div>
       )}
 
@@ -553,7 +554,7 @@ function AnalysisResults({
 
       <div className="market-roadmap">
         <strong>{`시장가 확인 필요 ${metrics.market}건`}</strong>
-        <span>DeviceMart·Mouser 캐시 우선 조회</span>
+        <span>DeviceMart 캐시 우선 조회</span>
         {marketLookupProgress && (
           <small className="market-batch-progress" role="status">
             {marketLookupProgressLabel(marketLookupProgress)}
@@ -1034,16 +1035,7 @@ function AnalysisRow({
       <td className="numeric">{formatUnitQuantity(line.unit, line.quantity)}</td>
       <td className="numeric">{formatMoney(line.quote_unit_price)}</td>
       <td className="numeric">{formatMoney(line.quote_amount)}</td>
-      <td
-        className="reference-range reference-evidence-trigger"
-        tabIndex={hasPriceEvidence ? 0 : undefined}
-        onMouseEnter={() => {
-          if (hasPriceEvidence && !standardEvidence.data) void standardEvidence.refetch();
-        }}
-        onFocus={() => {
-          if (hasPriceEvidence && !standardEvidence.data) void standardEvidence.refetch();
-        }}
-      >
+      <td className="reference-range">
         {line.match_status === "MATCHED" || market ? (
           <div className="reference-range-row">
             <span className="reference-range-value">
@@ -1068,40 +1060,6 @@ function AnalysisRow({
             )}
           </div>
         ) : "—"}
-        {hasPriceEvidence && (
-          <div className="reference-evidence-popover" role="tooltip">
-            <strong>표준단가 원본 근거</strong>
-            {standardEvidence.isFetching && !standardEvidence.isFetchingNextPage && (
-              <span className="shimmer-text">불러오는 중…</span>
-            )}
-            {standardEvidenceObservations.map((row) => (
-              <a
-                href={`/api/documents/variants/${row.source.variant_id}/file${row.source.page ? `#page=${row.source.page}` : ""}`}
-                target="_blank"
-                rel="noreferrer"
-                key={row.raw_item_id}
-              >
-                <span>{conciseSourceName(row.source.logical_name)}</span>
-                <strong>{formatMoney(row.unit_price)}</strong>
-              </a>
-            ))}
-            {standardEvidence.isError && <span>근거를 불러오지 못했습니다.</span>}
-            {standardEvidence.hasNextPage && (
-              <button
-                className="load-more-button"
-                type="button"
-                disabled={standardEvidence.isFetchingNextPage}
-                onClick={() => void standardEvidence.fetchNextPage()}
-              >
-                {standardEvidence.isFetchingNextPage ? (
-                  <span className="shimmer-text">불러오는 중…</span>
-                ) : (
-                  "근거 더 보기"
-                )}
-              </button>
-            )}
-          </div>
-        )}
       </td>
       <td className="numeric">{formatSignedMoney(varianceAmount)}</td>
       <td className="numeric">
@@ -1109,9 +1067,52 @@ function AnalysisRow({
       </td>
       <td>
         <div className="line-evidence">
-          <span className={`match-badge is-${line.match_status.toLowerCase()}`}>
+          <div
+            className={`match-badge is-${line.match_status.toLowerCase()}${hasPriceEvidence ? " reference-evidence-trigger" : ""}`}
+            tabIndex={hasPriceEvidence ? 0 : undefined}
+            onMouseEnter={() => {
+              if (hasPriceEvidence && !standardEvidence.data) void standardEvidence.refetch();
+            }}
+            onFocus={() => {
+              if (hasPriceEvidence && !standardEvidence.data) void standardEvidence.refetch();
+            }}
+          >
             {matchStatusLabel(line.match_status)}
-          </span>
+            {hasPriceEvidence && (
+              <div className="reference-evidence-popover" role="tooltip">
+                <strong>표준단가 원본 근거</strong>
+                {standardEvidence.isFetching && !standardEvidence.isFetchingNextPage && (
+                  <LoadingLabel>불러오는 중…</LoadingLabel>
+                )}
+                {standardEvidenceObservations.map((row) => (
+                  <a
+                    href={`/api/documents/variants/${row.source.variant_id}/file${row.source.page ? `#page=${row.source.page}` : ""}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    key={row.raw_item_id}
+                  >
+                    <span>{conciseSourceName(row.source.logical_name)}</span>
+                    <strong>{formatMoney(row.unit_price)}</strong>
+                  </a>
+                ))}
+                {standardEvidence.isError && <span>근거를 불러오지 못했습니다.</span>}
+                {standardEvidence.hasNextPage && (
+                  <button
+                    className="load-more-button"
+                    type="button"
+                    disabled={standardEvidence.isFetchingNextPage}
+                    onClick={() => void standardEvidence.fetchNextPage()}
+                  >
+                    {standardEvidence.isFetchingNextPage ? (
+                      <LoadingLabel>불러오는 중…</LoadingLabel>
+                    ) : (
+                      "근거 더 보기"
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
           {marketLookup && (
             <small className="market-auto-status">
               {marketBatchStatusLabel(marketLookup.status)}
@@ -1140,7 +1141,7 @@ function AnalysisRow({
                 onClick={() => void requestMarket(false)}
               >
                 {marketLoading ? (
-                  <span className="shimmer-text">조회 중…</span>
+                  <LoadingLabel>조회 중…</LoadingLabel>
                 ) : market ? (
                   "캐시 다시 보기"
                 ) : (
@@ -1226,9 +1227,11 @@ function MarketResultPanel({
             aria-busy={loading}
             onClick={onRefresh}
           >
-            <span className={loading ? "shimmer-text" : undefined}>
-              {loading ? "갱신 중…" : "실시간 갱신"}
-            </span>
+            {loading ? (
+              <LoadingLabel>갱신 중…</LoadingLabel>
+            ) : (
+              <span>실시간 갱신</span>
+            )}
           </button>
         </div>
       </header>
@@ -1249,7 +1252,7 @@ function MarketResultPanel({
               </div>
               <div className="market-product-copy">
                 <span className={`source-badge is-${product.source.toLowerCase()}`}>
-                  {product.source === "DEVICEMART" ? "DeviceMart" : "Mouser"}
+                  DeviceMart
                 </span>
                 <strong>{product.title}</strong>
                 <small>

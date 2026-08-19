@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, getHchatSettings, updateHchatSettings } from "../api/client";
+import { LoadingLabel } from "../components/LoadingLabel";
 
 type Notice = { kind: "success" | "error"; text: string };
 
@@ -60,9 +61,9 @@ export function SettingsPage() {
       )}
 
       {hchatSettings.isPending && (
-        <p className="inline-state shimmer-text" role="status">
+        <LoadingLabel as="p" className="inline-state" role="status">
           설정을 불러오는 중…
-        </p>
+        </LoadingLabel>
       )}
       {hchatSettings.isError && (
         <p className="inline-state is-error">설정을 불러오지 못했습니다.</p>
@@ -116,7 +117,7 @@ export function SettingsPage() {
               disabled={saveKey.isPending}
             >
               {saveKey.isPending ? (
-                <span className="shimmer-text">저장 중…</span>
+                <LoadingLabel>저장 중…</LoadingLabel>
               ) : (
                 "저장"
               )}

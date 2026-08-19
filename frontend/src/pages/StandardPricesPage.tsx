@@ -13,6 +13,7 @@ import {
 } from "../api/client";
 import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
 import { EvidenceBadge } from "../components/EvidenceBadge";
+import { LoadingLabel } from "../components/LoadingLabel";
 import { MetricStrip } from "../components/MetricStrip";
 
 export function StandardPricesPage() {
@@ -337,7 +338,7 @@ export function StandardPricesPage() {
             </div>
           </header>
           {catalog.isPending && (
-            <p className="inline-state shimmer-text" role="status">목록을 불러오는 중…</p>
+            <LoadingLabel as="p" className="inline-state" role="status">목록을 불러오는 중…</LoadingLabel>
           )}
           {catalog.isError && !isFetchNextCatalogPageError && (
             <div className="inline-state is-error" role="alert">
@@ -414,7 +415,7 @@ export function StandardPricesPage() {
               onClick={() => void fetchNextCatalogPage()}
             >
               {isFetchingNextCatalogPage ? (
-                <span className="shimmer-text">불러오는 중…</span>
+                <LoadingLabel>불러오는 중…</LoadingLabel>
               ) : (
                 "품목 더 보기"
               )}
@@ -589,9 +590,9 @@ function StandardItemDetail({
   return (
     <div className="standard-db-detail-content">
       {snapshotPending && (
-        <p className="inline-state shimmer-text" role="status">
+        <LoadingLabel as="p" className="inline-state" role="status">
           분석 당시 가격 버전을 불러오는 중입니다.
-        </p>
+        </LoadingLabel>
       )}
       {snapshotError && (
         <div className="inline-state is-error" role="alert">
@@ -657,7 +658,7 @@ function StandardItemDetail({
           <span>{observationCount}건</span>
         </div>
         {evidencePending && (
-          <p className="inline-state shimmer-text">근거를 불러오는 중…</p>
+          <LoadingLabel as="p" className="inline-state">근거를 불러오는 중…</LoadingLabel>
         )}
         {evidenceError && !evidenceNextError && (
           <div className="inline-state is-error" role="alert">
@@ -721,7 +722,7 @@ function StandardItemDetail({
             onClick={loadMoreEvidence}
           >
             {evidenceLoadingMore ? (
-              <span className="shimmer-text">불러오는 중…</span>
+              <LoadingLabel>불러오는 중…</LoadingLabel>
             ) : (
               "근거 더 보기"
             )}
@@ -738,7 +739,7 @@ function StandardItemDetail({
           <span>{versionGroups.length}건</span>
         </div>
         {historyPending && (
-          <p className="inline-state shimmer-text">이력을 불러오는 중…</p>
+          <LoadingLabel as="p" className="inline-state">이력을 불러오는 중…</LoadingLabel>
         )}
         {historyError && !historyNextError && (
           <div className="inline-state is-error" role="alert">
@@ -794,7 +795,7 @@ function StandardItemDetail({
             onClick={loadMoreHistory}
           >
             {historyLoadingMore ? (
-              <span className="shimmer-text">불러오는 중…</span>
+              <LoadingLabel>불러오는 중…</LoadingLabel>
             ) : (
               "가격 이력 더 보기"
             )}

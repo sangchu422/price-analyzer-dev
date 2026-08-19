@@ -104,7 +104,7 @@ describe("GroupingReviewPage", () => {
     );
     renderApp("/grouping");
 
-    expect(screen.getByText("불러오는 중…")).toHaveClass("shimmer-text");
+    expect(screen.getByText("불러오는 중…")).toHaveClass("loading-pulse");
 
     resolveUnmatched(await jsonResponse(unmatched));
 
@@ -135,7 +135,7 @@ describe("GroupingReviewPage", () => {
 
     expect(
       screen.getByText("후보와 근거를 불러오는 중…"),
-    ).toHaveClass("shimmer-text");
+    ).toHaveClass("loading-pulse");
 
     resolveCandidate(await jsonResponse(candidate));
 

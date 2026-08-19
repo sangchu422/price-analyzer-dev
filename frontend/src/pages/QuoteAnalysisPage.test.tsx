@@ -251,7 +251,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(screen.getByText("적정 5건")).toBeVisible();
   expect(screen.getByText("주의 1건")).toBeVisible();
   expect(screen.getByText("시장가 확인 필요 1건")).toBeVisible();
-  expect(screen.getByText("DeviceMart·Mouser 캐시 우선 조회")).toBeVisible();
+  expect(screen.getByText("DeviceMart 캐시 우선 조회")).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "개당 단가" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "구매 금액" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "참조 최저·중앙값·최고" })).toBeVisible();

@@ -239,7 +239,7 @@ it("shows a shimmering status message while the catalog is still loading", async
 
   renderApp("/standard-prices");
 
-  expect(screen.getByText("목록을 불러오는 중…")).toHaveClass("shimmer-text");
+  expect(screen.getByText("목록을 불러오는 중…")).toHaveClass("loading-pulse");
   expect(
     within(screen.getByLabelText("최근 갱신 상태")).getByText("불러오는 중…"),
   ).toBeVisible();

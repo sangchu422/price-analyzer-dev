@@ -634,22 +634,6 @@
   color: var(--danger);
 }
 
-@keyframes shimmer-text-pulse {
-  0%, 100% { color: var(--muted); }
-  50% { color: var(--ink); }
-}
-
-.shimmer-text {
-  animation: shimmer-text-pulse 1.3s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .shimmer-text {
-    animation: none;
-    color: var(--muted);
-  }
-}
-
 .price-metrics {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -722,7 +706,7 @@
 }
 
 .data-table td {
-  padding: 11px;
+  padding: 7px 11px;
   border-bottom: 1px solid var(--soft-line);
   vertical-align: top;
 }
@@ -1325,17 +1309,6 @@
   animation: page-enter 220ms ease both;
 }
 
-.analysis-progress-message::before {
-  width: 24px;
-  height: 24px;
-  margin: 0 auto 14px;
-  border: 2px solid #d0d5dd;
-  border-top-color: var(--analysis-accent);
-  border-radius: 50%;
-  content: "";
-  animation: analysis-spin 650ms linear infinite;
-}
-
 .analysis-empty {
   min-height: 320px;
   display: grid;
@@ -1400,18 +1373,30 @@
   justify-items: start;
   gap: 4px;
   padding: 13px 16px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 7px;
   color: var(--analysis-muted);
   background: transparent;
   cursor: pointer;
   text-align: left;
   font-weight: 750;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .analysis-mode-tabs button small {
   font-size: 9px;
   font-weight: 500;
+}
+
+.analysis-mode-tabs button:hover:not(.is-active) {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-surface);
+  color: var(--analysis-ink);
+}
+
+.analysis-mode-tabs button:focus-visible {
+  outline: 2px solid var(--analysis-accent);
+  outline-offset: 2px;
 }
 
 .analysis-mode-tabs button.is-active {
@@ -1751,7 +1736,7 @@
 }
 
 .analysis-result-table td {
-  padding: 13px 12px;
+  padding: 7px 12px;
   border-bottom: 1px solid #eaecf0;
   vertical-align: middle;
 }
@@ -2083,10 +2068,6 @@
 .muted {
   color: var(--analysis-muted);
   font-size: 9px;
-}
-
-@keyframes analysis-spin {
-  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 980px) {

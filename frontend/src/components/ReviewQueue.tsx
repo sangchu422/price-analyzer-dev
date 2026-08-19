@@ -1,4 +1,5 @@
 import type { ReviewQueueItem } from "../api/client";
+import { LoadingLabel } from "./LoadingLabel";
 import { reasonLabel } from "./reasonLabels";
 
 interface ReviewQueueProps {
@@ -80,9 +81,9 @@ export function ReviewQueue({
       <div className="queue-heading">
         <span>검토 항목</span>
         {isSearching ? (
-          <span className="queue-progress shimmer-text" role="status" aria-live="polite">
+          <LoadingLabel className="queue-progress" role="status" ariaLive="polite">
             검색 중…
-          </span>
+          </LoadingLabel>
         ) : (
           <span>{items.length}건 표시</span>
         )}
@@ -135,7 +136,7 @@ export function ReviewQueue({
           onClick={onLoadMore}
         >
           {isFetchingNextPage ? (
-            <span className="shimmer-text">불러오는 중…</span>
+            <LoadingLabel>불러오는 중…</LoadingLabel>
           ) : (
             "다음 항목 불러오기"
           )}

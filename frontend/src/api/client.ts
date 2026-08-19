@@ -501,7 +501,7 @@ export type MarketAssessment =
 
 export interface MarketProductResult {
   observation_id: number;
-  source: "DEVICEMART" | "MOUSER";
+  source: "DEVICEMART";
   title: string;
   manufacturer: string | null;
   model_number: string | null;
@@ -542,7 +542,7 @@ export interface MarketLookupResult {
   variance_percent: string | null;
   products: MarketProductResult[];
   source_failures: Array<{
-    source: "DEVICEMART" | "MOUSER";
+    source: "DEVICEMART";
     detail: string;
   }>;
   outcome?:

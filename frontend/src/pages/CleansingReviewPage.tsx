@@ -16,6 +16,7 @@ import {
 } from "../api/client";
 import { DecisionBar } from "../components/DecisionBar";
 import { ItemInspector } from "../components/ItemInspector";
+import { LoadingLabel } from "../components/LoadingLabel";
 import { ReviewQueue } from "../components/ReviewQueue";
 
 type Notice = { kind: "success" | "stale" | "error"; text: string };
@@ -308,7 +309,7 @@ function StateScreen({
       aria-busy={busy}
     >
       <span className="brand-mark" aria-hidden="true">P</span>
-      <p className={busy ? "shimmer-text" : undefined}>{message}</p>
+      {busy ? <LoadingLabel as="p">{message}</LoadingLabel> : <p>{message}</p>}
       {action}
     </main>
   );

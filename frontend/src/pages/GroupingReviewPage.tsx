@@ -15,6 +15,7 @@ import {
   submitMembership,
   type CatalogCandidate,
 } from "../api/client";
+import { LoadingLabel } from "../components/LoadingLabel";
 
 type Notice = { kind: "success" | "error" | "warning"; text: string };
 
@@ -281,7 +282,7 @@ export function GroupingReviewPage() {
             <span>{items.length}건</span>
           </header>
           {unmatched.isPending && (
-            <p className="inline-state shimmer-text" role="status">불러오는 중…</p>
+            <LoadingLabel as="p" className="inline-state" role="status">불러오는 중…</LoadingLabel>
           )}
           {unmatched.isError && (
             <p className="inline-state is-error">목록을 불러오지 못했습니다.</p>
@@ -318,7 +319,7 @@ export function GroupingReviewPage() {
               onClick={() => void unmatched.fetchNextPage()}
             >
               {unmatched.isFetchingNextPage ? (
-                <span className="shimmer-text">다음 품목 불러오는 중…</span>
+                <LoadingLabel>다음 품목 불러오는 중…</LoadingLabel>
               ) : (
                 "다음 품목 불러오기"
               )}
@@ -338,7 +339,7 @@ export function GroupingReviewPage() {
           )}
           {selectedId !== null && detail.isPending && (
             <div className="empty-detail">
-              <p className="shimmer-text" role="status">후보와 근거를 불러오는 중…</p>
+              <LoadingLabel as="p" role="status">후보와 근거를 불러오는 중…</LoadingLabel>
             </div>
           )}
           {selectedId !== null && detail.isError && (
