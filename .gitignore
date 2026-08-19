@@ -14,6 +14,21 @@ venv/
 # Local workspace settings
 .claude/
 
+# Claude Code documentation mirror (auto-updating, not project docs)
+claude-docs/
+
+# Claude session scratch/investigation output
+dev/
+.playwright-mcp/
+nul
+
+# Claude session planning docs (keep only specs cited as current basis elsewhere)
+docs/superpowers/*
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-07-25-data-cleansing-grouping-market-price-design.md
+!docs/superpowers/specs/2026-07-26-automatic-standard-database-design.md
+
 # Local isolated development worktrees
 .worktrees/
 
