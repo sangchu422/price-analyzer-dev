@@ -39,6 +39,7 @@ scripts\start-local.bat --initialize-only
 1·2·3차 견적 원본과 복구본을 증분 확인한다.
 
 ```bat
+copy .env.example .env
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -e backend
@@ -47,6 +48,9 @@ scripts\install-ocr-runtime.bat
 scripts\start-local.bat --initialize-only
 scripts\start-local.bat
 ```
+
+앱 실행 후 `/settings` 화면에서 본인 hChat API 키를 입력한다(`.env`에는
+넣지 않음). 값 설명은 아래 `환경 변수 설정` 참고.
 
 OCR로 읽은 행은 자동으로 표준가격 근거가 되지 않는다. 웹의 `정제 검토`에서
 원본과 값을 확인해 포함 결정한 뒤에만 반영된다. Excel에서 복구한 구형 XLS
@@ -57,10 +61,10 @@ OCR로 읽은 행은 자동으로 표준가격 근거가 되지 않는다. 웹�
 
 ## 환경 변수 설정
 
-저장소 루트의 `.env.example`을 `.env`로 복사한다. 기본값만으로도 앱은
-동작하며(hChat 끔, DeviceMart 켬), hChat 임베딩을 쓰려면 관리자가
-`HCHAT_EMBEDDING_*` 값을 채운다. 개인 hChat API 키는 `.env`에 넣지
-않고, 앱 실행 후 `/settings` 화면에서 각자 입력한다.
+`.env.example`에는 팀 공용 hChat endpoint·model이 이미 채워져 있고
+기본값(hChat 켬, DeviceMart 켬)만으로 동작한다. `HCHAT_EMBEDDING_API_KEY`만
+비워두며, 이 값은 `.env`가 아니라 앱 실행 후 `/settings` 화면에서 각자
+개인 키로 입력한다.
 
 ## 과거 견적 적재와 표준 DB 구축
 
