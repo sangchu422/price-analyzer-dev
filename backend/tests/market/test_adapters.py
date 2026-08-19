@@ -7,44 +7,6 @@ import httpx
 
 from app.market.adapters.base import search_query_variants
 from app.market.adapters.devicemart import parse_product_page, parse_sse_products
-from app.market.adapters.mouser import MouserAdapter
-
-
-def test_mouser_parses_quantity_prices_from_official_response() -> None:
-    payload = {
-        "Errors": [],
-        "SearchResults": {
-            "Parts": [
-                {
-                    "MouserPartNumber": "511-STM32F407",
-                    "ManufacturerPartNumber": "STM32F407VGT6",
-                    "Manufacturer": "STMicroelectronics",
-                    "Description": "ARM Microcontroller",
-                    "ProductDetailUrl": "https://www.mouser.kr/ProductDetail/1",
-                    "Currency": "KRW",
-                    "AvailabilityInStock": "120",
-                    "Min": "1",
-                    "PriceBreaks": [
-                        {"Quantity": 1, "Price": "₩12,000", "Currency": "KRW"},
-                        {"Quantity": 10, "Price": "₩10,500", "Currency": "KRW"},
-                    ],
-                }
-            ]
-        },
-    }
-    transport = httpx.MockTransport(
-        lambda request: httpx.Response(200, json=payload, request=request)
-    )
-    with httpx.Client(transport=transport) as client:
-        products = MouserAdapter(
-            api_key="test",
-            base_url="https://api.mouser.test/api/v1",
-            client=client,
-        ).search("STM32F407")
-
-    assert products[0].model_number == "STM32F407VGT6"
-    assert products[0].stock_quantity == 120
-    assert products[0].tiers[1].unit_price == Decimal("10500")
 
 
 def test_devicemart_parses_product_json_ld_evidence() -> None:

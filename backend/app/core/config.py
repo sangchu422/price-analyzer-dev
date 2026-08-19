@@ -41,8 +41,6 @@ class Settings(BaseSettings):
     market_empty_result_ttl_hours: int = 6
     market_evidence_folder: Path = Path("backend/.local/evidence/market")
     market_request_timeout_seconds: float = 15.0
-    mouser_api_key: SecretStr | None = None
-    mouser_api_base_url: str = "https://api.mouser.com/api/v1"
     devicemart_enabled: bool = True
     devicemart_base_url: str = "https://www.devicemart.co.kr"
     devicemart_request_delay_seconds: float = 1.0

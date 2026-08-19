@@ -14,7 +14,7 @@ from app.db.session import get_session
 from app.analysis.models import QuoteAnalysisRun
 from app.analysis.service import market_lookup_eligibilities
 from app.documents.models import SourceVariant
-from app.market.adapters import DeviceMartAdapter, MouserAdapter
+from app.market.adapters import DeviceMartAdapter
 from app.market.evidence import EvidenceStore
 from app.market.models import MarketPriceObservation
 from app.market.screenshot import PlaywrightScreenshotter
@@ -48,19 +48,6 @@ def _service(session: Session) -> MarketLookupService:
                 base_url=settings.devicemart_base_url,
                 timeout=settings.market_request_timeout_seconds,
                 delay_seconds=settings.devicemart_request_delay_seconds,
-            )
-        )
-    mouser_key = (
-        settings.mouser_api_key.get_secret_value().strip()
-        if settings.mouser_api_key is not None
-        else ""
-    )
-    if mouser_key:
-        adapters.append(
-            MouserAdapter(
-                api_key=mouser_key,
-                base_url=settings.mouser_api_base_url,
-                timeout=settings.market_request_timeout_seconds,
             )
         )
     return MarketLookupService(session, settings, adapters, PlaywrightScreenshotter())
@@ -130,9 +117,9 @@ def _automatic_lookup(
             )
         detail_by_outcome = {
             "CACHE_HIT": "저장된 시장가 근거를 적용했습니다.",
-            "LIVE_HIT": "DeviceMart·Mouser에서 시장가 근거를 수집했습니다.",
+            "LIVE_HIT": "DeviceMart에서 시장가 근거를 수집했습니다.",
             "REFERENCE_ONLY": "유사 상품은 찾았지만 자동 판정 조건을 충족하지 못했습니다.",
-            "NO_REFERENCE": "두 출처에서 일치하는 시장가 근거를 찾지 못했습니다.",
+            "NO_REFERENCE": "일치하는 시장가 근거를 찾지 못했습니다.",
             "SOURCE_UNAVAILABLE": "사용 가능한 시장가 출처가 없거나 조회에 실패했습니다.",
         }
         return MarketBatchItemResponse(

@@ -23,7 +23,6 @@ from app.market.screenshot import PageScreenshotter
 from app.market.models import (
     MarketCollectionRun,
     MarketPriceObservation,
-    MarketSource,
 )
 from app.market.repository import MarketRepository, normalize_query
 from app.market.schemas import (
@@ -112,7 +111,7 @@ class MarketLookupService:
         runs: list[MarketCollectionRun] = []
         failures: list[MarketSourceFailure] = []
         cache_count = live_count = 0
-        for source in (MarketSource.DEVICEMART, MarketSource.MOUSER):
+        for source, adapter in self.adapters.items():
             cached = None if force_refresh else self.repository.fresh_run(
                 source,
                 query,
@@ -121,15 +120,6 @@ class MarketLookupService:
             if cached is not None:
                 runs.append(cached)
                 cache_count += 1
-                continue
-            adapter = self.adapters.get(source)
-            if adapter is None:
-                failures.append(
-                    MarketSourceFailure(
-                        source=source,
-                        detail="수집기가 비활성화되었거나 API 키가 없습니다.",
-                    )
-                )
                 continue
             try:
                 products = _relevant_products(query, adapter.search(query))

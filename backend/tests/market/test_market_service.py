@@ -218,7 +218,7 @@ def test_missing_evidence_invalidates_a_fresh_cache(tmp_path) -> None:
             [device],
         ).lookup_raw_item(raw.id)
 
-        assert refreshed.cache_state == "PARTIAL"
+        assert refreshed.cache_state == "LIVE"
         assert device.calls == 2
 
 
@@ -306,28 +306,6 @@ def test_automatic_market_price_requires_exact_part_maker_stock_and_moq() -> Non
     assert "MODEL_NUMBER_NOT_EXACT" in reasons
     assert "MOQ_NOT_MET" in reasons
     assert "STOCK_UNCONFIRMED" in reasons
-
-
-def test_missing_mouser_adapter_keeps_devicemart_reference_and_reports_setup(
-    tmp_path,
-) -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    settings = Settings(project_root=tmp_path, market_evidence_folder="evidence")
-
-    with Session(engine, expire_on_commit=False) as session:
-        raw = _raw_item(session)
-        result = MarketLookupService(
-            session,
-            settings,
-            [FakeAdapter(MarketSource.DEVICEMART, "100")],
-        ).lookup_raw_item(raw.id)
-
-    assert result.outcome == "REFERENCE_ONLY"
-    assert [failure.source for failure in result.source_failures] == [
-        MarketSource.MOUSER
-    ]
-    assert "API 키" in result.source_failures[0].detail
 
 
 def test_both_market_sources_failing_remains_source_unavailable(tmp_path) -> None:
