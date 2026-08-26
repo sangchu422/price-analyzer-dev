@@ -1,5 +1,6 @@
 import {
   Database,
+  LayoutDashboard,
   Moon,
   ScanSearch,
   Settings,
@@ -10,6 +11,7 @@ import {
 import type { AppTheme } from "../theme";
 
 const destinations = [
+  { path: "/dashboard", label: "종합현황", icon: LayoutDashboard },
   { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
   { path: "/standard-prices", label: "표준 DB", icon: Database },
   { path: "/analysis", label: "신규 견적 분석", icon: ScanSearch },
@@ -37,10 +39,10 @@ export function AppNavigation({
     <nav className="app-navigation" aria-label="주요 작업">
       <a
         className="app-wordmark"
-        href="/cleansing"
+        href="/dashboard"
         onClick={(event) => {
           event.preventDefault();
-          onNavigate("/cleansing");
+          onNavigate("/dashboard");
         }}
       >
         <span className="wordmark-copy" aria-hidden="true">
@@ -56,7 +58,7 @@ export function AppNavigation({
         {destinations.map(({ path, label, icon: Icon }) => {
           const active =
             currentPath === path ||
-            (currentPath === "/" && path === "/cleansing");
+            (currentPath === "/" && path === "/dashboard");
           return (
             <a
               key={path}

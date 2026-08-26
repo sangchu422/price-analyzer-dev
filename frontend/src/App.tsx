@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { AppNavigation } from "./components/AppNavigation";
 import { CleansingReviewPage } from "./pages/CleansingReviewPage";
 import { GroupingReviewPage } from "./pages/GroupingReviewPage";
 import { QuoteAnalysisPage } from "./pages/QuoteAnalysisPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { StandardPricesPage } from "./pages/StandardPricesPage";
 import { useQuoteAnalysisWorkflowState } from "./state/quoteAnalysisState";
 import { applyTheme, getStoredTheme, type AppTheme } from "./theme";
 
@@ -13,10 +12,37 @@ function currentPathname() {
   return window.location.pathname.replace(/\/+$/, "") || "/";
 }
 
+let dashboardIntroPlayed = false;
+
+const dashboardPagePromise = import("./pages/DashboardPage");
+const DashboardPage = lazy(() => dashboardPagePromise.then(
+  (module) => ({ default: module.DashboardPage }),
+));
+const StandardPricesPage = lazy(() => import("./pages/StandardPricesPage").then(
+  (module) => ({ default: module.StandardPricesPage }),
+));
+const WiaLogoIntro = lazy(() => import("./components/WiaLogoIntro").then(
+  (module) => ({ default: module.WiaLogoIntro }),
+));
+
+function DashboardIntroFallback() {
+  return (
+    <div className="wia-intro" role="status" aria-label="Price Analyzer 시작 화면을 준비하는 중">
+      <div className="wia-intro-mark">
+        <img src="/brand/hyundai-wia.png" alt="HYUNDAI WIA" />
+      </div>
+      <p>PROCUREMENT INTELLIGENCE</p>
+    </div>
+  );
+}
+
 export function App() {
   const [path, setPath] = useState(currentPathname);
   const [theme, setTheme] = useState<AppTheme>(getStoredTheme);
   const quoteAnalysisWorkflow = useQuoteAnalysisWorkflowState();
+  const [showDashboardIntro, setShowDashboardIntro] = useState(
+    () => (path === "/" || path === "/dashboard") && !dashboardIntroPlayed,
+  );
 
   useEffect(() => {
     applyTheme(theme);
@@ -47,13 +73,16 @@ export function App() {
   const navigate = (nextPath: string) => {
     if (nextPath === path) return;
     window.history.pushState({}, "", nextPath);
-    setPath(nextPath);
+    setPath(currentPathname());
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   };
 
   let page: React.ReactNode;
   switch (path) {
     case "/":
+    case "/dashboard":
+      page = <DashboardPage onNavigate={navigate} />;
+      break;
     case "/cleansing":
       page = <CleansingReviewPage />;
       break;
@@ -88,9 +117,21 @@ export function App() {
         theme={theme}
         onThemeChange={setTheme}
       />
-      <div className="route-stage" key={path}>
-        {page}
-      </div>
+      <Suspense fallback={<main className="workspace-state" role="status">화면을 준비하고 있습니다.</main>}>
+        <div className="route-stage" key={path}>
+          {page}
+        </div>
+      </Suspense>
+      {showDashboardIntro ? (
+        <Suspense fallback={<DashboardIntroFallback />}>
+          <WiaLogoIntro
+            onComplete={() => {
+              dashboardIntroPlayed = true;
+              setShowDashboardIntro(false);
+            }}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

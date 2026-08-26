@@ -48,6 +48,8 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.metadata_audit.service import AUDIT_RULE_VERSION
+from app.procurement.categories import current_category_subquery
+from app.procurement.models import ItemCategory
 from app.quotes.models import RawQuoteItem
 from app.standard_database.read_service import (
     EvidenceQuality,
@@ -262,6 +264,9 @@ class StandardItemSummaryResponse(StandardItemResponse):
     quote_date_end_quality: str | None
     spec_source_status: str
     provenance: "BuildProvenanceResponse | None"
+    category_code: str | None = None
+    category_name: str | None = None
+    category_confidence: Decimal | None = None
 
 
 class ExplorerPriceResponse(BaseModel):
@@ -686,6 +691,37 @@ def _explorer_summary_payload(
     }
 
 
+def _category_payloads(
+    session: Session,
+    standard_item_ids: list[int],
+) -> dict[int, dict[str, object]]:
+    if not standard_item_ids:
+        return {}
+    current_categories = current_category_subquery(name="api_current_categories")
+    return {
+        standard_item_id: {
+            "category_code": code,
+            "category_name": name,
+            "category_confidence": confidence,
+        }
+        for standard_item_id, code, name, confidence in session.execute(
+            select(
+                current_categories.c.standard_item_id,
+                ItemCategory.code,
+                ItemCategory.name,
+                current_categories.c.confidence,
+            )
+            .join(
+                ItemCategory,
+                ItemCategory.id == current_categories.c.category_id,
+            )
+            .where(
+                current_categories.c.standard_item_id.in_(standard_item_ids)
+            )
+        )
+    }
+
+
 @router.get(
     "/metadata-audit/summary",
     response_model=MetadataAuditSummaryResponse,
@@ -872,6 +908,7 @@ def get_standard_items(
     limit: int = Query(50, ge=1, le=100),
     search: str | None = Query(None, max_length=200),
     evidence_quality: EvidenceQuality | None = Query(None),
+    category: str | None = Query(None, max_length=64),
 ) -> dict[str, object]:
     rows, next_cursor, latest_build = list_standard_explorer_items(
         session,
@@ -879,9 +916,19 @@ def get_standard_items(
         limit=limit,
         search=search,
         quality=evidence_quality,
+        category_code=category,
     )
+    categories = _category_payloads(
+        session,
+        [row.current_version.standard_item_id for row in rows],
+    )
+    items: list[dict[str, object]] = []
+    for row in rows:
+        payload = _explorer_summary_payload(row)
+        payload.update(categories.get(row.current_version.standard_item_id, {}))
+        items.append(payload)
     return {
-        "items": [_explorer_summary_payload(row) for row in rows],
+        "items": items,
         "next_cursor": next_cursor,
         "limit": limit,
         "latest_build": _build_provenance_payload(latest_build),
@@ -894,6 +941,7 @@ def export_standard_items(
     *,
     search: str | None = Query(None, max_length=200),
     evidence_quality: EvidenceQuality | None = Query(None),
+    category: str | None = Query(None, max_length=64),
 ) -> Response:
     headers = [
         "품명", "규격", "단위", "최저", "중앙값", "평균", "최고",
@@ -908,6 +956,7 @@ def export_standard_items(
             limit=200,
             search=search,
             quality=evidence_quality,
+            category_code=category,
         )
         for summary in chunk:
             payload = _explorer_summary_payload(summary)

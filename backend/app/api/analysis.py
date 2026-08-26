@@ -56,6 +56,16 @@ from app.catalog.service import CandidateEmbeddingRuntime
 from app.core.config import settings
 from app.db.session import get_session
 from app.documents.models import SourceDocument
+from app.procurement.activation import (
+    ActivationNotFound,
+    activate_analysis_run,
+    activation_payload,
+    deliver_outlook_alerts,
+)
+from app.procurement.equipment import (
+    create_equipment_projection,
+    equipment_group_payloads,
+)
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -238,6 +248,27 @@ class TargetLineResponse(BaseModel):
     evidence: list[TargetEvidenceResponse]
 
 
+class EquipmentLineResponse(BaseModel):
+    raw_item_id: int
+    quote_amount: Decimal
+    target_amount: Decimal | None
+    negotiation_amount: Decimal
+
+
+class EquipmentGroupResponse(BaseModel):
+    id: int
+    key: str
+    name: str
+    source_kind: str
+    quote_amount: Decimal
+    target_amount: Decimal
+    negotiation_amount: Decimal
+    unallocated_amount: Decimal
+    line_count: int
+    target_available_count: int
+    lines: list[EquipmentLineResponse]
+
+
 class InflationSeriesResponse(BaseModel):
     available: bool
     sync_run_id: int | None
@@ -277,8 +308,6 @@ class AnalysisRunResponse(DocumentAnalysisResponse):
     inflation_series_kind: str | None
     target_period: str | None
     target_index_value: Decimal | None
-    inflation_source_url: str | None
-    inflation_source_last_changed: str | None
     inflation_source_url: str
     inflation_source_last_changed: str | None
     quote_total_amount: Decimal | None
@@ -286,6 +315,7 @@ class AnalysisRunResponse(DocumentAnalysisResponse):
     target_available_count: int
     target_unavailable_count: int
     target_lines: list[TargetLineResponse]
+    equipment_groups: list[EquipmentGroupResponse]
 
 
 class StoredAnalysisRunResponse(BaseModel):
@@ -304,6 +334,14 @@ class StoredAnalysisRunResponse(BaseModel):
     target_available_count: int
     target_unavailable_count: int
     target_lines: list[TargetLineResponse]
+    equipment_groups: list[EquipmentGroupResponse]
+
+
+class QuoteActivationRequest(BaseModel):
+    activated_by: str = Field(min_length=1, max_length=100)
+    reason_detail: str = Field(min_length=3, max_length=1000)
+    send_outlook: bool = False
+    outlook_recipient: str | None = Field(default=None, max_length=320)
 
 
 @router.get("/documents", response_model=AnalysisDocumentListResponse)
@@ -444,11 +482,14 @@ def post_analysis_run(
             high_percent=body.high_percent,
             embedding_runtime=runtime,
         )
+        create_equipment_projection(session, result)
         session.commit()
     except (AnalysisNotFound, ValueError) as exc:
         session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _analysis_run_payload(result, body.review_percent, body.high_percent)
+    payload = _analysis_run_payload(result, body.review_percent, body.high_percent)
+    payload["equipment_groups"] = equipment_group_payloads(session, result.run_id)
+    return payload
 
 
 @router.get("/runs/{run_id}", response_model=StoredAnalysisRunResponse)
@@ -562,7 +603,79 @@ def get_analysis_run(
             }
             for line in lines
         ],
+        "equipment_groups": equipment_group_payloads(session, run.id),
     }
+
+
+@router.get("/runs/{run_id}/equipment-groups", response_model=list[EquipmentGroupResponse])
+def get_analysis_equipment_groups(
+    run_id: int,
+    session: Session = Depends(get_session),
+) -> list[dict[str, object]]:
+    if session.get(QuoteAnalysisRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
+    return equipment_group_payloads(session, run_id)
+
+
+@router.post("/runs/{run_id}/activate")
+def post_activate_analysis_run(
+    run_id: int,
+    body: QuoteActivationRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    outlook_recipient = (body.outlook_recipient or "").strip()
+    if body.send_outlook and (
+        not outlook_recipient
+        or "@" not in outlook_recipient
+        or len(outlook_recipient) > 320
+    ):
+        # Validate optional delivery before committing the append-only catalog
+        # activation. A bad address must not make the API report failure after
+        # the standard DB was already updated successfully.
+        raise HTTPException(
+            status_code=422,
+            detail="Outlook 알림 수신 이메일을 확인해 주세요.",
+        )
+    try:
+        activation = activate_analysis_run(
+            session,
+            run_id,
+            activated_by=body.activated_by,
+            reason_detail=body.reason_detail,
+        )
+        session.commit()
+    except ActivationNotFound as exc:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    deliveries: list[dict[str, object]] = []
+    if body.send_outlook:
+        try:
+            sent = deliver_outlook_alerts(
+                session,
+                activation,
+                recipient=outlook_recipient,
+            )
+            session.commit()
+            deliveries = [
+                {
+                    "alert_id": delivery.alert_id,
+                    "channel": delivery.channel,
+                    "recipient": delivery.recipient,
+                    "status": delivery.status,
+                    "detail": delivery.detail,
+                }
+                for delivery in sent
+            ]
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload = activation_payload(session, activation)
+    payload["deliveries"] = deliveries
+    return payload
 
 
 _TARGET_STATUS_LABELS = {

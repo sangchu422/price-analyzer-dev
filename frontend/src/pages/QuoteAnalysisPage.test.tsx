@@ -113,6 +113,26 @@ const analysis = {
   target_total_amount: "1260.000000",
   target_available_count: 7,
   target_unavailable_count: 2,
+  equipment_groups: [
+    {
+      id: 1,
+      key: "equipment-1",
+      name: "신규 설비",
+      source_kind: "COVER_SHEET",
+      quote_amount: "2080.000000",
+      target_amount: "1520.000000",
+      negotiation_amount: "560.000000",
+      unallocated_amount: "0.000000",
+      line_count: 9,
+      target_available_count: 7,
+      lines: Array.from({ length: 9 }, (_, index) => ({
+        raw_item_id: index + 1,
+        quote_amount: index === 7 ? "0.000000" : "260.000000",
+        target_amount: index < 7 ? "180.000000" : null,
+        negotiation_amount: index < 7 ? "80.000000" : "0.000000",
+      })),
+    },
+  ],
   target_lines: Array.from({ length: 9 }, (_, index) => ({
     raw_item_id: index + 1,
     status: index < 7 ? "AVAILABLE" : "DATE_UNAVAILABLE",
@@ -226,6 +246,9 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(
     await screen.findByRole("heading", { name: "신규견적.xlsx" }),
   ).toBeVisible();
+  expect(screen.getByRole("row", { name: /신규 설비/ })).toBeVisible();
+  expect(screen.getByText("전체 협상 목표금액")).toBeVisible();
+  await user.click(screen.getByRole("tab", { name: /가격 적정성/ }));
   expect(
     await screen.findByText("시장가 자동 조회 완료 0건 · 불가 1건"),
   ).toBeVisible();
@@ -262,6 +285,11 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(within(servo).getByText(/시장가 근거 없음/)).toBeVisible();
   expect(within(servo).getByText("판정 대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: /설비별 협상/ }));
+  await user.click(screen.getByRole("button", { name: "검토 완료 · 표준 DB 반영" }));
+  expect(screen.getByLabelText("반영 담당자")).toHaveValue("설비구매팀");
+  expect(screen.getByRole("button", { name: "승인하고 표준 DB에 추가" })).toBeEnabled();
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
   expect(
@@ -378,6 +406,7 @@ it("renders comparison basis, signed variance, and every operational status dist
   await user.type(screen.getByLabelText("접수자"), "buyer");
   await user.click(screen.getByRole("button", { name: "견적 분석 시작" }));
 
+  await user.click(screen.getByRole("tab", { name: /가격 적정성/ }));
   expect(await screen.findByText("주의 0건")).toBeVisible();
   const matched = await screen.findByRole("row", { name: /MATCHED ITEM/ });
   expect(within(matched).getByText("표준 DB 근거 매칭")).toBeVisible();
@@ -455,6 +484,7 @@ it("applies a collected market assessment to the row and overall summary", async
   await userEvent.type(screen.getByLabelText("접수자"), "설비구매팀");
   await userEvent.click(screen.getByRole("button", { name: "견적 분석 시작" }));
   await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  await userEvent.click(screen.getByRole("tab", { name: /가격 적정성/ }));
   const row = screen.getByRole("row", { name: /SERVO MOTOR/ });
   await userEvent.click(
     within(row).getByRole("button", { name: "시장가 조회" }),
@@ -512,6 +542,7 @@ it("shows a busy label on the market panel while a refresh is in flight", async 
   await userEvent.type(screen.getByLabelText("접수자"), "설비구매팀");
   await userEvent.click(screen.getByRole("button", { name: "견적 분석 시작" }));
   await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  await userEvent.click(screen.getByRole("tab", { name: /가격 적정성/ }));
   const row = screen.getByRole("row", { name: /SERVO MOTOR/ });
   await userEvent.click(
     within(row).getByRole("button", { name: "시장가 조회" }),
@@ -583,6 +614,7 @@ it("treats a market-sourced REVIEW assessment as 주의, not 판정 대기", asy
   await userEvent.type(screen.getByLabelText("접수자"), "설비구매팀");
   await userEvent.click(screen.getByRole("button", { name: "견적 분석 시작" }));
   await screen.findByRole("heading", { name: "신규견적.xlsx" });
+  await userEvent.click(screen.getByRole("tab", { name: /가격 적정성/ }));
   const row = screen.getByRole("row", { name: /SERVO MOTOR/ });
   await userEvent.click(
     within(row).getByRole("button", { name: "시장가 조회" }),

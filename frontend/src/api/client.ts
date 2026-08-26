@@ -169,6 +169,9 @@ export interface StandardItemSummary {
     | "MIXED_SOURCE_VALUES"
     | "UNKNOWN";
   provenance: StandardBuildProvenance | null;
+  category_code?: string | null;
+  category_name?: string | null;
+  category_confidence?: string | null;
 }
 
 export interface StandardItemListResponse {
@@ -655,6 +658,99 @@ export interface QuoteAnalysisRun extends DocumentAnalysis {
   target_available_count: number;
   target_unavailable_count: number;
   target_lines: TargetPriceLine[];
+  equipment_groups?: EquipmentAnalysisGroup[];
+}
+
+export interface EquipmentAnalysisGroup {
+  id: number;
+  key: string;
+  name: string;
+  source_kind: "COVER_SHEET" | "LINE_ITEM_FALLBACK" | string;
+  quote_amount: string;
+  target_amount: string;
+  negotiation_amount: string;
+  unallocated_amount: string;
+  line_count: number;
+  target_available_count: number;
+  lines: Array<{
+    raw_item_id: number;
+    quote_amount: string;
+    target_amount: string | null;
+    negotiation_amount: string;
+  }>;
+}
+
+export interface DashboardOverview {
+  as_of: string;
+  catalog: {
+    total_standard_items: number;
+    categorized_items: number;
+    active_price_items: number;
+    rebuild_required_items: number;
+    no_evidence_items: number;
+    unmatched_included_items: number;
+    cleansing_todo_items: number;
+    latest_build_run_id: number | null;
+  };
+  categories: Array<{
+    code: string;
+    name: string;
+    description: string;
+    count: number;
+    share_percent: string;
+  }>;
+  cleansing_todo: {
+    count: number;
+    top_reasons: Array<{ reason_code: string; count: number }>;
+  };
+  monthly_performance: {
+    year: number;
+    current_month: number;
+    forecast_method: string;
+    source_status: "OPERATIONAL";
+    series: Array<{
+      month: number;
+      label: string;
+      count: number;
+      kind: "ACTUAL" | "FORECAST";
+    }>;
+  };
+  indicators: Array<{
+    code: string;
+    name: string;
+    group: string;
+    unit: string;
+    source_status: "DEMO" | "OFFICIAL_CACHE";
+    source_label: string;
+    source_url?: string;
+    points: Array<{ period: string; value: number | string }>;
+  }>;
+  alerts: Array<{
+    id: number;
+    item_name: string;
+    severity: "WARNING" | "CRITICAL";
+    direction: "HIGH" | "LOW";
+    current_unit_price: string;
+    reference_unit_price: string;
+    difference_percent: string;
+    message: string;
+    created_at: string;
+  }>;
+}
+
+export interface StandardItemPriceTrend {
+  standard_item_id: number;
+  name: string;
+  spec: string | null;
+  points: Array<{
+    year: number;
+    minimum: string;
+    median: string;
+    maximum: string;
+    observation_count: number;
+  }>;
+  undated_observation_count: number;
+  note: string;
 }
 
 export interface InflationSeries {
@@ -864,19 +960,36 @@ export function getStandardItems({
   afterId,
   search,
   evidenceQuality,
+  category,
   signal,
 }: {
   afterId?: number;
   search?: string;
   evidenceQuality?: EvidenceQuality;
+  category?: string;
   signal?: AbortSignal;
 } = {}) {
   const params = new URLSearchParams({ limit: "50" });
   if (afterId !== undefined) params.set("after_id", String(afterId));
   if (search) params.set("search", search);
   if (evidenceQuality) params.set("evidence_quality", evidenceQuality);
+  if (category) params.set("category", category);
   return requestJson<StandardItemListResponse>(
     `/api/catalog/standard-items?${params.toString()}`,
+    { signal },
+  );
+}
+
+export function getDashboardOverview(signal?: AbortSignal) {
+  return requestJson<DashboardOverview>("/api/dashboard/overview", { signal });
+}
+
+export function getStandardItemPriceTrend(
+  standardItemId: number,
+  signal?: AbortSignal,
+) {
+  return requestJson<StandardItemPriceTrend>(
+    `/api/dashboard/standard-items/${standardItemId}/price-trend`,
     { signal },
   );
 }
@@ -1108,6 +1221,42 @@ export function createQuoteAnalysisRun({
       signal,
     },
   );
+}
+
+export function activateQuoteAnalysisRun({
+  runId,
+  activatedBy,
+  reasonDetail,
+  sendOutlook = false,
+  outlookRecipient,
+}: {
+  runId: number;
+  activatedBy: string;
+  reasonDetail: string;
+  sendOutlook?: boolean;
+  outlookRecipient?: string;
+}) {
+  return requestJson<{
+    activation_run_id: number;
+    status: "SUCCEEDED";
+    counts: Record<string, number>;
+    entries: Array<{
+      raw_item_id: number;
+      action: string;
+      standard_item_id: number | null;
+      standard_price_version_id: number | null;
+    }>;
+    alerts: Array<{ id: number; message: string }>;
+    deliveries: Array<{ alert_id: number; status: string; detail: string }>;
+  }>(`/api/analysis/runs/${runId}/activate`, {
+    method: "POST",
+    body: JSON.stringify({
+      activated_by: activatedBy,
+      reason_detail: reasonDetail,
+      send_outlook: sendOutlook,
+      outlook_recipient: outlookRecipient ?? null,
+    }),
+  });
 }
 
 export function getPpiSeries(signal?: AbortSignal) {

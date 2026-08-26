@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
+from threading import Lock
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -31,6 +33,7 @@ from app.quotes.models import RawQuoteItem
 
 
 router = APIRouter()
+_SQLITE_MARKET_REQUEST_LOCK = Lock()
 
 
 def _market_worker_count(bind: object, eligible_count: int) -> int:
@@ -38,6 +41,11 @@ def _market_worker_count(bind: object, eligible_count: int) -> int:
         return 0
     dialect = getattr(getattr(bind, "dialect", None), "name", "")
     return 1 if dialect == "sqlite" else min(4, eligible_count)
+
+
+def _market_request_guard(bind: object):
+    dialect = getattr(getattr(bind, "dialect", None), "name", "")
+    return _SQLITE_MARKET_REQUEST_LOCK if dialect == "sqlite" else nullcontext()
 
 
 def _service(session: Session) -> MarketLookupService:
@@ -62,6 +70,23 @@ def lookup_market_price(
     analysis_run_id: int = Query(...),
     force_refresh: bool = Query(False),
     session: Session = Depends(get_session),
+) -> MarketLookupResponse:
+    with _market_request_guard(session.get_bind()):
+        try:
+            return _lookup_market_price(raw_item_id, analysis_run_id, force_refresh, session)
+        finally:
+            # FastAPI closes dependency sessions after the endpoint returns.  Keep
+            # that close inside the SQLite request guard as well, otherwise the
+            # next queued request can reuse the same DBAPI connection while the
+            # previous read transaction is still active.
+            session.close()
+
+
+def _lookup_market_price(
+    raw_item_id: int,
+    analysis_run_id: int,
+    force_refresh: bool,
+    session: Session,
 ) -> MarketLookupResponse:
     run = session.get(QuoteAnalysisRun, analysis_run_id)
     if run is None:
@@ -135,12 +160,25 @@ def lookup_market_prices_automatically(
     request: MarketBatchLookupRequest,
     session: Session = Depends(get_session),
 ) -> MarketBatchLookupResponse:
+    with _market_request_guard(session.get_bind()):
+        try:
+            return _lookup_market_prices_automatically(request, session)
+        finally:
+            session.close()
+
+
+def _lookup_market_prices_automatically(
+    request: MarketBatchLookupRequest,
+    session: Session,
+) -> MarketBatchLookupResponse:
     run = session.get(QuoteAnalysisRun, request.analysis_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="분석 실행 이력을 찾을 수 없습니다.")
     raw_ids = list(dict.fromkeys(request.raw_item_ids))
     _ensure_run_contains_raw_items(session, run, raw_ids)
     eligibility = market_lookup_eligibilities(session, raw_ids)
+    review_percent = run.review_percent
+    high_percent = run.high_percent
     by_id: dict[int, MarketBatchItemResponse] = {}
     eligible_ids: list[int] = []
     for item in eligibility:
@@ -159,6 +197,9 @@ def lookup_market_prices_automatically(
         # the four-worker path for server databases and serialize local SQLite
         # writes; one worker still satisfies the "up to four" concurrency limit.
         bind = session.get_bind()
+        # All parent-session reads are complete. Release its transaction before
+        # worker sessions start persisting cache/evidence rows on SQLite.
+        session.close()
         max_workers = _market_worker_count(bind, len(eligible_ids))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -167,8 +208,8 @@ def lookup_market_prices_automatically(
                     raw_id,
                     request.force_refresh,
                     bind,
-                    review_percent=run.review_percent,
-                    high_percent=run.high_percent,
+                    review_percent=review_percent,
+                    high_percent=high_percent,
                 ): raw_id
                 for raw_id in eligible_ids
             }

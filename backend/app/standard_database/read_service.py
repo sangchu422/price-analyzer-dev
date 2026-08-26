@@ -21,6 +21,8 @@ from app.catalog.models import (
 from app.cleansing.models import CleanDecision
 from app.documents.models import SourceDocument, SourceVariant
 from app.matching.normalization import normalize_search_text
+from app.procurement.categories import current_category_subquery
+from app.procurement.models import ItemCategory
 from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     StandardBuildStatus,
@@ -176,6 +178,7 @@ def list_standard_explorer_items(
     limit: int,
     search: str | None,
     quality: EvidenceQuality | None,
+    category_code: str | None = None,
 ) -> tuple[
     list[StandardExplorerSummary],
     int | None,
@@ -206,6 +209,23 @@ def list_standard_explorer_items(
             == StandardItemVersion.standard_item_id,
         )
     )
+    if category_code:
+        current_categories = current_category_subquery(
+            name="explorer_current_categories"
+        )
+        base_statement = (
+            base_statement
+            .join(
+                current_categories,
+                current_categories.c.standard_item_id
+                == StandardItemVersion.standard_item_id,
+            )
+            .join(
+                ItemCategory,
+                ItemCategory.id == current_categories.c.category_id,
+            )
+            .where(ItemCategory.code == category_code)
+        )
     if after_id is not None:
         base_statement = base_statement.where(
             StandardItemVersion.standard_item_id > after_id

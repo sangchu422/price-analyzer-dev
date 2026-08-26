@@ -39,6 +39,16 @@ from app.analysis.models import (
     QuoteAnalysisTargetEvidence,
 )
 from app.settings.models import AppSetting
+from app.procurement.models import (
+    AlertNotificationDelivery,
+    ItemCategory,
+    ProcurementPriceAlert,
+    QuoteAnalysisEquipmentGroup,
+    QuoteAnalysisEquipmentLine,
+    QuoteCatalogActivationEntry,
+    QuoteCatalogActivationRun,
+    StandardItemCategoryAssignment,
+)
 
 __all__ = [
     "AppSetting",
@@ -74,4 +84,12 @@ __all__ = [
     "QuoteAnalysisLineResult",
     "QuoteAnalysisRun",
     "QuoteAnalysisTargetEvidence",
+    "ItemCategory",
+    "StandardItemCategoryAssignment",
+    "QuoteAnalysisEquipmentGroup",
+    "QuoteAnalysisEquipmentLine",
+    "QuoteCatalogActivationRun",
+    "QuoteCatalogActivationEntry",
+    "ProcurementPriceAlert",
+    "AlertNotificationDelivery",
 ]

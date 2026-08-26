@@ -18,9 +18,10 @@ describe("responsive root styles", () => {
     );
   });
 
-  it("uses solid operational surfaces without decorative gradients or glass", () => {
-    expect(styles).not.toMatch(/(?:linear|radial|conic)-gradient\(/);
+  it("keeps glass effects out while reserving gradients for the command center", () => {
     expect(styles).not.toMatch(/backdrop-filter\s*:/);
+    expect(styles).toMatch(/\.dashboard-page[\s\S]*radial-gradient\(/);
+    expect(styles).toMatch(/--analysis-accent:\s*#ff0000/);
   });
 
   it("keeps visible focus and honors reduced motion preferences", () => {

@@ -1,25 +1,56 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import {
   getStandardEvidence,
   getStandardItems,
+  getStandardItemPriceTrend,
+  getDashboardOverview,
   getStandardPriceVersion,
   getStandardPriceVersions,
   getSourceCoverageSummary,
   type EvidenceQuality,
   type PriceVersion,
   type StandardItemSummary,
+  type StandardItemPriceTrend,
 } from "../api/client";
 import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
 import { EvidenceBadge } from "../components/EvidenceBadge";
 import { LoadingLabel } from "../components/LoadingLabel";
 import { MetricStrip } from "../components/MetricStrip";
+import { reasonLabel } from "../components/reasonLabels";
+
+const STANDARD_CATEGORIES = [
+  { code: "DRIVE_MOTION", name: "구동·모션" },
+  { code: "SENSOR_MEASUREMENT", name: "센서·계측" },
+  { code: "ELECTRICAL_CONTROL", name: "전장·제어" },
+  { code: "PNEUMATIC_HYDRAULIC", name: "공압·유압" },
+  { code: "MATERIAL_HANDLING", name: "이송·물류" },
+  { code: "MECHANICAL_FABRICATION", name: "기계·제작" },
+  { code: "TOOLING_FIXTURE", name: "치공구·금형" },
+  { code: "UTILITY_ENVIRONMENT", name: "유틸리티·환경" },
+  { code: "CABLE_CONNECTOR", name: "케이블·커넥터" },
+  { code: "FASTENER_CONSUMABLE", name: "체결·소모품" },
+  { code: "SAFETY", name: "안전·보호" },
+  { code: "IT_NETWORK", name: "IT·네트워크" },
+  { code: "LABOR_SERVICE", name: "노무·설치" },
+  { code: "GENERAL_COMPONENT", name: "공통 설비·부품" },
+] as const;
 
 export function StandardPricesPage() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [quality, setQuality] = useState<EvidenceQuality | "">("");
+  const [category, setCategory] = useState(stringParam("category"));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [requestedItemId, setRequestedItemId] = useState<number | null>(
     positiveIntegerParam("item_id"),
@@ -37,13 +68,14 @@ export function StandardPricesPage() {
   }, []);
 
   const catalog = useInfiniteQuery({
-    queryKey: ["standard-db", search, quality],
+    queryKey: ["standard-db", search, quality, category],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
       getStandardItems({
         afterId: pageParam,
         search: search || undefined,
         evidenceQuality: quality || undefined,
+        category: category || undefined,
         signal,
       }),
     getNextPageParam: safeNextCursor,
@@ -177,6 +209,17 @@ export function StandardPricesPage() {
     history.data?.pages.flatMap((page) => page.versions) ?? [],
   );
   const versionGroups = useMemo(() => compactPriceVersions(versions), [versions]);
+  const trend = useQuery({
+    queryKey: ["standard-item-price-trend", selected?.id],
+    queryFn: ({ signal }) => getStandardItemPriceTrend(selected!.id, signal),
+    enabled: selected !== null,
+    retry: false,
+  });
+  const dashboard = useQuery({
+    queryKey: ["dashboard-overview"],
+    queryFn: ({ signal }) => getDashboardOverview(signal),
+    retry: false,
+  });
   const sourceCoverageData = sourceCoverage.data;
   const hasSourceCoverage = Boolean(
     sourceCoverageData &&
@@ -194,6 +237,7 @@ export function StandardPricesPage() {
   const exportParams = new URLSearchParams();
   if (search) exportParams.set("search", search);
   if (quality) exportParams.set("evidence_quality", quality);
+  if (category) exportParams.set("category", category);
   const exportQuery = exportParams.toString();
   const catalogExportHref = `/api/catalog/standard-items/export${
     exportQuery ? `?${exportQuery}` : ""
@@ -266,6 +310,34 @@ export function StandardPricesPage() {
           </section>
         </details>
       )}
+
+      <nav className="standard-category-rail" aria-label="표준 DB 품목 카테고리">
+        <button
+          type="button"
+          aria-current={!category ? "page" : undefined}
+          onClick={() => {
+            setCategory("");
+            setSelectedId(null);
+          }}
+        >
+          <span>00</span><strong>전체 품목</strong>
+        </button>
+        {STANDARD_CATEGORIES.map((item, index) => (
+          <button
+            type="button"
+            key={item.code}
+            aria-current={category === item.code ? "page" : undefined}
+            onClick={() => {
+              setCategory(item.code);
+              setSelectedId(null);
+              setRequestedItemId(null);
+              setRequestedVersionId(null);
+            }}
+          >
+            <span>{String(index + 1).padStart(2, "0")}</span><strong>{item.name}</strong>
+          </button>
+        ))}
+      </nav>
 
       <form
         className="standard-db-toolbar"
@@ -462,10 +534,29 @@ export function StandardPricesPage() {
               hasMoreHistory={Boolean(history.hasNextPage)}
               loadMoreHistory={() => void history.fetchNextPage()}
               historyLoadingMore={history.isFetchingNextPage}
+              trend={trend.data ?? null}
+              trendPending={trend.isPending}
+              trendError={trend.isError}
             />
           )}
         </section>
       </div>
+      <section className="standard-unclassified-band" aria-label="표준 DB 미분류 작업 목록">
+        <div>
+          <span>STANDARD DB / UNCLASSIFIED QUEUE</span>
+          <h2>
+            정제 검토 대기
+            <strong>{dashboard.data ? ` ${dashboard.data.cleansing_todo.count.toLocaleString("ko-KR")}건` : " 집계 중"}</strong>
+          </h2>
+          <p>아직 표준 가격에 반영되지 않은 원문 품목입니다. 검토를 마치면 기존 이력을 보존한 채 표준 DB 근거로 연결됩니다.</p>
+        </div>
+        <div className="standard-unclassified-reasons">
+          {dashboard.data?.cleansing_todo.top_reasons.slice(0, 4).map((reason) => (
+            <span key={reason.reason_code}>{reasonLabel(reason.reason_code)} <b>{reason.count.toLocaleString("ko-KR")}</b></span>
+          ))}
+        </div>
+        <a href="/cleansing">미분류 품목 검토</a>
+      </section>
     </main>
   );
 }
@@ -496,7 +587,11 @@ function StandardItemTableRow({
           }}
         >
           <strong>{item.current_version.canonical_name}</strong>
-          <small>품목 #{item.id}</small>
+          <small>
+            {item.category_name ?? "공통 설비·부품"}
+            {item.category_confidence !== null && item.category_confidence !== undefined && Number(item.category_confidence) < 50 ? " · 추정 분류" : ""}
+            {` · 품목 #${item.id}`}
+          </small>
         </button>
       </td>
       <td>{displaySpec(item)}</td>
@@ -536,6 +631,9 @@ function StandardItemDetail({
   hasMoreHistory,
   loadMoreHistory,
   historyLoadingMore,
+  trend,
+  trendPending,
+  trendError,
 }: {
   item: StandardItemSummary;
   snapshotVersion: PriceVersion | null;
@@ -575,6 +673,9 @@ function StandardItemDetail({
   hasMoreHistory: boolean;
   loadMoreHistory: () => void;
   historyLoadingMore: boolean;
+  trend: StandardItemPriceTrend | null;
+  trendPending: boolean;
+  trendError: boolean;
 }) {
   const pinned = snapshotPending || snapshotError || snapshotVersion !== null;
   const price = pinned ? snapshotVersion?.prices ?? null : item.current_price;
@@ -630,6 +731,7 @@ function StandardItemDetail({
           { label: "최고", value: formatWon(price?.maximum ?? null) },
         ]}
       />
+      <PriceTrendPanel trend={trend} pending={trendPending} error={trendError} />
       {price === null && (
         <p className="inline-state">현재 생성된 표준단가가 없습니다.</p>
       )}
@@ -806,6 +908,64 @@ function StandardItemDetail({
   );
 }
 
+function PriceTrendPanel({
+  trend,
+  pending,
+  error,
+}: {
+  trend: StandardItemPriceTrend | null;
+  pending: boolean;
+  error: boolean;
+}) {
+  return (
+    <section className="standard-price-trend" aria-label="연도별 가격 추세">
+      <header>
+        <div><p className="section-kicker">PRICE HISTORY</p><h3>연도별 가격 증감 추세</h3></div>
+        {trend ? <span>견적일 미확정 {trend.undated_observation_count}건</span> : null}
+      </header>
+      {pending ? <LoadingLabel as="p" className="inline-state">가격 추세를 계산하는 중…</LoadingLabel> : null}
+      {error ? <p className="inline-state">가격 추세를 불러오지 못했습니다.</p> : null}
+      {!pending && !error && trend?.points.length === 0 ? (
+        <p className="inline-state">확정 견적일이 있는 가격 근거가 없습니다.</p>
+      ) : null}
+      {trend && trend.points.length > 0 ? (
+        <div className="standard-price-trend-chart">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={trend.points} margin={{ top: 12, right: 8, bottom: 0, left: 2 }}>
+              <defs>
+                <linearGradient id="standardTrendFill" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0" stopColor="#ff0000" stopOpacity={0.22} />
+                  <stop offset="1" stopColor="#ff0000" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} stroke="var(--soft-line)" />
+              <XAxis dataKey="year" tickLine={false} axisLine={false} tick={{ fill: "var(--muted)", fontSize: 10 }} />
+              <YAxis hide domain={["dataMin", "dataMax"]} />
+              <Tooltip content={<TrendTooltip />} />
+              <Area type="monotone" dataKey="maximum" stroke="var(--line)" fill="transparent" strokeDasharray="3 4" />
+              <Area type="monotone" dataKey="minimum" stroke="var(--muted)" fill="transparent" strokeDasharray="3 4" />
+              <Area type="monotone" dataKey="median" stroke="#ff0000" strokeWidth={2.5} fill="url(#standardTrendFill)" animationDuration={900} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      ) : null}
+      {trend ? <small>{trend.note}</small> : null}
+    </section>
+  );
+}
+
+function TrendTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ payload: StandardItemPriceTrend["points"][number] }>; label?: string }) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload;
+  return (
+    <div className="dashboard-tooltip">
+      <span>{label}년 · 근거 {point.observation_count}건</span>
+      <strong>{formatWon(point.median)}</strong>
+      <small>{formatWon(point.minimum)} – {formatWon(point.maximum)}</small>
+    </div>
+  );
+}
+
 function displaySpec(item: StandardItemSummary) {
   if (item.current_version.canonical_spec) {
     return item.current_version.canonical_spec;
@@ -946,4 +1106,8 @@ function uniqueById<T extends { id: number }>(items: T[]) {
 function positiveIntegerParam(name: string) {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function stringParam(name: string) {
+  return new URLSearchParams(window.location.search).get(name)?.trim() ?? "";
 }

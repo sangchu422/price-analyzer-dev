@@ -429,7 +429,9 @@ def test_standard_catalog_list_query_count_is_bounded(
     # grow with the number of catalog items.
     # One extra bounded lookup verifies that a successful projection has the
     # same input/calculation/code provenance before exposing its evidence.
-    assert statements <= 9
+    # Category navigation adds one fixed batched lookup; it remains bounded
+    # independently of the number of catalog items.
+    assert statements <= 10
 
 
 def test_standard_catalog_materializes_only_a_fixed_page_chunk(

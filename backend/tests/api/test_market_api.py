@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from time import sleep
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -6,10 +8,11 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.analysis.models import QuoteAnalysisRun
-from app.api.market import _market_worker_count
+from app.api.market import _market_worker_count, lookup_market_prices_automatically
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.market.schemas import MarketBatchLookupRequest
 
 
 def _analysis_run(session: Session) -> QuoteAnalysisRun:
@@ -37,6 +40,48 @@ def test_market_batch_serializes_local_sqlite_writes() -> None:
     assert _market_worker_count(sqlite_bind, 4) == 1
     assert _market_worker_count(server_bind, 6) == 4
     assert _market_worker_count(sqlite_bind, 0) == 0
+
+
+def test_sqlite_market_request_guard_keeps_session_close_serialized(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    sqlite_bind = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    class FakeSession:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def get_bind(self):
+            return sqlite_bind
+
+        def close(self) -> None:
+            events.append(f"close-{self.label}")
+
+    def fake_lookup(request, session):
+        events.append(f"start-{session.label}")
+        sleep(0.03)
+        events.append(f"end-{session.label}")
+        return session.label
+
+    monkeypatch.setattr("app.api.market._lookup_market_prices_automatically", fake_lookup)
+    request = MarketBatchLookupRequest(analysis_run_id=1, raw_item_ids=[1])
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda label: lookup_market_prices_automatically(
+                    request,
+                    FakeSession(label),  # type: ignore[arg-type]
+                ),
+                ("a", "b"),
+            )
+        )
+
+    assert set(results) == {"a", "b"}
+    assert events in (
+        ["start-a", "end-a", "close-a", "start-b", "end-b", "close-b"],
+        ["start-b", "end-b", "close-b", "start-a", "end-a", "close-a"],
+    )
 
 
 def test_automatic_market_batch_explains_missing_rows(

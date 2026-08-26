@@ -4,6 +4,7 @@ from app.api import (
     analysis,
     catalog,
     cleansing,
+    dashboard,
     documents,
     market,
     pricing,
@@ -16,6 +17,11 @@ from app.middleware.submission_size import SubmissionBodyLimitMiddleware
 
 app = FastAPI(title="Price Analyzer", version="0.1.0")
 app.add_middleware(SubmissionBodyLimitMiddleware)
+app.include_router(
+    dashboard.router,
+    prefix="/api/dashboard",
+    tags=["dashboard"],
+)
 app.include_router(
     documents.router,
     prefix="/api/documents",

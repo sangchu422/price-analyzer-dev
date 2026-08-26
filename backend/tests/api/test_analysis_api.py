@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.catalog.models import (
     DocumentMetadataVersion,
     ItemMembershipDecision,
+    StandardItem,
     StandardPriceVersion,
 )
 from app.analysis.models import (
@@ -22,6 +23,12 @@ from app.analysis.models import (
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
+from app.procurement.models import (
+    ItemCategory,
+    QuoteCatalogActivationEntry,
+    QuoteCatalogActivationRun,
+    StandardItemCategoryAssignment,
+)
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -34,6 +41,7 @@ def _document(
     *,
     name: str = "quotes/new.xlsx",
     rows: int = 2,
+    duplicate_items: bool = False,
 ) -> SourceDocument:
     document = SourceDocument(logical_name=name)
     variant = SourceVariant(
@@ -45,13 +53,14 @@ def _document(
         selected_for_parsing_at_ingest=True,
     )
     for row in range(1, rows + 1):
+        item_number = 1 if duplicate_items else row
         raw = RawQuoteItem(
             source_variant=variant,
             source_sheet="Sheet1",
             source_row=row,
             source_cells=f"A{row}:G{row}",
-            item_name_raw=f"CUSTOM ITEM {row}",
-            spec_raw=f"ZZ-{row}",
+            item_name_raw=f"CUSTOM ITEM {item_number}",
+            spec_raw=f"ZZ-{item_number}",
             unit_raw="EA",
             unit_price_raw=str(row * 100),
             parser_name="xlsx",
@@ -62,8 +71,8 @@ def _document(
                 raw_item=raw,
                 status=CleanStatus.INCLUDED,
                 reason_code="VALID",
-                item_name_norm=f"CUSTOM ITEM {row}",
-                spec_norm=f"ZZ-{row}",
+                item_name_norm=f"CUSTOM ITEM {item_number}",
+                spec_norm=f"ZZ-{item_number}",
                 unit_norm="EA",
                 unit_price=Decimal(row * 100),
                 rule_version="clean-v1",
@@ -184,6 +193,119 @@ def test_analysis_run_rejects_reversed_thresholds(
     )
 
     assert response.status_code == 422
+
+
+def test_activation_validates_outlook_before_catalog_commit(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document = _document(api_session, rows=1)
+    run_response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={
+            "created_by": "buyer-01",
+            "review_percent": 10,
+            "high_percent": 20,
+        },
+    )
+    run_id = run_response.json()["run_id"]
+
+    response = client.post(
+        f"/api/analysis/runs/{run_id}/activate",
+        json={
+            "activated_by": "buyer-01",
+            "reason_detail": "검토 완료 후 신규 견적 반영",
+            "send_outlook": True,
+            "outlook_recipient": "invalid-address",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "이메일" in response.json()["detail"]
+    assert api_session.scalar(
+        select(func.count(QuoteCatalogActivationRun.id))
+    ) == 0
+    assert api_session.scalar(
+        select(QuoteDocumentRole.purpose)
+        .where(QuoteDocumentRole.document_id == document.id)
+        .order_by(QuoteDocumentRole.id.desc())
+        .limit(1)
+    ) == QuoteDocumentPurpose.INCOMING_BID
+
+
+def test_activation_appends_new_catalog_evidence_once(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    api_session.add(
+        ItemCategory(
+            code="GENERAL_COMPONENT",
+            name="공통 설비·부품",
+            description="테스트용 기본 분류",
+            sort_order=900,
+        )
+    )
+    api_session.commit()
+    document = _document(api_session, rows=2, duplicate_items=True)
+    run_response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={
+            "created_by": "buyer-01",
+            "review_percent": 10,
+            "high_percent": 20,
+        },
+    )
+    assert run_response.status_code == 200, run_response.text
+    run_id = run_response.json()["run_id"]
+
+    first = client.post(
+        f"/api/analysis/runs/{run_id}/activate",
+        json={
+            "activated_by": "buyer-01",
+            "reason_detail": "검토 완료 후 신규 견적 반영",
+            "send_outlook": False,
+        },
+    )
+
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert payload["status"] == "SUCCEEDED"
+    assert payload["counts"]["included_rows"] == 2
+    assert payload["counts"]["created_standard_items"] == 1
+    assert payload["counts"]["matched_activation_item_rows"] == 1
+    assert payload["counts"]["price_versions_created"] == 1
+    assert len(payload["entries"]) == 2
+    assert all(row["standard_price_version_id"] for row in payload["entries"])
+    assert len({row["standard_item_id"] for row in payload["entries"]}) == 1
+    assert api_session.scalar(select(func.count(StandardItem.id))) == 1
+    assert api_session.scalar(select(func.count(StandardPriceVersion.id))) == 1
+    assert api_session.scalar(
+        select(func.count(StandardItemCategoryAssignment.id))
+    ) == 1
+    assert api_session.scalar(
+        select(QuoteDocumentRole.purpose)
+        .where(QuoteDocumentRole.document_id == document.id)
+        .order_by(QuoteDocumentRole.id.desc())
+        .limit(1)
+    ) == QuoteDocumentPurpose.HISTORICAL_REFERENCE
+
+    second = client.post(
+        f"/api/analysis/runs/{run_id}/activate",
+        json={
+            "activated_by": "buyer-01",
+            "reason_detail": "동일 요청 재시도",
+            "send_outlook": False,
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["activation_run_id"] == payload["activation_run_id"]
+    assert api_session.scalar(
+        select(func.count(QuoteCatalogActivationRun.id))
+    ) == 1
+    assert api_session.scalar(
+        select(func.count(QuoteCatalogActivationEntry.id))
+    ) == 2
+    assert api_session.scalar(select(func.count(StandardPriceVersion.id))) == 1
 
 
 def test_incoming_exact_key_uses_standard_price_without_membership_write(

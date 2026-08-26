@@ -5,6 +5,7 @@ import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
 import { LoadingLabel } from "../components/LoadingLabel";
 import {
   ApiError,
+  activateQuoteAnalysisRun,
   createQuoteAnalysisRun,
   getStandardEvidence,
   lookupMarketPrice,
@@ -38,6 +39,13 @@ export function QuoteAnalysisPage({
 }: {
   workflow: QuoteAnalysisWorkflowState;
 }) {
+  useEffect(() => {
+    document.title = "신규 견적 분석 · Price Analyzer";
+    return () => {
+      document.title = "Price Analyzer";
+    };
+  }, []);
+
   const {
     file,
     setFile,
@@ -415,6 +423,7 @@ export function QuoteAnalysisPage({
           }))}
           reviewPercent={reviewPercent}
           highPercent={highPercent}
+          submittedBy={submittedBy.trim() || "익명"}
         />
       )}
     </main>
@@ -457,6 +466,7 @@ function AnalysisResults({
   onMarketResult,
   reviewPercent,
   highPercent,
+  submittedBy,
 }: {
   analysis: QuoteAnalysisRun;
   submission: SubmissionResponse;
@@ -470,8 +480,9 @@ function AnalysisResults({
   onMarketResult: (result: MarketLookupResult) => void;
   reviewPercent: number;
   highPercent: number;
+  submittedBy: string;
 }) {
-  const [activeTab, setActiveTab] = useState<"THRESHOLD" | "TARGET">("THRESHOLD");
+  const [activeTab, setActiveTab] = useState<"EQUIPMENT" | "THRESHOLD" | "TARGET">("EQUIPMENT");
   return (
     <section className="analysis-results">
       <header className="result-heading">
@@ -490,6 +501,16 @@ function AnalysisResults({
       </header>
 
       <div className="analysis-mode-tabs" role="tablist" aria-label="견적 분석 방식">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "EQUIPMENT"}
+          className={activeTab === "EQUIPMENT" ? "is-active" : ""}
+          onClick={() => setActiveTab("EQUIPMENT")}
+        >
+          설비별 협상
+          <small>갑지 설비명으로 합산하고 품목을 펼쳐 확인</small>
+        </button>
         <button
           type="button"
           role="tab"
@@ -512,7 +533,9 @@ function AnalysisResults({
         </button>
       </div>
 
-      {activeTab === "THRESHOLD" ? (
+      {activeTab === "EQUIPMENT" ? (
+        <EquipmentResults analysis={analysis} submittedBy={submittedBy} />
+      ) : activeTab === "THRESHOLD" ? (
         <>
 
       <div className="decision-summary" aria-label="분석 요약">
@@ -625,6 +648,156 @@ function AnalysisResults({
       ) : (
         <TargetPriceResults analysis={analysis} />
       )}
+    </section>
+  );
+}
+
+function EquipmentResults({
+  analysis,
+  submittedBy,
+}: {
+  analysis: QuoteAnalysisRun;
+  submittedBy: string;
+}) {
+  const [openGroups, setOpenGroups] = useState<Set<number>>(() => new Set());
+  const [activationOpen, setActivationOpen] = useState(false);
+  const [activatedBy, setActivatedBy] = useState(submittedBy === "익명" ? "" : submittedBy);
+  const [reason, setReason] = useState("신규 견적 검토 완료 및 표준 DB 반영");
+  const [sendOutlook, setSendOutlook] = useState(false);
+  const [recipient, setRecipient] = useState("");
+  const [activationState, setActivationState] = useState<
+    { kind: "idle" | "pending" | "success" | "error"; message: string }
+  >({ kind: "idle", message: "" });
+  const lineById = useMemo(
+    () => new Map(analysis.lines.map((line) => [line.raw_item_id, line])),
+    [analysis.lines],
+  );
+  const targetById = useMemo(
+    () => new Map(analysis.target_lines.map((line) => [line.raw_item_id, line])),
+    [analysis.target_lines],
+  );
+  const equipmentGroups = analysis.equipment_groups ?? [];
+  const totals = equipmentGroups.reduce(
+    (sum, group) => ({
+      quote: sum.quote + Number(group.quote_amount),
+      target: sum.target + Number(group.target_amount),
+      negotiation: sum.negotiation + Number(group.negotiation_amount),
+    }),
+    { quote: 0, target: 0, negotiation: 0 },
+  );
+
+  const activate = async () => {
+    setActivationState({ kind: "pending", message: "표준 DB 반영 이력을 생성하는 중입니다." });
+    try {
+      const result = await activateQuoteAnalysisRun({
+        runId: analysis.run_id,
+        activatedBy: activatedBy.trim(),
+        reasonDetail: reason,
+        sendOutlook,
+        outlookRecipient: recipient,
+      });
+      const alertMessage = result.alerts.length > 0
+        ? ` 가격 변동 주의 ${result.alerts.length}건도 함께 기록했습니다.`
+        : "";
+      setActivationState({
+        kind: "success",
+        message: `표준 DB 반영 완료: ${result.entries.length}개 품목 처리.${alertMessage}`,
+      });
+    } catch (error) {
+      setActivationState({
+        kind: "error",
+        message: error instanceof Error ? error.message : "표준 DB 반영에 실패했습니다.",
+      });
+    }
+  };
+
+  return (
+    <section className="equipment-results" role="tabpanel">
+      <div className="equipment-summary-band">
+        <div><span>갑지 견적 합계</span><strong>{formatMoney(String(totals.quote))}</strong></div>
+        <div><span>전체 협상 목표금액</span><strong>{formatMoney(String(totals.target))}</strong></div>
+        <div className="is-negotiation"><span>네고 가능금액</span><strong>{formatMoney(String(totals.negotiation))}</strong></div>
+        <button type="button" onClick={() => setActivationOpen((open) => !open)}>
+          검토 완료 · 표준 DB 반영
+        </button>
+      </div>
+
+      {activationOpen ? (
+        <section className="quote-activation-panel" aria-label="신규 견적 표준 DB 반영">
+          <div>
+            <strong>담당자 승인 후 데이터 축적</strong>
+            <p>원본과 분석 이력은 그대로 두고 새 가격 버전을 추가합니다. 기존 중앙값 대비 ±20% 이상이면 주의 알림을 기록합니다.</p>
+          </div>
+          <label><span>반영 담당자</span><input value={activatedBy} onChange={(event) => setActivatedBy(event.target.value)} placeholder="이름 또는 사번" /></label>
+          <label><span>반영 사유</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+          <label className="activation-outlook-toggle">
+            <input type="checkbox" checked={sendOutlook} onChange={(event) => setSendOutlook(event.target.checked)} />
+            <span>가격 변동 주의를 Outlook으로 발송</span>
+          </label>
+          {sendOutlook ? (
+            <label><span>수신 이메일</span><input type="email" value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="buyer@company.com" /></label>
+          ) : null}
+          <button type="button" disabled={activationState.kind === "pending" || activatedBy.trim().length < 2 || reason.trim().length < 3 || (sendOutlook && !recipient.includes("@"))} onClick={() => void activate()}>
+            {activationState.kind === "pending" ? "반영 중…" : "승인하고 표준 DB에 추가"}
+          </button>
+          {activationState.kind !== "idle" ? <p className={`activation-result is-${activationState.kind}`} role={activationState.kind === "error" ? "alert" : "status"}>{activationState.message}</p> : null}
+        </section>
+      ) : null}
+
+      <div className="result-toolbar equipment-toolbar">
+        <div><h3>설비별 협상 목표</h3><span>갑지 기준 {equipmentGroups.length}개 설비</span></div>
+        <small>네고 가능금액은 제시가가 목표가보다 높은 품목만 합산합니다.</small>
+      </div>
+      <div className="analysis-table-scroll equipment-table-scroll">
+        <table className="analysis-result-table equipment-summary-table" aria-label="갑지 설비별 견적 분석">
+          <thead><tr><th>설비명</th><th>갑지 견적가</th><th>협상 목표금액</th><th>네고 가능금액</th><th>분석 상태</th><th>상세</th></tr></thead>
+          <tbody>
+            {equipmentGroups.length === 0 ? (
+              <tr><td colSpan={6} className="equipment-empty-state">이 분석 이력에는 설비 갑지 연결 정보가 없습니다. 가격 적정성 탭에서 품목별 결과를 확인해 주세요.</td></tr>
+            ) : null}
+            {equipmentGroups.map((group) => {
+              const open = openGroups.has(group.id);
+              return (
+                <Fragment key={group.id}>
+                  <tr className="equipment-group-row">
+                    <td><strong>{group.name}</strong><small>{group.line_count}개 품목 · {group.source_kind === "COVER_SHEET" ? "갑지 연결" : "품목 합산"}</small></td>
+                    <td className="numeric">{formatMoney(group.quote_amount)}</td>
+                    <td className="numeric is-emphasis">{formatMoney(group.target_amount)}</td>
+                    <td className="numeric is-negotiation">{formatMoney(group.negotiation_amount)}</td>
+                    <td><span className={group.target_available_count === group.line_count ? "equipment-status is-complete" : "equipment-status"}>{group.target_available_count === group.line_count ? "분석 완료" : `근거 보완 ${group.line_count - group.target_available_count}건`}</span></td>
+                    <td><button type="button" aria-expanded={open} onClick={() => setOpenGroups((current) => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? "접기" : "상세"}</button></td>
+                  </tr>
+                  {open ? (
+                    <tr className="equipment-detail-row"><td colSpan={6}>
+                      <div className="equipment-detail-grid">
+                        <header><span>품목 / 사양</span><span>수량·단위</span><span>구매 금액</span><span>협상 목표금액</span><span>네고 가능금액</span></header>
+                        {group.lines.map((groupLine) => {
+                          const line = lineById.get(groupLine.raw_item_id);
+                          const target = targetById.get(groupLine.raw_item_id);
+                          return (
+                            <div key={groupLine.raw_item_id}>
+                              <span><strong>{line?.item_name ?? `품목 #${groupLine.raw_item_id}`}</strong><small>{line?.spec || "원문 규격 없음"}</small></span>
+                              <span>{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</span>
+                              <span>{formatMoney(groupLine.quote_amount)}</span>
+                              <span>{formatMoney(groupLine.target_amount)}</span>
+                              <span className="is-negotiation">{formatMoney(groupLine.negotiation_amount)}</span>
+                              {target?.status !== "AVAILABLE" ? <em>{target?.reason ?? "산정 근거 확인 필요"}</em> : null}
+                            </div>
+                          );
+                        })}
+                        {Number(group.unallocated_amount) > 0 ? (
+                          <footer>공통 전기비·경비 등 품목 외 금액 <strong>{formatMoney(group.unallocated_amount)}</strong>은 갑지 금액에 유지했습니다.</footer>
+                        ) : null}
+                      </div>
+                    </td></tr>
+                  ) : null}
+                </Fragment>
+              );
+            })}
+          </tbody>
+          <tfoot><tr className="target-total-row"><td>합계</td><td className="numeric"><strong>{formatMoney(String(totals.quote))}</strong></td><td className="numeric"><strong>{formatMoney(String(totals.target))}</strong></td><td className="numeric is-negotiation"><strong>{formatMoney(String(totals.negotiation))}</strong></td><td colSpan={2}>설비 상세에서 품목별 근거 확인</td></tr></tfoot>
+        </table>
+      </div>
     </section>
   );
 }

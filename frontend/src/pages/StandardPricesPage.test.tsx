@@ -105,6 +105,11 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
       if (url.includes("/metadata-audit/summary")) {
         return jsonResponse(sourceCoverage);
       }
+      if (url.includes("/api/dashboard/overview")) {
+        return jsonResponse({
+          cleansing_todo: { count: 8336, top_reasons: [] },
+        });
+      }
       if (url.includes("/api/catalog/standard-items?")) {
         return jsonResponse({
           items: [sensor],
@@ -159,7 +164,7 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   renderApp("/standard-prices");
 
   expect(
-    await screen.findByRole("heading", { name: "표준 DB" }),
+    await screen.findByRole("heading", { name: "표준 DB" }, { timeout: 3000 }),
   ).toBeVisible();
   expect(
     await screen.findByRole("button", { name: /SENSOR/ }),
