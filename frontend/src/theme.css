@@ -1255,10 +1255,104 @@ textarea::placeholder {
 
 .source-grid td.is-source-target {
   position: relative;
-  outline: 2px solid var(--danger);
-  outline-offset: -2px;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
   color: var(--ink);
   background: var(--danger-surface);
+  animation: source-target-surface-waiting 1.15s ease-in-out infinite alternate;
+}
+
+.source-grid td.is-source-target::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border: 0 solid transparent;
+  content: "";
+  pointer-events: none;
+  animation: source-target-outline-waiting 1.15s ease-in-out infinite alternate;
+}
+
+.source-grid td.is-target-top::after {
+  border-top-width: 2px;
+  border-top-color: var(--danger);
+}
+
+.source-grid td.is-target-bottom::after {
+  border-bottom-width: 2px;
+  border-bottom-color: var(--danger);
+}
+
+.source-grid td.is-target-left::after {
+  border-left-width: 2px;
+  border-left-color: var(--danger);
+}
+
+.source-grid td.is-target-right::after {
+  border-right-width: 2px;
+  border-right-color: var(--danger);
+}
+
+@keyframes source-target-surface-waiting {
+  0% {
+    background: transparent;
+  }
+  100% {
+    background: color-mix(in srgb, var(--danger) 18%, var(--paper));
+  }
+}
+
+@keyframes source-target-outline-waiting {
+  0% {
+    opacity: 0;
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  100% {
+    opacity: .98;
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--danger) 42%, transparent));
+  }
+}
+
+.source-grid-scroll:hover td.is-source-target,
+.source-grid-scroll:focus-within td.is-source-target,
+.source-grid-scroll:hover td.is-source-target::after,
+.source-grid-scroll:focus-within td.is-source-target::after {
+  animation: none;
+}
+
+.distribution-evidence-disclosure {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.distribution-evidence-disclosure summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 4px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  list-style: none;
+}
+
+.distribution-evidence-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.distribution-evidence-disclosure summary strong {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.distribution-evidence-disclosure[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.distribution-evidence-disclosure .distribution-evidence-list {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
 }
 
 .source-pdf-frame {

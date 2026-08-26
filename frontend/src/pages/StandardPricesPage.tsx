@@ -11,6 +11,8 @@ import {
 } from "recharts";
 
 import {
+  getItemFamilies,
+  getItemFamilyDetail,
   getStandardEvidence,
   getStandardItems,
   getStandardItemPriceTrend,
@@ -19,6 +21,8 @@ import {
   getStandardPriceVersions,
   getSourceCoverageSummary,
   type EvidenceQuality,
+  type ItemFamilyDetail,
+  type ItemFamilySummary,
   type PriceVersion,
   type StandardItemSummary,
   type StandardItemPriceTrend,
@@ -48,6 +52,9 @@ const STANDARD_CATEGORIES = [
 ] as const;
 
 export function StandardPricesPage() {
+  const [viewMode, setViewMode] = useState<"families" | "items">(
+    () => stringParam("view") === "items" || positiveIntegerParam("item_id") ? "items" : "families",
+  );
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [quality, setQuality] = useState<EvidenceQuality | "">("");
@@ -62,6 +69,7 @@ export function StandardPricesPage() {
   const [modalPhase, setModalPhase] = useState<"closed" | "open" | "closing">(
     () => positiveIntegerParam("item_id") ? "open" : "closed",
   );
+  const [selectedFamilyCode, setSelectedFamilyCode] = useState<string | null>(null);
   const attemptedCatalogCursors = useRef(new Set<number>());
   const closeTimerRef = useRef<number | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -169,7 +177,7 @@ export function StandardPricesPage() {
     requestedItemId !== null && !requestedItem && isFetchNextCatalogPageError;
 
   useEffect(() => {
-    if (modalPhase === "closed") return;
+    if (modalPhase === "closed" && selectedFamilyCode === null) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     if (modalPhase === "open") {
@@ -178,7 +186,7 @@ export function StandardPricesPage() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [modalPhase]);
+  }, [modalPhase, selectedFamilyCode]);
 
   useEffect(() => () => {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
@@ -276,6 +284,22 @@ export function StandardPricesPage() {
     queryKey: ["standard-item-price-trend", selected?.id],
     queryFn: ({ signal }) => getStandardItemPriceTrend(selected!.id, signal),
     enabled: selected !== null,
+    retry: false,
+  });
+  const families = useQuery({
+    queryKey: ["standard-db-families", search, category],
+    queryFn: ({ signal }) => getItemFamilies({
+      search: search || undefined,
+      category: category || undefined,
+      signal,
+    }),
+    enabled: viewMode === "families",
+    retry: false,
+  });
+  const familyDetail = useQuery({
+    queryKey: ["standard-db-family", selectedFamilyCode],
+    queryFn: ({ signal }) => getItemFamilyDetail(selectedFamilyCode!, signal),
+    enabled: selectedFamilyCode !== null,
     retry: false,
   });
   const dashboard = useQuery({
@@ -402,6 +426,25 @@ export function StandardPricesPage() {
         ))}
       </nav>
 
+      <div className="standard-view-switch" role="group" aria-label="표준 DB 보기 방식">
+        <button
+          type="button"
+          aria-pressed={viewMode === "families"}
+          onClick={() => setViewMode("families")}
+        >
+          품목류로 보기
+          <small>유사 품목을 묶은 가격 흐름</small>
+        </button>
+        <button
+          type="button"
+          aria-pressed={viewMode === "items"}
+          onClick={() => setViewMode("items")}
+        >
+          정확 품목으로 보기
+          <small>품명·규격·단위가 같은 원본 근거</small>
+        </button>
+      </div>
+
       <form
         className="standard-db-toolbar"
         role="search"
@@ -427,7 +470,7 @@ export function StandardPricesPage() {
             placeholder="품명·사양·단위 검색"
           />
         </label>
-        <label className="standard-filter-control">
+        {viewMode === "items" && <label className="standard-filter-control">
           <span aria-hidden="true">근거</span>
           <select
             aria-label="근거 품질"
@@ -444,7 +487,7 @@ export function StandardPricesPage() {
             <option value="SINGLE_OBSERVATION">견적 제출사 1곳</option>
             <option value="MULTI_OBSERVATION">견적 제출사 2곳 이상</option>
           </select>
-        </label>
+        </label>}
         <button type="submit" className="standard-search-submit">
           <svg aria-hidden="true" viewBox="0 0 24 24">
             <circle cx="11" cy="11" r="6" />
@@ -454,7 +497,18 @@ export function StandardPricesPage() {
         </button>
       </form>
 
-      <div className="standard-db-catalog">
+      {viewMode === "families" && (
+        <FamilyCatalog
+          data={families.data?.families ?? []}
+          pending={families.isPending}
+          error={families.isError}
+          retry={() => void families.refetch()}
+          onSelect={setSelectedFamilyCode}
+          totalItems={families.data?.item_count ?? 0}
+        />
+      )}
+
+      {viewMode === "items" && <div className="standard-db-catalog">
         <section className="standard-db-table-panel" aria-label="표준 품목 목록">
           <header>
             <div>
@@ -554,7 +608,7 @@ export function StandardPricesPage() {
           )}
         </section>
 
-      </div>
+      </div>}
       {selected && modalPhase !== "closed" && (
         <div
           className={`standard-detail-overlay ${modalPhase === "open" ? "is-open" : "is-closing"}`}
@@ -618,6 +672,43 @@ export function StandardPricesPage() {
           </div>
         </div>
       )}
+      {selectedFamilyCode && (
+        <div
+          className="standard-detail-overlay is-open"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedFamilyCode(null);
+          }}
+        >
+          <div
+            className="standard-detail-modal family-detail-modal t-modal is-open"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="family-detail-title"
+            tabIndex={-1}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setSelectedFamilyCode(null);
+            }}
+          >
+            <header className="standard-detail-modal-bar">
+              <div><span>ITEM FAMILY</span><strong>품목류 상세</strong></div>
+              <button type="button" onClick={() => setSelectedFamilyCode(null)} aria-label="품목류 상세 닫기">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                닫기
+              </button>
+            </header>
+            <div className="standard-detail-modal-scroll">
+              {familyDetail.isPending && <FamilyDetailSkeleton />}
+              {familyDetail.isError && (
+                <div className="inline-state is-error">
+                  <p>품목류를 불러오지 못했습니다.</p>
+                  <button type="button" onClick={() => void familyDetail.refetch()}>다시 시도</button>
+                </div>
+              )}
+              {familyDetail.data && <FamilyDetail family={familyDetail.data} />}
+            </div>
+          </div>
+        </div>
+      )}
       <section className="standard-unclassified-band" aria-label="표준 DB 미분류 작업 목록">
         <div>
           <span>STANDARD DB / UNCLASSIFIED QUEUE</span>
@@ -636,6 +727,140 @@ export function StandardPricesPage() {
       </section>
     </main>
   );
+}
+
+function FamilyCatalog({
+  data,
+  pending,
+  error,
+  retry,
+  onSelect,
+  totalItems,
+}: {
+  data: ItemFamilySummary[];
+  pending: boolean;
+  error: boolean;
+  retry: () => void;
+  onSelect: (code: string) => void;
+  totalItems: number;
+}) {
+  return (
+    <section className="standard-family-panel" aria-label="품목류 목록">
+      <header>
+        <div>
+          <strong>품목류 가격 기준</strong>
+          <small>전 품목을 용도와 명칭 기준으로 묶고 정확 품명·규격은 하위 근거로 보존합니다.</small>
+        </div>
+        <span>{pending ? "묶는 중…" : `${data.length.toLocaleString("ko-KR")}개 품목류 · ${totalItems.toLocaleString("ko-KR")}개 품목`}</span>
+      </header>
+      {pending && <FamilyDetailSkeleton />}
+      {error && <div className="inline-state is-error"><p>품목류를 불러오지 못했습니다.</p><button type="button" onClick={retry}>다시 시도</button></div>}
+      {!pending && !error && data.length === 0 && <p className="inline-state">검색 결과가 없습니다.</p>}
+      {data.length > 0 && (
+        <div className="table-scroll standard-family-scroll">
+          <table className="data-table standard-family-table">
+            <thead>
+              <tr>
+                <th>품목류</th>
+                <th className="numeric">정확 품목</th>
+                <th className="numeric">가격 근거</th>
+                <th className="numeric">관측 연도</th>
+                <th className="numeric">최저</th>
+                <th className="numeric">중앙값</th>
+                <th className="numeric">평균</th>
+                <th className="numeric">최고</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((family) => (
+                <tr key={family.code}>
+                  <td>
+                    <button type="button" className="family-name-button" onClick={() => onSelect(family.code)}>
+                      <strong>{family.name}</strong>
+                      <small>{family.category_names.join(" · ") || "공통 설비·부품"} · 상세 보기</small>
+                    </button>
+                  </td>
+                  <td className="numeric">{family.item_count.toLocaleString("ko-KR")}개</td>
+                  <td className="numeric">{family.observation_count.toLocaleString("ko-KR")}건</td>
+                  <td className="numeric">{family.year_count ? `${family.year_count}개년` : "날짜 확인 필요"}</td>
+                  <td className="numeric">{formatWon(family.price?.minimum ?? null)}</td>
+                  <td className="numeric is-emphasis">{formatWon(family.price?.median ?? null)}</td>
+                  <td className="numeric">{formatWon(family.price?.average ?? null)}</td>
+                  <td className="numeric">{formatWon(family.price?.maximum ?? null)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FamilyDetail({ family }: { family: ItemFamilyDetail }) {
+  return (
+    <article className="family-detail">
+      <header className="family-detail-heading">
+        <div>
+          <p className="section-kicker">품목류 가격 분석</p>
+          <h2 id="family-detail-title">{family.name}</h2>
+          <p>{family.item_count.toLocaleString("ko-KR")}개 정확 품목 · {family.observation_count.toLocaleString("ko-KR")}건 가격 근거 · {family.supplier_count.toLocaleString("ko-KR")}개 견적 제출사</p>
+        </div>
+        <span>{family.year_count ? `${family.year_count}개년 추이` : "견적일 확인 필요"}</span>
+      </header>
+      <dl className="family-price-strip">
+        <div><dt>최저</dt><dd>{formatWon(family.price?.minimum ?? null)}</dd></div>
+        <div><dt>중앙값</dt><dd>{formatWon(family.price?.median ?? null)}</dd></div>
+        <div><dt>평균</dt><dd>{formatWon(family.price?.average ?? null)}</dd></div>
+        <div><dt>최고</dt><dd>{formatWon(family.price?.maximum ?? null)}</dd></div>
+      </dl>
+      <section className="family-trend-section" aria-labelledby="family-trend-title">
+        <div className="section-title">
+          <p className="section-kicker">연도별 가격 변화</p>
+          <h3 id="family-trend-title">연도별 중앙값</h3>
+        </div>
+        {family.trend.length > 0 ? (
+          <div className="family-trend-chart" aria-label={`${family.name} 연도별 가격 변화`}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={family.trend} margin={{ top: 16, right: 18, bottom: 0, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="year" tickLine={false} axisLine={false} />
+                <YAxis hide domain={["auto", "auto"]} />
+                <Tooltip formatter={(value) => formatWon(String(value))} labelFormatter={(label) => `${label}년`} />
+                <Area type="monotone" dataKey="median" name="중앙값" stroke="var(--accent)" fill="var(--accent-soft)" strokeWidth={2.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <p className="inline-state">확정 견적일이 없어 연도별 추이를 표시할 수 없습니다.</p>}
+      </section>
+      <section className="family-members" aria-labelledby="family-members-title">
+        <div className="section-title">
+          <p className="section-kicker">하위 가격 근거</p>
+          <h3 id="family-members-title">정확 품명·규격</h3>
+        </div>
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>품명</th><th>규격</th><th>단위</th><th className="numeric">근거</th><th className="numeric">중앙값</th></tr></thead>
+            <tbody>
+              {family.members.map((member) => (
+                <tr key={member.standard_item_id}>
+                  <td><strong>{member.name}</strong></td>
+                  <td>{member.spec || "원문에 규격 없음"}</td>
+                  <td>{member.unit || "—"}</td>
+                  <td className="numeric">{member.observation_count.toLocaleString("ko-KR")}건</td>
+                  <td className="numeric is-emphasis">{formatWon(member.price.median)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </article>
+  );
+}
+
+function FamilyDetailSkeleton() {
+  return <div className="family-skeleton" role="status" aria-label="품목류를 불러오는 중"><Skeleton height="58px" /><Skeleton height="190px" /><Skeleton height="110px" /></div>;
 }
 
 function StandardItemTableRow({

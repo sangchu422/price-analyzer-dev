@@ -661,6 +661,48 @@ export interface QuoteAnalysisRun extends DocumentAnalysis {
   equipment_groups?: EquipmentAnalysisGroup[];
 }
 
+export interface ItemFamilyTrendPoint extends PriceStatistics {
+  year: number;
+  observation_count: number;
+}
+
+export interface ItemFamilyMember {
+  standard_item_id: number;
+  name: string;
+  spec: string | null;
+  unit: string | null;
+  observation_count: number;
+  price: PriceStatistics;
+}
+
+export interface ItemFamilySummary {
+  code: string;
+  name: string;
+  rule_version: string;
+  category_codes: string[];
+  category_names: string[];
+  item_count: number;
+  observation_count: number;
+  supplier_count: number;
+  year_count: number;
+  quote_date_start: string | null;
+  quote_date_end: string | null;
+  undated_observation_count: number;
+  price: PriceStatistics | null;
+  trend: ItemFamilyTrendPoint[];
+}
+
+export interface ItemFamilyDetail extends ItemFamilySummary {
+  members: ItemFamilyMember[];
+}
+
+export interface ItemFamilyListResponse {
+  families: ItemFamilySummary[];
+  family_count: number;
+  item_count: number;
+  rule_version: string;
+}
+
 export interface EquipmentAnalysisGroup {
   id: number;
   key: string;
@@ -982,6 +1024,32 @@ export function getStandardItems({
 
 export function getDashboardOverview(signal?: AbortSignal) {
   return requestJson<DashboardOverview>("/api/dashboard/overview", { signal });
+}
+
+export function getItemFamilies({
+  search,
+  category,
+  signal,
+}: {
+  search?: string;
+  category?: string;
+  signal?: AbortSignal;
+} = {}) {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  if (category) params.set("category", category);
+  const query = params.toString();
+  return requestJson<ItemFamilyListResponse>(
+    `/api/dashboard/item-families${query ? `?${query}` : ""}`,
+    { signal },
+  );
+}
+
+export function getItemFamilyDetail(code: string, signal?: AbortSignal) {
+  return requestJson<ItemFamilyDetail>(
+    `/api/dashboard/item-families/${encodeURIComponent(code)}`,
+    { signal },
+  );
 }
 
 export function getStandardItemPriceTrend(

@@ -159,6 +159,10 @@ describe("CleansingReviewPage", () => {
     expect(document.title).toBe("정제 검토 · 통합 견적 분석 시스템");
     expect(await screen.findByLabelText("원본 견적서 셀 미리보기")).toBeVisible();
     expect(screen.getByTitle("A12")).toHaveClass("is-source-target");
+    expect(screen.getByTitle("A12")).toHaveClass("is-target-left", "is-target-top", "is-target-bottom");
+    expect(screen.getByTitle("A12")).not.toHaveClass("is-target-right");
+    expect(screen.getByTitle("B12")).not.toHaveClass("is-target-left", "is-target-right");
+    expect(screen.getByTitle("E12")).toHaveClass("is-target-right", "is-target-top", "is-target-bottom");
     expect(screen.getByTitle("E12")).toHaveTextContent("2,800");
     expect(screen.getByRole("columnheader", { name: "품명" })).toBeVisible();
     expect(screen.getByText("260707_러닝랩_견적_보안해제.xlsx")).toBeVisible();
@@ -220,6 +224,7 @@ describe("CleansingReviewPage", () => {
       screen.getByText("과거 유사 품목 4건의 중앙 단가 400,000원보다 +150% 차이가 납니다."),
     ).toBeVisible();
     expect(screen.getByText("차이 +150%")).toBeVisible();
+    await userEvent.click(screen.getAllByText("과거 비교 근거")[0]);
     expect(screen.getByText("300,000원")).toBeVisible();
     expect(screen.getAllByText("400,000원")).toHaveLength(2);
     expect(screen.getAllByText("1,000,000원").length).toBeGreaterThan(0);

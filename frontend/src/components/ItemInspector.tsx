@@ -4,6 +4,7 @@ import {
   getSourcePreview,
   type ReasonEvidenceObservation,
   type ReviewQueueItem,
+  type SourcePreview,
 } from "../api/client";
 import { reasonLabel } from "./reasonLabels";
 
@@ -112,6 +113,69 @@ function sourceLocation(item: ReviewQueueItem) {
   return parts.join(" · ") || "위치 정보 없음";
 }
 
+function SourceSpreadsheetPreview({ preview }: { preview: SourcePreview }) {
+  const highlightedRows = preview.rows
+    .map((row, index) => row.cells.some((cell) => cell.highlighted) ? index : -1)
+    .filter((index) => index >= 0);
+  const firstHighlightedRow = highlightedRows[0];
+  const lastHighlightedRow = highlightedRows.at(-1);
+
+  return (
+    <div className="source-grid-scroll" tabIndex={0} aria-label="원본 견적서 셀 미리보기">
+      <table className="source-grid">
+        {preview.header_rows?.length ? (
+          <thead>
+            {preview.header_rows.map((row) => (
+              <tr key={"header-" + row.row_number}>
+                <th scope="col">{row.row_number}행</th>
+                {row.cells.map((cell) => (
+                  <th key={cell.coordinate} scope="col" title={cell.coordinate}>
+                    {cell.value ?? cell.coordinate}
+                  </th>
+                ))}
+              </tr>
+            ))}
+          </thead>
+        ) : null}
+        <tbody>
+          {preview.rows.map((row, rowIndex) => {
+            const highlightedCells = row.cells
+              .map((cell, index) => cell.highlighted ? index : -1)
+              .filter((index) => index >= 0);
+            const firstHighlightedCell = highlightedCells[0];
+            const lastHighlightedCell = highlightedCells.at(-1);
+            return (
+              <tr key={row.row_number}>
+                <th scope="row">{row.row_number}</th>
+                {row.cells.map((cell, cellIndex) => {
+                  const targetClasses = cell.highlighted
+                    ? [
+                        "is-source-target",
+                        rowIndex === firstHighlightedRow ? "is-target-top" : "",
+                        rowIndex === lastHighlightedRow ? "is-target-bottom" : "",
+                        cellIndex === firstHighlightedCell ? "is-target-left" : "",
+                        cellIndex === lastHighlightedCell ? "is-target-right" : "",
+                      ].filter(Boolean).join(" ")
+                    : undefined;
+                  return (
+                    <td
+                      className={targetClasses}
+                      key={cell.coordinate}
+                      title={cell.coordinate}
+                    >
+                      {cell.value ?? ""}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function ItemInspector({
   item,
   headingRef,
@@ -178,40 +242,7 @@ export function ItemInspector({
           <p className="inline-state">미리보기를 만들 수 없어 원본 파일 링크를 제공합니다.</p>
         )}
         {preview.data?.kind === "SPREADSHEET" && (
-          <div className="source-grid-scroll" tabIndex={0} aria-label="원본 견적서 셀 미리보기">
-            <table className="source-grid">
-              {preview.data.header_rows?.length ? (
-                <thead>
-                  {preview.data.header_rows.map((row) => (
-                    <tr key={"header-" + row.row_number}>
-                      <th scope="col">{row.row_number}행</th>
-                      {row.cells.map((cell) => (
-                        <th key={cell.coordinate} scope="col" title={cell.coordinate}>
-                          {cell.value ?? cell.coordinate}
-                        </th>
-                      ))}
-                    </tr>
-                  ))}
-                </thead>
-              ) : null}
-              <tbody>
-                {preview.data.rows.map((row) => (
-                  <tr key={row.row_number}>
-                    <th scope="row">{row.row_number}</th>
-                    {row.cells.map((cell) => (
-                      <td
-                        className={cell.highlighted ? "is-source-target" : undefined}
-                        key={cell.coordinate}
-                        title={cell.coordinate}
-                      >
-                        {cell.value ?? ""}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SourceSpreadsheetPreview preview={preview.data} />
         )}
         {preview.data?.kind === "PDF" && (
           <iframe
@@ -331,11 +362,17 @@ function PriceDistribution({ item }: { item: ReviewQueueItem }) {
           );
         })}
       </div>
-      <ul className="distribution-evidence-list">
-        {observations.map((row) => (
-          <ObservationRow currentId={item.raw_item_id} row={row} key={row.raw_item_id} />
-        ))}
-      </ul>
+      <details className="distribution-evidence-disclosure">
+        <summary>
+          <span>과거 비교 근거</span>
+          <strong>{observations.length.toLocaleString("ko-KR")}건 보기</strong>
+        </summary>
+        <ul className="distribution-evidence-list">
+          {observations.map((row) => (
+            <ObservationRow currentId={item.raw_item_id} row={row} key={row.raw_item_id} />
+          ))}
+        </ul>
+      </details>
     </section>
   );
 }

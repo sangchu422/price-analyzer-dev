@@ -4310,6 +4310,212 @@ textarea:focus-visible,
   text-align: left;
 }
 
+.standard-view-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 1120px;
+  margin: 18px auto 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-subtle);
+}
+
+.standard-view-switch button {
+  display: grid;
+  gap: 3px;
+  min-height: 52px;
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.standard-view-switch button[aria-pressed="true"] {
+  color: var(--paper);
+  background: var(--accent);
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.standard-view-switch button > small {
+  color: inherit;
+  opacity: .72;
+  font-size: 10px;
+}
+
+.standard-family-panel {
+  max-width: 1120px;
+  margin: 0 auto 22px;
+  border-top: 1px solid var(--ink);
+  background: var(--paper);
+}
+
+.standard-family-panel > header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 20px 15px;
+  border-bottom: 1px solid var(--line);
+}
+
+.standard-family-panel > header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.standard-family-panel > header small,
+.standard-family-panel > header > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.standard-family-scroll {
+  max-height: min(58vh, 620px);
+}
+
+.standard-family-table {
+  min-width: 940px;
+}
+
+.standard-family-table th:first-child,
+.standard-family-table td:first-child {
+  width: 28%;
+  text-align: left;
+}
+
+.family-name-button {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 3px 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.family-name-button strong {
+  font-size: 13px;
+}
+
+.family-name-button small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.standard-family-table tbody tr {
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.standard-family-table tbody tr:hover {
+  background: var(--accent-soft);
+}
+
+.family-detail-modal {
+  width: min(1180px, calc(100vw - 44px));
+}
+
+.family-detail {
+  padding: clamp(22px, 4vw, 42px);
+}
+
+.family-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.family-detail-heading h2 {
+  margin: 4px 0 7px;
+  font-size: clamp(28px, 4vw, 48px);
+}
+
+.family-detail-heading p:last-child,
+.family-detail-heading > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.family-detail-heading > span {
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.family-price-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.family-price-strip > div {
+  padding: 18px 16px;
+  border-right: 1px solid var(--line);
+}
+
+.family-price-strip > div:last-child { border-right: 0; }
+.family-price-strip dt { color: var(--muted); font-size: 10px; }
+.family-price-strip dd { margin: 7px 0 0; font-size: 17px; font-weight: 780; }
+
+.family-trend-section,
+.family-members {
+  padding-top: 28px;
+}
+
+.family-trend-chart {
+  height: 260px;
+  margin-top: 16px;
+}
+
+.family-members .table-scroll {
+  max-height: 320px;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.family-skeleton {
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+}
+
+@media (max-width: 720px) {
+  .standard-view-switch {
+    margin-inline: 12px;
+  }
+
+  .standard-view-switch button {
+    padding-inline: 11px;
+  }
+
+  .standard-family-panel {
+    margin-inline: 12px;
+  }
+
+  .standard-family-panel > header,
+  .family-detail-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .family-price-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .family-price-strip > div:nth-child(2) { border-right: 0; }
+  .family-price-strip > div:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
+}
+
 .standard-item-name-button::after {
   position: absolute;
   right: 0;

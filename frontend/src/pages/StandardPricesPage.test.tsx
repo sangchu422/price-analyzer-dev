@@ -6,6 +6,54 @@ import { jsonResponse, renderApp } from "../test/renderApp";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("groups exact standard items into an item family and opens its trend modal", async () => {
+  const family = {
+    code: "SENSOR",
+    name: "센서류",
+    rule_version: "item-family-keyword-v1",
+    category_codes: ["SENSOR_MEASUREMENT"],
+    category_names: ["센서·계측"],
+    item_count: 2,
+    observation_count: 5,
+    supplier_count: 2,
+    year_count: 2,
+    quote_date_start: "2024-01-01",
+    quote_date_end: "2025-01-01",
+    undated_observation_count: 0,
+    price: { minimum: "40000", median: "50000", average: "52000", maximum: "70000" },
+    trend: [
+      { year: 2024, minimum: "40000", median: "48000", average: "48000", maximum: "56000", observation_count: 2 },
+      { year: 2025, minimum: "50000", median: "55000", average: "55000", maximum: "70000", observation_count: 3 },
+    ],
+  };
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/dashboard/item-families/SENSOR")) {
+      return jsonResponse({ ...family, members: [
+        { standard_item_id: 12, name: "PHOTO SENSOR", spec: "E3Z", unit: "EA", observation_count: 3, price: family.price },
+        { standard_item_id: 13, name: "PROXIMITY SENSOR", spec: "E2E", unit: "EA", observation_count: 2, price: family.price },
+      ] });
+    }
+    if (url.includes("/api/dashboard/item-families")) {
+      return jsonResponse({ families: [family], family_count: 1, item_count: 2, rule_version: family.rule_version });
+    }
+    if (url.includes("/api/catalog/standard-items")) {
+      return jsonResponse({ items: [], next_cursor: null, limit: 50, latest_build: build });
+    }
+    if (url.includes("/api/catalog/metadata-audit/summary")) return jsonResponse(sourceCoverage);
+    return jsonResponse({ cleansing_todo: { count: 0, top_reasons: [] } });
+  }));
+
+  renderApp("/standard-prices");
+  expect(await screen.findByRole("button", { name: /센서류/ }, { timeout: 5_000 })).toBeVisible();
+  expect(screen.getByText("1개 품목류 · 2개 품목")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: /센서류/ }));
+  const dialog = await screen.findByRole("dialog", { name: "센서류" });
+  expect(within(dialog).getByText("2개 정확 품목 · 5건 가격 근거 · 2개 견적 제출사")).toBeVisible();
+  expect(within(dialog).getByText("PHOTO SENSOR")).toBeVisible();
+  expect(within(dialog).getByLabelText("센서류 연도별 가격 변화")).toBeVisible();
+});
+
 const build = {
   build_run_id: 9,
   status: "SUCCEEDED",
@@ -161,7 +209,7 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
     }),
   );
 
-  renderApp("/standard-prices");
+  renderApp("/standard-prices?view=items");
 
   expect(
     await screen.findByRole("heading", { name: "표준 DB" }, { timeout: 3000 }),
@@ -247,7 +295,7 @@ it("shows a shimmering status message while the catalog is still loading", async
     }),
   );
 
-  renderApp("/standard-prices");
+  renderApp("/standard-prices?view=items");
 
   expect(screen.getByRole("status", { name: "표준 품목 목록을 불러오는 중" })).toHaveAttribute("aria-busy", "true");
   expect(document.querySelectorAll(".standard-catalog-skeleton tbody tr")).toHaveLength(8);
@@ -432,7 +480,7 @@ it("shows an empty evidence state without requesting evidence when no price exis
     }),
   );
 
-  renderApp("/standard-prices");
+  renderApp("/standard-prices?view=items");
 
   await userEvent.click(await screen.findByRole("button", { name: /UNPRICED SENSOR/ }));
   expect(
@@ -486,7 +534,7 @@ it("searches and filters standard groups through the paginated API", async () =>
     }),
   );
   const user = userEvent.setup();
-  renderApp("/standard-prices");
+  renderApp("/standard-prices?view=items");
 
   expect(await screen.findByText("검색 결과가 없습니다.")).toBeVisible();
   await user.type(screen.getByRole("searchbox", { name: "표준 품목 검색" }), "PX-1");
@@ -594,7 +642,7 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
     }),
   );
   const user = userEvent.setup();
-  renderApp("/standard-prices");
+  renderApp("/standard-prices?view=items");
 
   await user.click(await screen.findByRole("button", { name: "품목 더 보기" }));
   expect(screen.getAllByRole("button", { name: /SENSOR/ })).toHaveLength(2);
