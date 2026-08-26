@@ -12,9 +12,9 @@ export function SettingsPage() {
   const [notice, setNotice] = useState<Notice | null>(null);
 
   useEffect(() => {
-    document.title = "설정 · Price Analyzer";
+    document.title = "설정 · 통합 견적 분석 시스템";
     return () => {
-      document.title = "Price Analyzer";
+      document.title = "통합 견적 분석 시스템";
     };
   }, []);
 

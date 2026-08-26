@@ -6,9 +6,14 @@ import { jsonResponse, renderApp } from "../test/renderApp";
 afterEach(() => vi.unstubAllGlobals());
 
 it("renders the procurement command center with honest data-source labels", async () => {
+  let releaseFetch!: () => void;
   vi.stubGlobal(
     "fetch",
-    vi.fn(() => jsonResponse({
+    vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFetch = resolve;
+      });
+      return jsonResponse({
       as_of: "2026-08-26",
       catalog: {
         total_standard_items: 7684,
@@ -17,7 +22,7 @@ it("renders the procurement command center with honest data-source labels", asyn
         rebuild_required_items: 0,
         no_evidence_items: 12,
         unmatched_included_items: 1087,
-        cleansing_todo_items: 8336,
+        cleansing_todo_items: 1022,
         latest_build_run_id: 13,
       },
       categories: [
@@ -37,7 +42,7 @@ it("renders the procurement command center with honest data-source labels", asyn
         },
       ],
       cleansing_todo: {
-        count: 8336,
+        count: 1022,
         top_reasons: [{ reason_code: "OUTLIER_UNIT_PRICE", count: 202 }],
       },
       monthly_performance: {
@@ -66,22 +71,37 @@ it("renders the procurement command center with honest data-source labels", asyn
           ],
         },
       ],
-      alerts: [],
-    })),
+        alerts: [],
+      });
+    }),
   );
 
   renderApp("/dashboard");
+  expect(
+    await screen.findByRole(
+      "heading",
+      { name: "HYUNDAI WIA 구매 종합현황" },
+      { timeout: 3_000 },
+    ),
+  ).toBeInTheDocument();
+  const loadingLogo = screen.getByRole("img", { name: "HYUNDAI WIA" });
+  expect(loadingLogo).toBeInTheDocument();
 
-  expect(await screen.findByRole(
-    "heading",
-    { name: /견적을 받는 순간/ },
-    { timeout: 3_000 },
-  )).toBeInTheDocument();
-  expect(screen.getAllByText("7,672").length).toBeGreaterThan(0);
-  expect(screen.getByText("카테고리 분류")).toBeVisible();
+  releaseFetch();
+  expect(await screen.findByText("카테고리 분류", {}, { timeout: 3_000 })).toBeVisible();
+  expect(document.querySelector(".wia-vector-logo")).toBe(loadingLogo);
+  expect(screen.getByRole("img", { name: "HYUNDAI WIA" })).toBeInTheDocument();
+  expect(document.querySelector(".wia-hero-mark img")).not.toBeInTheDocument();
+  expect(document.querySelectorAll(".wia-logo-piece")).toHaveLength(5);
+  expect(document.querySelector(".performance-readhead")).toBeInTheDocument();
+  expect(document.querySelector(".market-readhead")).toBeInTheDocument();
+  expect(screen.getAllByLabelText("7,672").length).toBeGreaterThan(0);
   expect(screen.getByRole("button", { name: /구동·모션/ })).toBeInTheDocument();
-  expect(screen.getByText("미분류·검토 대기 8,336건")).toBeVisible();
+  expect(document.querySelector(".todo-command strong")).toHaveTextContent("미분류·검토 대기");
+  expect(screen.getByLabelText("1,022건")).toBeInTheDocument();
   expect(screen.getByText("시연 인덱스 · 공식 데이터 연동 전")).toBeVisible();
   expect(screen.getByText("완료 월의 월평균 접수 건수")).toBeVisible();
+  expect(screen.getByText("구매 참고 지표")).toBeVisible();
+  expect(document.querySelector(".market-signal-copy > span")).toHaveTextContent("원/달러");
   expect(screen.getByText("신규 반영 가격의 이상징후가 없습니다.")).toBeVisible();
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import styles from "./styles.css?raw";
+import theme from "./theme.css?raw";
 
 describe("responsive root styles", () => {
   it("uses the layout viewport instead of a hard minimum page width", () => {
@@ -21,12 +22,18 @@ describe("responsive root styles", () => {
   it("keeps glass effects out while reserving gradients for the command center", () => {
     expect(styles).not.toMatch(/backdrop-filter\s*:/);
     expect(styles).toMatch(/\.dashboard-page[\s\S]*radial-gradient\(/);
-    expect(styles).toMatch(/--analysis-accent:\s*#ff0000/);
+    expect(styles).toMatch(/--analysis-accent:\s*#00287a/);
   });
 
   it("keeps visible focus and honors reduced motion preferences", () => {
     expect(styles).toMatch(/:focus-visible/);
     expect(styles).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  });
+
+  it("uses the WIA blue system without the legacy mint surfaces", () => {
+    expect(theme).toMatch(/--accent:\s*#00287a/i);
+    expect(theme).toMatch(/--surface-strong:\s*#edf2fa/i);
+    expect(theme).not.toMatch(/#f0f5f3|#e6efeb|#eef4f1|#edf3f0|#bccbc5|#98aea5/i);
   });
 
   it("scopes the brand tile treatment to the mark instead of the wordmark copy", () => {

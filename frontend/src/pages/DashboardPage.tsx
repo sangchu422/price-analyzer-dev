@@ -1,17 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
-  ArrowDownRight,
   ArrowRight,
-  ArrowUpRight,
   Database,
   Gauge,
-  Radar,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
-import { useEffect, useState } from "react";
+import { motion } from "motion/react";
+import { useEffect } from "react";
 import {
   Area,
   AreaChart,
@@ -26,39 +23,44 @@ import {
 } from "recharts";
 
 import { getDashboardOverview, type DashboardOverview } from "../api/client";
+import { AnimatedNumber } from "../components/AnimatedNumber";
 import { reasonLabel } from "../components/reasonLabels";
+import { Skeleton } from "../components/Skeleton";
+import { WiaInteractiveMark } from "../components/WiaInteractiveMark";
 
 export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const reduceMotion = useReducedMotion();
   const query = useQuery({
     queryKey: ["dashboard-overview"],
     queryFn: ({ signal }) => getDashboardOverview(signal),
     refetchInterval: 60_000,
   });
-  const [indicatorIndex, setIndicatorIndex] = useState(0);
-  const indicators = query.data?.indicators ?? [];
 
   useEffect(() => {
-    document.title = "종합현황 · Price Analyzer";
+    document.title = "종합현황 · 통합 견적 분석 시스템";
     return () => {
-      document.title = "Price Analyzer";
+      document.title = "통합 견적 분석 시스템";
     };
   }, []);
 
-  useEffect(() => {
-    if (reduceMotion || indicators.length < 2) return;
-    const interval = window.setInterval(
-      () => setIndicatorIndex((current) => (current + 1) % indicators.length),
-      5_500,
-    );
-    return () => window.clearInterval(interval);
-  }, [indicators.length, reduceMotion]);
-
   if (query.isLoading) {
     return (
-      <main className="dashboard-page dashboard-loading" role="status">
-        <span className="dashboard-orbit" aria-hidden="true" />
-        <strong>구매 데이터를 연결하고 있습니다</strong>
+      <main className="dashboard-page dashboard-skeleton" role="status" aria-busy="true">
+        <div className="dashboard-grid-field" aria-hidden="true" />
+        <header className="dashboard-hero">
+          <h1 className="sr-only">HYUNDAI WIA 구매 종합현황</h1>
+          <WiaInteractiveMark />
+          <div className="dashboard-hero-status">
+            <span>DATA PULSE</span>
+            <Skeleton width="116px" height="42px" />
+            <Skeleton width="94px" height="10px" />
+          </div>
+        </header>
+        <section className="dashboard-skeleton-grid">
+          <Skeleton as="div" className="dashboard-skeleton-panel is-primary" />
+          <Skeleton as="div" className="dashboard-skeleton-panel" />
+          <Skeleton as="div" className="dashboard-skeleton-panel is-wide" />
+          <Skeleton as="div" className="dashboard-skeleton-panel" />
+        </section>
       </main>
     );
   }
@@ -72,7 +74,6 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   const data = query.data;
-  const indicator = indicators[indicatorIndex] ?? indicators[0];
   const completion = data.catalog.total_standard_items === 0
     ? 0
     : data.catalog.active_price_items / data.catalog.total_standard_items * 100;
@@ -81,25 +82,11 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
     <main className="dashboard-page">
       <div className="dashboard-grid-field" aria-hidden="true" />
       <header className="dashboard-hero">
-        <div>
-          <motion.span
-            className="dashboard-kicker"
-            initial={{ opacity: 0, x: -12 }}
-            animate={{ opacity: 1, x: 0 }}
-          >
-            <i /> PROCUREMENT COMMAND CENTER
-          </motion.span>
-          <motion.h1
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.08 }}
-          >
-            견적을 받는 순간,<br /><em>협상 근거가 움직입니다.</em>
-          </motion.h1>
-        </div>
+        <h1 className="sr-only">HYUNDAI WIA 구매 종합현황</h1>
+        <WiaInteractiveMark />
         <div className="dashboard-hero-status">
           <span>DATA PULSE</span>
-          <strong>{data.catalog.active_price_items.toLocaleString("ko-KR")}</strong>
+          <AnimatedNumber value={data.catalog.active_price_items} className="dashboard-pulse-number" />
           <small>즉시 활용 가능한 표준 가격</small>
           <time>{data.as_of} 기준</time>
         </div>
@@ -117,7 +104,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             </header>
             <div className="catalog-radar">
               <div className="catalog-radar-number">
-                <strong>{completion.toFixed(1)}<small>%</small></strong>
+                <AnimatedNumber value={completion} decimals={1} suffix="%" className="catalog-completion-number" />
                 <span>가격 활용 가능</span>
               </div>
               <svg viewBox="0 0 220 220" aria-hidden="true">
@@ -165,7 +152,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
                 >
                   <span>{String(index + 1).padStart(2, "0")}</span>
                   <strong>{category.name}</strong>
-                  <em>{category.count.toLocaleString("ko-KR")}</em>
+                  <AnimatedNumber value={category.count} className="category-count" />
                   <i style={{ "--share": `${Math.max(Number(category.share_percent), 2)}%` } as React.CSSProperties} />
                 </motion.button>
               ))}
@@ -176,7 +163,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             <div className="todo-signal"><ShieldAlert aria-hidden="true" /></div>
             <div>
               <span>STANDARD DB / TO-DO</span>
-              <strong>미분류·검토 대기 {data.cleansing_todo.count.toLocaleString("ko-KR")}건</strong>
+              <strong>미분류·검토 대기 <AnimatedNumber value={data.cleansing_todo.count} suffix="건" /></strong>
               <p>정제 검토 항목도 표준 DB 작업 흐름 안에서 이어서 처리합니다.</p>
             </div>
             <div className="todo-reasons">
@@ -203,14 +190,15 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
                   <CartesianGrid vertical={false} stroke="var(--dashboard-grid)" />
                   <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 10 }} />
                   <YAxis hide />
-                  <Tooltip content={<PerformanceTooltip />} cursor={{ fill: "rgba(255,0,0,.035)" }} />
+                  <Tooltip content={<PerformanceTooltip />} cursor={{ fill: "rgba(0,40,122,.04)" }} />
                   <Bar dataKey="count" radius={[2, 2, 0, 0]} animationDuration={950}>
                     {data.monthly_performance.series.map((entry) => (
-                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#ff0000" : "rgba(255,0,0,.24)"} stroke={entry.kind === "FORECAST" ? "#ff0000" : "none"} strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
+                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#00287a" : "rgba(0,40,122,.24)"} stroke={entry.kind === "FORECAST" ? "#00287a" : "none"} strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
                     ))}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
+              <span className="performance-readhead" aria-hidden="true" />
             </div>
             <footer>
               <span><i className="is-actual" /> 실적</span>
@@ -219,47 +207,24 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             </footer>
           </section>
 
-          {indicator ? (
-            <section className="indicator-command" aria-labelledby="indicator-title">
+          {data.indicators.length > 0 ? (
+            <section className="market-command" aria-labelledby="market-command-title">
               <header>
                 <div>
-                  <span>MARKET SIGNAL / {indicator.group}</span>
-                  <h2 id="indicator-title">{indicator.name}</h2>
+                  <span>MARKET SIGNAL / AT A GLANCE</span>
+                  <h2 id="market-command-title">구매 참고 지표</h2>
                 </div>
-                <IndicatorDelta indicator={indicator} />
+                <small>원자재·환율·임율·시황을 동시에 비교합니다.</small>
               </header>
-              <div className="indicator-chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={indicator.points}>
-                    <defs>
-                      <linearGradient id="signalFill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#ff0000" stopOpacity={0.28} />
-                        <stop offset="100%" stopColor="#ff0000" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="var(--dashboard-grid)" vertical={false} />
-                    <XAxis dataKey="period" hide />
-                    <YAxis hide domain={["dataMin - 2", "dataMax + 2"]} />
-                    <Tooltip content={<IndicatorTooltip unit={indicator.unit} />} cursor={{ stroke: "#ff0000", strokeDasharray: "2 3" }} />
-                    <Area type="monotone" dataKey="value" stroke="#ff0000" strokeWidth={2.4} fill="url(#signalFill)" animationDuration={1200} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="indicator-selector" role="tablist" aria-label="구매 참고 지표">
-                {indicators.map((item, index) => (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={indicatorIndex === index}
-                    key={item.code}
-                    onClick={() => setIndicatorIndex(index)}
-                  >
-                    {item.name}
-                  </button>
+              <div className="market-signal-grid">
+                {data.indicators.map((indicator, index) => (
+                  <MarketSignalTile indicator={indicator} index={index} key={indicator.code} />
                 ))}
               </div>
-              <footer className={indicator.source_status === "DEMO" ? "is-demo" : "is-official"}>
-                <Radar aria-hidden="true" size={14} /> {indicator.source_label}
+              <footer>
+                {Array.from(new Set(data.indicators.map((item) => item.source_label))).map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
               </footer>
             </section>
           ) : null}
@@ -297,7 +262,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
           <span>REVIEW TODO <b>{data.catalog.cleansing_todo_items.toLocaleString("ko-KR")}</b></span>
         </div>
       </div>
-      <img className="dashboard-wia-corner" src="/brand/hyundai-wia.png" alt="HYUNDAI WIA" />
+      <div className="dashboard-system-corner" aria-label="HYUNDAI WIA Procurement Intelligence">
+        <strong>HYUNDAI WIA</strong>
+        <span>PROCUREMENT INTELLIGENCE</span>
+      </div>
     </main>
   );
 }
@@ -306,26 +274,64 @@ function FunnelLine({ label, value, max, accent = false, warning = false }: { la
   const width = max === 0 ? 0 : Math.max(1.2, value / max * 100);
   return (
     <div className={accent ? "is-accent" : warning ? "is-warning" : ""}>
-      <span>{label}</span><strong>{value.toLocaleString("ko-KR")}</strong>
+      <span>{label}</span><AnimatedNumber value={value} className="funnel-number" />
       <i><motion.b initial={{ width: 0 }} animate={{ width: `${width}%` }} transition={{ duration: 0.9, ease: "easeOut" }} /></i>
     </div>
   );
 }
 
-function IndicatorDelta({ indicator }: { indicator: DashboardOverview["indicators"][number] }) {
+function MarketSignalTile({ indicator, index }: { indicator: DashboardOverview["indicators"][number]; index: number }) {
   const first = Number(indicator.points[0]?.value ?? 0);
   const last = Number(indicator.points.at(-1)?.value ?? 0);
-  const delta = first === 0 ? 0 : (last - first) / first * 100;
-  const UpIcon = delta >= 0 ? ArrowUpRight : ArrowDownRight;
-  return <em className={delta >= 0 ? "is-up" : "is-down"}><UpIcon size={15} /> {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%</em>;
+  const difference = last - first;
+  const delta = first === 0 ? 0 : difference / first * 100;
+  const rising = difference >= 0;
+  const gradientId = `market-fill-${indicator.code.toLowerCase()}`;
+  return (
+    <motion.article
+      className={rising ? "market-signal is-up" : "market-signal is-down"}
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: Math.min(index * 0.055, 0.28), duration: 0.45 }}
+      style={{ "--signal-delay": `${0.45 + Math.min(index * 0.08, 0.4)}s` } as React.CSSProperties}
+    >
+      <div className="market-sparkline" aria-hidden="true">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={indicator.points} margin={{ top: 5, right: 2, bottom: 2, left: 2 }}>
+            <defs>
+              <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor={rising ? "#ff355e" : "#2f7ee6"} stopOpacity={0.28} />
+                <stop offset="100%" stopColor={rising ? "#ff355e" : "#2f7ee6"} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <YAxis hide domain={["dataMin - 1", "dataMax + 1"]} />
+            <Area
+              type="monotone"
+              dataKey="value"
+              stroke={rising ? "#ff355e" : "#2f7ee6"}
+              strokeWidth={2}
+              fill={`url(#${gradientId})`}
+              dot={false}
+              animationBegin={Math.min(index * 80, 400)}
+              animationDuration={1050}
+              animationEasing="ease-out"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+        <span className="market-readhead" />
+      </div>
+      <div className="market-signal-copy">
+        <span>{indicator.name} <small>{indicator.group}</small></span>
+        <strong><AnimatedNumber value={last} decimals={indicator.unit === "%" ? 1 : 1} /></strong>
+        <em>
+          {rising ? "+" : ""}{difference.toFixed(1)} ({rising ? "+" : ""}{delta.toFixed(1)}%)
+        </em>
+      </div>
+    </motion.article>
+  );
 }
 
 function PerformanceTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; payload: { kind: string } }>; label?: string }) {
   if (!active || !payload?.length) return null;
   return <div className="dashboard-tooltip"><span>{label} · {payload[0].payload.kind === "ACTUAL" ? "실적" : "예상"}</span><strong>{payload[0].value.toLocaleString("ko-KR")}건</strong></div>;
-}
-
-function IndicatorTooltip({ active, payload, label, unit }: { active?: boolean; payload?: Array<{ value: number }>; label?: string; unit: string }) {
-  if (!active || !payload?.length) return null;
-  return <div className="dashboard-tooltip"><span>{label}</span><strong>{payload[0].value.toLocaleString("ko-KR")} {unit}</strong></div>;
 }

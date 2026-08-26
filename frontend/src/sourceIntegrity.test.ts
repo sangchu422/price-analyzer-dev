@@ -85,6 +85,13 @@ describe("frontend source integrity", () => {
     const html = readFileSync(join(frontendRoot, "index.html"), "utf8");
     expect(html).toMatch(/<html lang="ko">/);
     expect(html).toMatch(/<meta charset="UTF-8"\s*\/>/);
-    expect(html).toContain("<title>Price Analyzer · 통합 견적 분석</title>");
+    expect(html).toContain("<title>통합 견적 분석 시스템</title>");
+  });
+
+  it("enters the dashboard directly without a blocking title intro", () => {
+    const app = readFileSync(join(sourceRoot, "App.tsx"), "utf8");
+    expect(app).not.toContain("SystemTitleIntro");
+    expect(app).not.toContain("showDashboardIntro");
+    expect(app).not.toContain("dashboardIntroPlayed");
   });
 });

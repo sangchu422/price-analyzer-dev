@@ -31,6 +31,10 @@ export function DecisionBar({
 
   return (
     <section className="decision-bar" aria-label="검토 판단" key={item.raw_item_id}>
+      <div className="decision-bar-heading">
+        <span>최종 판단</span>
+        <strong>이 품목을 표준 DB 가격 근거로 사용할까요?</strong>
+      </div>
       <div className="decision-fields">
         <label>
           <span>검토자</span>

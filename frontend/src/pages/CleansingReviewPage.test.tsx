@@ -156,7 +156,7 @@ describe("CleansingReviewPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "BEARING", level: 1 })).toBeVisible();
-    expect(document.title).toBe("정제 검토 · Price Analyzer");
+    expect(document.title).toBe("정제 검토 · 통합 견적 분석 시스템");
     expect(await screen.findByLabelText("원본 견적서 셀 미리보기")).toBeVisible();
     expect(screen.getByTitle("A12")).toHaveClass("is-source-target");
     expect(screen.getByTitle("E12")).toHaveTextContent("2,800");
@@ -843,7 +843,7 @@ describe("CleansingReviewPage", () => {
     let resolveFetch!: (value: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve; })));
     const { unmount } = renderPage();
-    expect(screen.getByText("검토 항목을 불러오는 중입니다.")).toBeVisible();
+    expect(screen.getByRole("status", { name: "검토 항목을 불러오는 중" })).toHaveAttribute("aria-busy", "true");
     resolveFetch(await jsonResponse(queue([])));
     expect(await screen.findByText("검토할 항목이 없습니다.")).toBeVisible();
     unmount();

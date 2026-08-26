@@ -107,7 +107,7 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
       }
       if (url.includes("/api/dashboard/overview")) {
         return jsonResponse({
-          cleansing_todo: { count: 8336, top_reasons: [] },
+          cleansing_todo: { count: 1022, top_reasons: [] },
         });
       }
       if (url.includes("/api/catalog/standard-items?")) {
@@ -166,9 +166,11 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   expect(
     await screen.findByRole("heading", { name: "표준 DB" }, { timeout: 3000 }),
   ).toBeVisible();
-  expect(
-    await screen.findByRole("button", { name: /SENSOR/ }),
-  ).toBeVisible();
+  const sensorButton = await screen.findByRole("button", { name: /SENSOR/ });
+  expect(sensorButton).toBeVisible();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  await userEvent.click(sensorButton);
+  expect(await screen.findByRole("dialog", { name: "SENSOR" })).toBeVisible();
   expect(
     screen.getAllByText("가격 근거 1건 · 제출사 1곳").length,
   ).toBeGreaterThan(0);
@@ -221,6 +223,9 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
     "aria-expanded",
     "true",
   );
+  await userEvent.click(screen.getByRole("button", { name: "표준 품목 상세 닫기" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(document.body.style.overflow).toBe("");
 });
 
 it("shows a shimmering status message while the catalog is still loading", async () => {
@@ -244,7 +249,8 @@ it("shows a shimmering status message while the catalog is still loading", async
 
   renderApp("/standard-prices");
 
-  expect(screen.getByText("목록을 불러오는 중…")).toHaveClass("loading-pulse");
+  expect(screen.getByRole("status", { name: "표준 품목 목록을 불러오는 중" })).toHaveAttribute("aria-busy", "true");
+  expect(document.querySelectorAll(".standard-catalog-skeleton tbody tr")).toHaveLength(8);
   expect(
     within(screen.getByLabelText("최근 갱신 상태")).getByText("불러오는 중…"),
   ).toBeVisible();
@@ -261,7 +267,7 @@ it("shows a shimmering status message while the catalog is still loading", async
   expect(
     await screen.findByRole("button", { name: /SENSOR/ }),
   ).toBeVisible();
-  expect(screen.queryByText("목록을 불러오는 중…")).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "표준 품목 목록을 불러오는 중" })).not.toBeInTheDocument();
 });
 
 it("keeps an analysis evidence link pinned to its immutable price version", async () => {
@@ -428,6 +434,7 @@ it("shows an empty evidence state without requesting evidence when no price exis
 
   renderApp("/standard-prices");
 
+  await userEvent.click(await screen.findByRole("button", { name: /UNPRICED SENSOR/ }));
   expect(
     await screen.findByRole("heading", { name: "UNPRICED SENSOR" }),
   ).toBeVisible();
@@ -593,6 +600,7 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
   expect(screen.getAllByRole("button", { name: /SENSOR/ })).toHaveLength(2);
   expect(screen.queryByRole("button", { name: "품목 더 보기" })).not.toBeInTheDocument();
 
+  await user.click(screen.getAllByRole("button", { name: /SENSOR/ })[0]);
   await user.click(await screen.findByRole("button", { name: "근거 더 보기" }));
   expect(
     await screen.findByText("다음 가격 근거를 불러오지 못했습니다."),
@@ -611,8 +619,6 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
 });
 
 it("loads catalog cursors until a linked standard item is selected", async () => {
-  const scrollIntoView = vi.fn();
-  Element.prototype.scrollIntoView = scrollIntoView;
   const linked = {
     ...sensor,
     id: 13,
@@ -664,6 +670,6 @@ it("loads catalog cursors until a linked standard item is selected", async () =>
   expect(
     await screen.findByRole("heading", { name: "LINKED SENSOR" }),
   ).toBeVisible();
+  expect(screen.getByRole("dialog", { name: "LINKED SENSOR" })).toBeVisible();
   expect(catalogUrls.filter((url) => url.includes("after_id=12"))).toHaveLength(1);
-  await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
 });

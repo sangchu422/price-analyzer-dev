@@ -40,9 +40,9 @@ export function QuoteAnalysisPage({
   workflow: QuoteAnalysisWorkflowState;
 }) {
   useEffect(() => {
-    document.title = "신규 견적 분석 · Price Analyzer";
+    document.title = "신규 견적 분석 · 통합 견적 분석 시스템";
     return () => {
-      document.title = "Price Analyzer";
+      document.title = "통합 견적 분석 시스템";
     };
   }, []);
 

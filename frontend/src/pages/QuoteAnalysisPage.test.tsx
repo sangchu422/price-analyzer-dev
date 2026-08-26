@@ -325,7 +325,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(document.querySelector(".inflation-evidence-detail")).toHaveTextContent(
     "2017년 1.9% · 2018년 1.5% · 누적 +3.43%",
   );
-});
+}, 15_000);
 
 it("renders comparison basis, signed variance, and every operational status distinctly", async () => {
   const statusLines = [

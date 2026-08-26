@@ -21,7 +21,11 @@ from app.catalog.models import (
     StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision, CleanStatus
-from app.documents.models import SourceDocument
+from app.cleansing.review_cases import (
+    current_review_queue_query,
+    summarize_review_cases,
+)
+from app.documents.models import SourceDocument, SourceVariant
 from app.procurement.categories import current_category_subquery
 from app.procurement.models import (
     ItemCategory,
@@ -79,23 +83,19 @@ def dashboard_overview(session: Session, *, today: date | None = None) -> dict[s
 
     latest_clean = _latest_ids(CleanDecision, "clean_id")
     current_raw = current_raw_item_ids()
-    cleaning_todo = session.scalar(
-        select(func.count(CleanDecision.id))
-        .join(latest_clean, latest_clean.c.clean_id == CleanDecision.id)
-        .join(current_raw, current_raw.c.raw_item_id == CleanDecision.raw_item_id)
-        .where(CleanDecision.status == CleanStatus.REVIEW_REQUIRED)
-    ) or 0
+    cleaning_todo, grouped_reason_counts = summarize_review_cases(
+        session.execute(
+            current_review_queue_query().with_only_columns(
+                CleanDecision.raw_item_id,
+                SourceVariant.id,
+                CleanDecision.reason_code,
+                maintain_column_froms=True,
+            )
+        ).all()
+    )
     reason_counts = [
         {"reason_code": reason, "count": count}
-        for reason, count in session.execute(
-            select(CleanDecision.reason_code, func.count(CleanDecision.id))
-            .join(latest_clean, latest_clean.c.clean_id == CleanDecision.id)
-            .join(current_raw, current_raw.c.raw_item_id == CleanDecision.raw_item_id)
-            .where(CleanDecision.status == CleanStatus.REVIEW_REQUIRED)
-            .group_by(CleanDecision.reason_code)
-            .order_by(func.count(CleanDecision.id).desc())
-            .limit(6)
-        )
+        for reason, count in grouped_reason_counts.most_common(6)
     ]
     unmatched = _unmatched_included_count(session, latest_clean, current_raw)
     categories = _category_counts(session, current_categories, total_standard)

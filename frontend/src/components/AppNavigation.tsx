@@ -12,9 +12,9 @@ import type { AppTheme } from "../theme";
 
 const destinations = [
   { path: "/dashboard", label: "종합현황", icon: LayoutDashboard },
-  { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
   { path: "/standard-prices", label: "표준 DB", icon: Database },
   { path: "/analysis", label: "신규 견적 분석", icon: ScanSearch },
+  { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
   { path: "/settings", label: "설정", icon: Settings },
 ] as const;
 
@@ -46,14 +46,11 @@ export function AppNavigation({
         }}
       >
         <span className="wordmark-copy" aria-hidden="true">
-          <strong>PRICE</strong>
-          <i>/</i>
-          <strong>ANALYZER</strong>
+          <strong>통합 견적 분석 시스템</strong>
         </span>
-        <span className="sr-only">Price Analyzer 견적 적정성 분석</span>
+        <span className="sr-only">통합 견적 분석 시스템</span>
       </a>
       <div className="navigation-cluster">
-        <span className="runtime-status"><i aria-hidden="true" /> LOCAL MODE</span>
         <div className="navigation-links">
         {destinations.map(({ path, label, icon: Icon }) => {
           const active =

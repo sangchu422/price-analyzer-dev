@@ -12,8 +12,6 @@ function currentPathname() {
   return window.location.pathname.replace(/\/+$/, "") || "/";
 }
 
-let dashboardIntroPlayed = false;
-
 const dashboardPagePromise = import("./pages/DashboardPage");
 const DashboardPage = lazy(() => dashboardPagePromise.then(
   (module) => ({ default: module.DashboardPage }),
@@ -21,28 +19,10 @@ const DashboardPage = lazy(() => dashboardPagePromise.then(
 const StandardPricesPage = lazy(() => import("./pages/StandardPricesPage").then(
   (module) => ({ default: module.StandardPricesPage }),
 ));
-const WiaLogoIntro = lazy(() => import("./components/WiaLogoIntro").then(
-  (module) => ({ default: module.WiaLogoIntro }),
-));
-
-function DashboardIntroFallback() {
-  return (
-    <div className="wia-intro" role="status" aria-label="Price Analyzer 시작 화면을 준비하는 중">
-      <div className="wia-intro-mark">
-        <img src="/brand/hyundai-wia.png" alt="HYUNDAI WIA" />
-      </div>
-      <p>PROCUREMENT INTELLIGENCE</p>
-    </div>
-  );
-}
-
 export function App() {
   const [path, setPath] = useState(currentPathname);
   const [theme, setTheme] = useState<AppTheme>(getStoredTheme);
   const quoteAnalysisWorkflow = useQuoteAnalysisWorkflowState();
-  const [showDashboardIntro, setShowDashboardIntro] = useState(
-    () => (path === "/" || path === "/dashboard") && !dashboardIntroPlayed,
-  );
 
   useEffect(() => {
     applyTheme(theme);
@@ -122,16 +102,6 @@ export function App() {
           {page}
         </div>
       </Suspense>
-      {showDashboardIntro ? (
-        <Suspense fallback={<DashboardIntroFallback />}>
-          <WiaLogoIntro
-            onComplete={() => {
-              dashboardIntroPlayed = true;
-              setShowDashboardIntro(false);
-            }}
-          />
-        </Suspense>
-      ) : null}
     </div>
   );
 }

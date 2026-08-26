@@ -16,10 +16,14 @@ from sqlalchemy.orm import Session
 
 from app.cleansing.models import CleanDecision, CleanStatus
 from app.cleansing.calculation import spreadsheet_amount_evidence
+from app.cleansing.review_cases import (
+    current_review_queue_query,
+    group_review_rows,
+    review_case_key,
+)
 from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.quotes.models import RawQuoteItem
-from app.parsing.projection import current_raw_item_ids
 
 
 router = APIRouter()
@@ -150,30 +154,7 @@ def review_queue(
             status_code=422,
             detail="offset pagination is unsupported; use after_id",
         )
-    latest_ids = (
-        select(
-            CleanDecision.raw_item_id,
-            func.max(CleanDecision.id).label("decision_id"),
-        )
-        .group_by(CleanDecision.raw_item_id)
-        .subquery()
-    )
-    current_raw = current_raw_item_ids()
-    base = (
-        select(RawQuoteItem, CleanDecision, SourceVariant, SourceDocument)
-        .join(
-            latest_ids,
-            latest_ids.c.raw_item_id == RawQuoteItem.id,
-        )
-        .join(
-            CleanDecision,
-            CleanDecision.id == latest_ids.c.decision_id,
-        )
-        .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
-        .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
-        .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
-        .where(CleanDecision.status == CleanStatus.REVIEW_REQUIRED)
-    )
+    base = current_review_queue_query()
     if logical_name is not None:
         base = base.where(SourceDocument.logical_name == logical_name)
     normalized_search = search.strip() if search is not None else ""
@@ -221,21 +202,7 @@ def review_queue(
     if reason_code is not None:
         base = base.where(CleanDecision.reason_code == reason_code)
     rows = session.execute(base.order_by(RawQuoteItem.id, CleanDecision.id)).all()
-    grouped_rows: list[tuple[RawQuoteItem, CleanDecision, SourceVariant, SourceDocument]] = []
-    group_counts: dict[tuple[object, ...], int] = {}
-    group_index: dict[tuple[object, ...], int] = {}
-    document_reasons = {"OCR_SOURCE_REVIEW_REQUIRED", "PARSER_SOURCE_REVIEW_REQUIRED"}
-    for row in rows:
-        raw, decision, variant, _document = row
-        key: tuple[object, ...] = (
-            ("document", variant.id, decision.reason_code)
-            if decision.reason_code in document_reasons
-            else ("row", raw.id)
-        )
-        group_counts[key] = group_counts.get(key, 0) + 1
-        if key not in group_index:
-            group_index[key] = len(grouped_rows)
-            grouped_rows.append(row)
+    grouped_rows, group_counts = group_review_rows(rows)
     if after_id is not None:
         grouped_rows = [row for row in grouped_rows if row[0].id > after_id]
     total = len(grouped_rows)
@@ -249,11 +216,11 @@ def review_queue(
                 decision,
                 variant,
                 document,
-                group_counts[
-                    ("document", variant.id, decision.reason_code)
-                    if decision.reason_code in document_reasons
-                    else ("row", raw.id)
-                ],
+                group_counts[review_case_key(
+                    raw_item_id=raw.id,
+                    source_variant_id=variant.id,
+                    reason_code=decision.reason_code,
+                )],
             )
             for raw, decision, variant, document in page_rows
         ],

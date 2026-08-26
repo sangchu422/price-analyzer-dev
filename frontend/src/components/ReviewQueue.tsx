@@ -51,7 +51,7 @@ export function ReviewQueue({
           <input
             type="search"
             aria-label="품목 또는 파일 검색"
-            placeholder="품목 또는 파일 검색"
+            placeholder="품목명 또는 견적서 검색"
             value={search}
             maxLength={200}
             disabled={controlsLocked}
@@ -79,7 +79,7 @@ export function ReviewQueue({
       </div>
 
       <div className="queue-heading">
-        <span>검토 항목</span>
+        <span>판단 대기 목록</span>
         {isSearching ? (
           <LoadingLabel className="queue-progress" role="status" ariaLive="polite">
             검색 중…
@@ -108,7 +108,7 @@ export function ReviewQueue({
                   <span className="reason-mark">{reasonLabel(item.reason_code)}</span>
                   {(item.document_group_count ?? 1) > 1 && (
                     <span className="document-group-mark">
-                      문서 내 {item.document_group_count}개 행
+                      같은 문서 {item.document_group_count}개 품목
                     </span>
                   )}
                   <span>{sourceFileLabel(item.source.logical_name)}</span>
@@ -119,6 +119,7 @@ export function ReviewQueue({
                         ? `${item.source.page}쪽`
                         : "위치 없음"}
                   </span>
+                  <span className="queue-row-arrow" aria-hidden="true">→</span>
                 </span>
               </button>
             </li>

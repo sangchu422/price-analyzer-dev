@@ -145,6 +145,10 @@ it("presents the command center and three primary workflow destinations", () => 
   expect(navigation).not.toHaveTextContent("품목 그룹핑");
   expect(navigation).not.toHaveTextContent("표준단가");
   expect(navigation).not.toHaveTextContent("견적 비교");
+  expect(navigation).not.toHaveTextContent("LOCAL MODE");
+  expect(
+    Array.from(navigation.querySelectorAll(".navigation-links a"), (link) => link.textContent),
+  ).toEqual(["종합현황", "표준 DB", "신규 견적 분석", "정제 검토", "설정"]);
 });
 
 it("changes primary pages without overlapping scroll and focus movement", async () => {

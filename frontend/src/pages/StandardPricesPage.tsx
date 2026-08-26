@@ -28,6 +28,7 @@ import { EvidenceBadge } from "../components/EvidenceBadge";
 import { LoadingLabel } from "../components/LoadingLabel";
 import { MetricStrip } from "../components/MetricStrip";
 import { reasonLabel } from "../components/reasonLabels";
+import { Skeleton } from "../components/Skeleton";
 
 const STANDARD_CATEGORIES = [
   { code: "DRIVE_MOTION", name: "구동·모션" },
@@ -58,12 +59,18 @@ export function StandardPricesPage() {
   const [requestedVersionId, setRequestedVersionId] = useState<number | null>(
     positiveIntegerParam("version_id"),
   );
+  const [modalPhase, setModalPhase] = useState<"closed" | "open" | "closing">(
+    () => positiveIntegerParam("item_id") ? "open" : "closed",
+  );
   const attemptedCatalogCursors = useRef(new Set<number>());
+  const closeTimerRef = useRef<number | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    document.title = "표준 DB · Price Analyzer";
+    document.title = "표준 DB · 통합 견적 분석 시스템";
     return () => {
-      document.title = "Price Analyzer";
+      document.title = "통합 견적 분석 시스템";
     };
   }, []);
 
@@ -106,8 +113,8 @@ export function StandardPricesPage() {
   const requestedItem = items.find((item) => item.id === requestedItemId);
   const selected =
     requestedItem ??
-    (requestedItemId === null
-      ? items.find((item) => item.id === selectedId) ?? items[0] ?? null
+    (requestedItemId === null && selectedId !== null
+      ? items.find((item) => item.id === selectedId) ?? null
       : null);
   const latestBuild = catalog.data?.pages[0]?.latest_build ?? null;
   const catalogCursor = catalog.data?.pages.at(-1)?.next_cursor ?? null;
@@ -152,7 +159,6 @@ export function StandardPricesPage() {
     fetchNextCatalogPage,
   ]);
 
-  const requestedItemFound = requestedItemId !== null && requestedItem !== undefined;
   const requestedItemExhausted =
     requestedItemId !== null &&
     !requestedItem &&
@@ -163,12 +169,69 @@ export function StandardPricesPage() {
     requestedItemId !== null && !requestedItem && isFetchNextCatalogPageError;
 
   useEffect(() => {
-    if (!requestedItemFound) return;
-    const detail = document.getElementById("standard-item-detail");
-    if (detail && typeof detail.scrollIntoView === "function") {
-      detail.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (modalPhase === "closed") return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    if (modalPhase === "open") {
+      window.requestAnimationFrame(() => modalRef.current?.focus());
     }
-  }, [requestedItemFound]);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [modalPhase]);
+
+  useEffect(() => () => {
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+  }, []);
+
+  const openDetail = (itemId: number) => {
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    returnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    setRequestedItemId(null);
+    setRequestedVersionId(null);
+    setSelectedId(itemId);
+    setModalPhase("open");
+  };
+
+  const closeDetail = () => {
+    if (!selected || modalPhase === "closing") return;
+    if (selectedId === null) setSelectedId(selected.id);
+    setRequestedItemId(null);
+    setRequestedVersionId(null);
+    setModalPhase("closing");
+    closeTimerRef.current = window.setTimeout(() => {
+      setModalPhase("closed");
+      setSelectedId(null);
+      returnFocusRef.current?.focus();
+      closeTimerRef.current = null;
+    }, 150);
+  };
+
+  const handleModalKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDetail();
+      return;
+    }
+    if (event.key !== "Tab" || !modalRef.current) return;
+    const focusable = Array.from(
+      modalRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   const evidence = useInfiniteQuery({
     queryKey: [
@@ -410,7 +473,7 @@ export function StandardPricesPage() {
             </div>
           </header>
           {catalog.isPending && (
-            <LoadingLabel as="p" className="inline-state" role="status">목록을 불러오는 중…</LoadingLabel>
+            <StandardCatalogSkeleton />
           )}
           {catalog.isError && !isFetchNextCatalogPageError && (
             <div className="inline-state is-error" role="alert">
@@ -466,13 +529,9 @@ export function StandardPricesPage() {
                   {displayedItems.map((item) => (
                     <StandardItemTableRow
                       item={item}
-                      selected={selected?.id === item.id}
+                      selected={selected?.id === item.id && modalPhase !== "closed"}
                       key={item.id}
-                      onSelect={() => setSelectedId(item.id)}
-                      onClearRequested={() => {
-                        setRequestedItemId(null);
-                        setRequestedVersionId(null);
-                      }}
+                      onSelect={() => openDetail(item.id)}
                     />
                   ))}
                 </tbody>
@@ -495,52 +554,70 @@ export function StandardPricesPage() {
           )}
         </section>
 
-        <section
-          className="standard-db-detail"
-          id="standard-item-detail"
-          aria-label="선택한 표준 품목"
-        >
-          {!selected ? (
-            <div className="empty-detail">
-              <p>왼쪽 목록에서 표준 품목을 선택하세요.</p>
-            </div>
-          ) : (
-            <StandardItemDetail
-              item={selected}
-              snapshotVersion={
-                requestedVersionId === null ? null : requestedVersion.data ?? null
-              }
-              snapshotPending={
-                requestedVersionId !== null && requestedVersion.isPending
-              }
-              snapshotError={
-                requestedVersionId !== null && requestedVersion.isError
-              }
-              observations={observations}
-              evidencePending={evidence.isLoading}
-              evidenceError={evidence.isError}
-              evidenceNextError={evidence.isFetchNextPageError}
-              retryEvidence={() => void evidence.refetch()}
-              retryNextEvidence={() => void evidence.fetchNextPage()}
-              hasMoreEvidence={Boolean(evidence.hasNextPage)}
-              loadMoreEvidence={() => void evidence.fetchNextPage()}
-              evidenceLoadingMore={evidence.isFetchingNextPage}
-              versionGroups={versionGroups}
-              historyPending={history.isPending}
-              historyError={history.isError}
-              historyNextError={history.isFetchNextPageError}
-              retryHistory={() => void history.refetch()}
-              retryNextHistory={() => void history.fetchNextPage()}
-              hasMoreHistory={Boolean(history.hasNextPage)}
-              loadMoreHistory={() => void history.fetchNextPage()}
-              historyLoadingMore={history.isFetchingNextPage}
-              trend={trend.data ?? null}
-              trendPending={trend.isPending}
-              trendError={trend.isError}
-            />
-          )}
-        </section>
       </div>
+      {selected && modalPhase !== "closed" && (
+        <div
+          className={`standard-detail-overlay ${modalPhase === "open" ? "is-open" : "is-closing"}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDetail();
+          }}
+        >
+          <div
+            className={`standard-detail-modal t-modal ${modalPhase === "open" ? "is-open" : "is-closing"}`}
+            id="standard-item-detail-modal"
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="standard-item-detail-title"
+            tabIndex={-1}
+            onKeyDown={handleModalKeyDown}
+          >
+            <header className="standard-detail-modal-bar">
+              <div><span>PRICE RECORD</span><strong>표준 품목 상세</strong></div>
+              <button type="button" onClick={closeDetail} aria-label="표준 품목 상세 닫기">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                닫기
+              </button>
+            </header>
+            <div className="standard-detail-modal-scroll">
+              <StandardItemDetail
+                item={selected}
+                headingId="standard-item-detail-title"
+                snapshotVersion={
+                  requestedVersionId === null ? null : requestedVersion.data ?? null
+                }
+                snapshotPending={
+                  requestedVersionId !== null && requestedVersion.isPending
+                }
+                snapshotError={
+                  requestedVersionId !== null && requestedVersion.isError
+                }
+                observations={observations}
+                evidencePending={evidence.isLoading}
+                evidenceError={evidence.isError}
+                evidenceNextError={evidence.isFetchNextPageError}
+                retryEvidence={() => void evidence.refetch()}
+                retryNextEvidence={() => void evidence.fetchNextPage()}
+                hasMoreEvidence={Boolean(evidence.hasNextPage)}
+                loadMoreEvidence={() => void evidence.fetchNextPage()}
+                evidenceLoadingMore={evidence.isFetchingNextPage}
+                versionGroups={versionGroups}
+                historyPending={history.isPending}
+                historyError={history.isError}
+                historyNextError={history.isFetchNextPageError}
+                retryHistory={() => void history.refetch()}
+                retryNextHistory={() => void history.fetchNextPage()}
+                hasMoreHistory={Boolean(history.hasNextPage)}
+                loadMoreHistory={() => void history.fetchNextPage()}
+                historyLoadingMore={history.isFetchingNextPage}
+                trend={trend.data ?? null}
+                trendPending={trend.isPending}
+                trendError={trend.isError}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       <section className="standard-unclassified-band" aria-label="표준 DB 미분류 작업 목록">
         <div>
           <span>STANDARD DB / UNCLASSIFIED QUEUE</span>
@@ -565,12 +642,10 @@ function StandardItemTableRow({
   item,
   selected,
   onSelect,
-  onClearRequested,
 }: {
   item: StandardItemSummary;
   selected: boolean;
   onSelect: () => void;
-  onClearRequested: () => void;
 }) {
   const price = item.current_price;
   return (
@@ -580,11 +655,9 @@ function StandardItemTableRow({
           type="button"
           className="standard-item-name-button"
           aria-expanded={selected}
-          aria-controls="standard-item-detail"
-          onClick={() => {
-            onClearRequested();
-            onSelect();
-          }}
+          aria-haspopup="dialog"
+          aria-controls="standard-item-detail-modal"
+          onClick={onSelect}
         >
           <strong>{item.current_version.canonical_name}</strong>
           <small>
@@ -608,8 +681,37 @@ function StandardItemTableRow({
   );
 }
 
+function StandardCatalogSkeleton() {
+  const widths = ["82%", "70%", "42%", "64%", "68%", "64%", "64%", "38%", "70%", "70%", "58%"];
+  return (
+    <div className="table-scroll standard-catalog-scroll standard-catalog-skeleton" role="status" aria-label="표준 품목 목록을 불러오는 중" aria-busy="true">
+      <span className="sr-only">표준 품목 목록을 불러오는 중입니다.</span>
+      <table className="data-table standard-catalog-table" aria-hidden="true">
+        <thead>
+          <tr>
+            <th>품명</th><th>규격</th><th>단위</th><th>최저</th><th>중앙값</th><th>평균</th><th>최고</th><th>근거</th><th>제품 제조사</th><th>견적 제출사</th><th>최근 견적일</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: 8 }, (_, rowIndex) => (
+            <tr key={rowIndex}>
+              {widths.map((width, cellIndex) => (
+                <td key={cellIndex}>
+                  <Skeleton width={width} height={cellIndex === 0 ? "13px" : "10px"} />
+                  {cellIndex === 0 ? <Skeleton className="skeleton-subline" width="55%" height="8px" /> : null}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function StandardItemDetail({
   item,
+  headingId,
   snapshotVersion,
   snapshotPending,
   snapshotError,
@@ -636,6 +738,7 @@ function StandardItemDetail({
   trendError,
 }: {
   item: StandardItemSummary;
+  headingId?: string;
   snapshotVersion: PriceVersion | null;
   snapshotPending: boolean;
   snapshotError: boolean;
@@ -710,7 +813,7 @@ function StandardItemDetail({
       <header className="standard-record-heading">
         <div>
           <p className="section-kicker">표준 품목 #{item.id}</p>
-          <h2>{item.current_version.canonical_name}</h2>
+          <h2 id={headingId}>{item.current_version.canonical_name}</h2>
           <p>
             {displaySpec(item)} ·{" "}
             {item.current_version.canonical_unit ?? "원문에 단위 없음"}
@@ -934,19 +1037,20 @@ function PriceTrendPanel({
             <AreaChart data={trend.points} margin={{ top: 12, right: 8, bottom: 0, left: 2 }}>
               <defs>
                 <linearGradient id="standardTrendFill" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0" stopColor="#ff0000" stopOpacity={0.22} />
-                  <stop offset="1" stopColor="#ff0000" stopOpacity={0} />
+                  <stop offset="0" stopColor="#00287a" stopOpacity={0.22} />
+                  <stop offset="1" stopColor="#00287a" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid vertical={false} stroke="var(--soft-line)" />
               <XAxis dataKey="year" tickLine={false} axisLine={false} tick={{ fill: "var(--muted)", fontSize: 10 }} />
               <YAxis hide domain={["dataMin", "dataMax"]} />
               <Tooltip content={<TrendTooltip />} />
-              <Area type="monotone" dataKey="maximum" stroke="var(--line)" fill="transparent" strokeDasharray="3 4" />
-              <Area type="monotone" dataKey="minimum" stroke="var(--muted)" fill="transparent" strokeDasharray="3 4" />
-              <Area type="monotone" dataKey="median" stroke="#ff0000" strokeWidth={2.5} fill="url(#standardTrendFill)" animationDuration={900} />
+              <Area type="monotone" dataKey="maximum" stroke="var(--line)" fill="transparent" strokeDasharray="3 4" animationDuration={800} animationEasing="ease-out" />
+              <Area type="monotone" dataKey="minimum" stroke="var(--muted)" fill="transparent" strokeDasharray="3 4" animationBegin={80} animationDuration={800} animationEasing="ease-out" />
+              <Area type="monotone" dataKey="median" stroke="#00287a" strokeWidth={2.5} fill="url(#standardTrendFill)" animationBegin={150} animationDuration={1050} animationEasing="ease-out" />
             </AreaChart>
           </ResponsiveContainer>
+          <span className="standard-trend-readhead" aria-hidden="true" />
         </div>
       ) : null}
       {trend ? <small>{trend.note}</small> : null}

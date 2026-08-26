@@ -130,18 +130,18 @@ export function ItemInspector({
     <section className="inspector" aria-label="선택 항목 상세" key={item.raw_item_id}>
       <header className="inspector-header">
         <div>
-          <p className="eyebrow">품목 #{item.raw_item_id}</p>
+          <p className="eyebrow">검토 항목</p>
           <h1 ref={headingRef} tabIndex={-1}>
             {item.normalized.item_name ?? item.raw.item_name ?? "품명 없음"}
           </h1>
           <p>{item.normalized.spec ?? item.raw.spec ?? missingSpecLabel(item.spec_source_status)}</p>
         </div>
-        <span className="status-tag">검토 필요</span>
+        <span className="status-tag">담당자 판단 대기</span>
       </header>
 
       <section className="reason-section" aria-labelledby="reason-title">
         <div>
-          <p className="section-kicker">검토 사유</p>
+          <p className="section-kicker">확인할 내용</p>
           <h2 id="reason-title">{reasonLabel(item.reason_code)}</h2>
         </div>
         <p>{reasonSummary(item)}</p>
@@ -242,7 +242,7 @@ function AmountMismatchEvidence({
         {evidence.factors?.map((factor) => (
           <div key={factor.coordinate}>
             <dt>{factor.label}</dt>
-            <dd>{factor.value} <small>({factor.coordinate})</small></dd>
+            <dd>{factor.value}</dd>
           </div>
         ))}
         <div>
@@ -276,9 +276,10 @@ function AmountMismatchEvidence({
         {evidence.tolerance_amount ? <> · 허용오차 ±{tolerance}</> : null}
       </p>
       {evidence.formula && (
-        <p className="calculation-formula">
-          원본 계산식: <code>{evidence.formula}</code>
-        </p>
+        <details className="calculation-detail">
+          <summary>계산 세부 정보</summary>
+          <p className="calculation-formula">원본 계산식: <code>{evidence.formula}</code></p>
+        </details>
       )}
     </section>
   );
@@ -354,7 +355,7 @@ function ObservationRow({
   ].filter(Boolean).join(" · ");
   return (
     <li className={row.raw_item_id === currentId ? "is-current" : undefined}>
-      <span>{row.raw_item_id === currentId ? "현재 검토 품목" : `유사 품목 #${row.raw_item_id}`}</span>
+      <span>{row.raw_item_id === currentId ? "현재 검토 품목" : "과거 비교 근거"}</span>
       <strong>{formatWon(row.unit_price)}</strong>
       {source ? (
         <a

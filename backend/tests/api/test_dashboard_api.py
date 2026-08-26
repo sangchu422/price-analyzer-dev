@@ -6,9 +6,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.catalog.models import StandardItem, StandardItemVersion
-from app.documents.models import SourceDocument
+from app.cleansing.models import CleanDecision, CleanStatus
+from app.documents.models import SourceDocument, SourceVariant
 from app.procurement.dashboard import dashboard_overview
 from app.procurement.models import ItemCategory, StandardItemCategoryAssignment
+from app.quotes.models import RawQuoteItem
 from app.standard_database.models import QuoteDocumentPurpose, QuoteDocumentRole
 
 
@@ -121,3 +123,67 @@ def test_monthly_performance_keeps_an_activated_incoming_quote(
         "count": 1,
         "kind": "ACTUAL",
     }
+
+
+def test_dashboard_todo_matches_document_grouped_review_queue(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    document = SourceDocument(logical_name="문서 단위 검토.xlsx")
+    variant = SourceVariant(
+        document=document,
+        path="문서 단위 검토.xlsx",
+        sha256="e" * 64,
+        extension=".xlsx",
+        security_state="UNLOCKED",
+        selected_for_parsing_at_ingest=True,
+    )
+    for row_number in (10, 11):
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="견적",
+            source_row=row_number,
+            item_name_raw=f"PARSER ROW {row_number}",
+            parser_name="legacy-reader",
+            parser_version="reader-v1",
+        )
+        api_session.add(
+            CleanDecision(
+                raw_item=raw,
+                status=CleanStatus.REVIEW_REQUIRED,
+                reason_code="PARSER_SOURCE_REVIEW_REQUIRED",
+                item_name_norm=f"PARSER ROW {row_number}",
+                rule_version="clean-v2",
+            )
+        )
+    row_review = RawQuoteItem(
+        source_variant=variant,
+        source_sheet="견적",
+        source_row=12,
+        item_name_raw="AMOUNT ROW",
+        parser_name="quote-reader",
+        parser_version="reader-v2",
+    )
+    api_session.add(
+        CleanDecision(
+            raw_item=row_review,
+            status=CleanStatus.REVIEW_REQUIRED,
+            reason_code="AMOUNT_MISMATCH",
+            item_name_norm="AMOUNT ROW",
+            rule_version="clean-v2",
+        )
+    )
+    api_session.commit()
+
+    dashboard = client.get("/api/dashboard/overview")
+    review_queue = client.get("/api/cleansing/review-queue", params={"limit": 10})
+
+    assert dashboard.status_code == 200
+    assert review_queue.status_code == 200
+    assert dashboard.json()["cleansing_todo"]["count"] == 2
+    assert dashboard.json()["catalog"]["cleansing_todo_items"] == 2
+    assert review_queue.json()["remaining"] == 2
+    assert dashboard.json()["cleansing_todo"]["top_reasons"] == [
+        {"reason_code": "PARSER_SOURCE_REVIEW_REQUIRED", "count": 1},
+        {"reason_code": "AMOUNT_MISMATCH", "count": 1},
+    ]

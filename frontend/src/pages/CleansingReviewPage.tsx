@@ -15,9 +15,11 @@ import {
   type ReviewQueueResponse,
 } from "../api/client";
 import { DecisionBar } from "../components/DecisionBar";
+import { AnimatedNumber } from "../components/AnimatedNumber";
 import { ItemInspector } from "../components/ItemInspector";
 import { LoadingLabel } from "../components/LoadingLabel";
 import { ReviewQueue } from "../components/ReviewQueue";
+import { Skeleton } from "../components/Skeleton";
 
 type Notice = { kind: "success" | "stale" | "error"; text: string };
 
@@ -43,9 +45,9 @@ export function CleansingReviewPage() {
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
 
   useEffect(() => {
-    document.title = "정제 검토 · Price Analyzer";
+    document.title = "정제 검토 · 통합 견적 분석 시스템";
     return () => {
-      document.title = "Price Analyzer";
+      document.title = "통합 견적 분석 시스템";
     };
   }, []);
 
@@ -142,7 +144,7 @@ export function CleansingReviewPage() {
   });
 
   if (queue.isPending) {
-    return <StateScreen message="검토 항목을 불러오는 중입니다." busy />;
+    return <CleansingReviewSkeleton />;
   }
   if (queue.isError && !displayData) {
     return (
@@ -173,20 +175,21 @@ export function CleansingReviewPage() {
       : "검토 목록을 불러오지 못했습니다.";
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
+    <main className="app-shell cleansing-shell">
+      <header className="topbar cleansing-topbar">
+        <div className="cleansing-page-heading">
+          <span>PRICE DB GATE</span>
           <div>
             <h1>정제 검토</h1>
-            <span>견적 원본과 정제값 판정</span>
+            <p>표준 DB 반영 전, 원본과 자동 추출 결과를 최종 확인합니다.</p>
           </div>
         </div>
         <div
           className="queue-status"
-          aria-label={`검토 대기 ${serverRemaining}건`}
+          aria-label={`판단 대기 ${serverRemaining}건`}
         >
           <span className="status-dot" aria-hidden="true" />
-          검토 대기 <strong>{serverRemaining}</strong>건
+          판단 대기 <AnimatedNumber value={serverRemaining} suffix="건" />
         </div>
       </header>
       {queue.isError && (
@@ -311,6 +314,41 @@ function StateScreen({
       <span className="brand-mark" aria-hidden="true">P</span>
       {busy ? <LoadingLabel as="p">{message}</LoadingLabel> : <p>{message}</p>}
       {action}
+    </main>
+  );
+}
+
+function CleansingReviewSkeleton() {
+  return (
+    <main className="app-shell cleansing-shell cleansing-review-skeleton" role="status" aria-label="검토 항목을 불러오는 중" aria-busy="true">
+      <span className="sr-only">검토 항목을 불러오는 중입니다.</span>
+      <header className="topbar cleansing-topbar">
+        <div className="cleansing-page-heading"><span>PRICE DB GATE</span><div><strong className="cleansing-skeleton-title">정제 검토</strong><p>표준 DB 반영 전 최종 확인</p></div></div>
+        <Skeleton width="96px" height="12px" />
+      </header>
+      <div className="workspace">
+        <aside className="queue-panel">
+          <div className="cleansing-skeleton-filters">
+            <Skeleton width="62%" height="42px" />
+            <Skeleton width="34%" height="42px" />
+          </div>
+          <div className="cleansing-skeleton-list">
+            {Array.from({ length: 7 }, (_, index) => (
+              <div key={index}>
+                <Skeleton width={`${72 - index % 3 * 8}%`} height="13px" />
+                <Skeleton width="88%" height="9px" />
+              </div>
+            ))}
+          </div>
+        </aside>
+        <div className="detail-pane cleansing-skeleton-detail">
+          <Skeleton width="120px" height="10px" />
+          <Skeleton width="38%" height="42px" />
+          <Skeleton width="72%" height="12px" />
+          <Skeleton width="100%" height="190px" />
+          <Skeleton width="100%" height="110px" />
+        </div>
+      </div>
     </main>
   );
 }
