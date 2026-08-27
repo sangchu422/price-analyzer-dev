@@ -160,6 +160,9 @@ def test_analysis_run_persists_thresholds_and_keeps_market_target_separate(
     assert payload["target_period"] is None
     assert payload["target_lines"][0]["status"] == "MARKET_REFERENCE_REQUIRED"
     assert payload["target_lines"][0]["target_unit_price"] is None
+    assert payload["family_analysis"]["rule_version"] == "item-family-keyword-v1"
+    assert payload["family_analysis"]["matched_count"] == 0
+    assert payload["family_analysis"]["pending_count"] == 1
     run = api_session.get(QuoteAnalysisRun, payload["run_id"])
     assert run is not None
     assert run.review_percent == Decimal("12")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -62,6 +62,7 @@ from app.procurement.activation import (
     activation_payload,
     deliver_outlook_alerts,
 )
+from app.analysis.family_analysis import family_analysis_payload
 from app.procurement.equipment import (
     create_equipment_projection,
     equipment_group_payloads,
@@ -316,6 +317,7 @@ class AnalysisRunResponse(DocumentAnalysisResponse):
     target_unavailable_count: int
     target_lines: list[TargetLineResponse]
     equipment_groups: list[EquipmentGroupResponse]
+    family_analysis: dict[str, Any]
 
 
 class StoredAnalysisRunResponse(BaseModel):
@@ -489,6 +491,12 @@ def post_analysis_run(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     payload = _analysis_run_payload(result, body.review_percent, body.high_percent)
     payload["equipment_groups"] = equipment_group_payloads(session, result.run_id)
+    payload["family_analysis"] = family_analysis_payload(
+        session,
+        result,
+        review_percent=body.review_percent,
+        high_percent=body.high_percent,
+    )
     return payload
 
 

@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.analysis.models import QuoteAnalysisLineResult, QuoteAnalysisRun
+from app.analysis import family_analysis
 from app.analysis.service import AnalysisLine, AnalysisSource, DocumentAnalysis
 from app.analysis.target_price import AnalysisRunResult, TargetLineResult
 from app.db.base import Base
@@ -100,6 +101,69 @@ def test_category_rules_keep_search_grouping_separate_from_price_matching() -> N
     assert fallback.confidence == Decimal("25")
 
 
+def test_family_analysis_uses_family_minimum_and_sheet_totals(monkeypatch) -> None:
+    family = {
+        "code": "OTHER_GENERAL_COMPONENT",
+        "name": "공통 설비·부품류",
+        "item_count": 4,
+        "observation_count": 9,
+        "supplier_count": 3,
+        "price": {
+            "minimum": "80",
+            "median": "90",
+            "average": "92",
+            "maximum": "120",
+        },
+        "members": [
+            {
+                "standard_item_id": 12,
+                "name": "ITEM",
+                "spec": "SPEC",
+                "unit": "EA",
+                "observation_count": 3,
+                "price": {"minimum": "75", "median": "80", "average": "82", "maximum": "90"},
+            }
+        ],
+    }
+    monkeypatch.setattr(family_analysis, "item_family_projection", lambda _session: [family])
+    line = _analysis_line(1, sheet="설비1", quote_amount="100")
+    result = AnalysisRunResult(
+        run_id=1,
+        analysis=DocumentAnalysis(
+            document_id=1,
+            logical_name="quote.xlsx",
+            lines=(line,),
+            next_cursor=None,
+            limit=100,
+        ),
+        inflation_sync_run_id=None,
+        inflation_series_kind=None,
+        target_period=None,
+        target_index_value=None,
+        inflation_source_url="",
+        inflation_source_last_changed=None,
+        quote_total_amount=Decimal("100"),
+        target_total_amount=None,
+        target_available_count=0,
+        target_unavailable_count=1,
+        target_lines=(_target_line(1, "100"),),
+    )
+
+    payload = family_analysis.family_analysis_payload(
+        None,
+        result,
+        review_percent=Decimal("10"),
+        high_percent=Decimal("20"),
+    )
+
+    assert payload["matched_count"] == 1
+    assert payload["target_lines"][0]["target_unit_price"] == Decimal("80")
+    assert payload["equipment_groups"][0]["name"] == "설비1"
+    assert payload["equipment_groups"][0]["quote_amount"] == Decimal("100")
+    assert payload["equipment_groups"][0]["target_amount"] == Decimal("80")
+    assert payload["equipment_groups"][0]["negotiation_amount"] == Decimal("20")
+
+
 def test_equipment_definitions_resolve_digest_relative_submission_path(
     tmp_path: Path,
     monkeypatch,
@@ -158,7 +222,7 @@ def test_equipment_definitions_resolve_digest_relative_submission_path(
     )
 
 
-def test_equipment_projection_uses_cover_amount_and_keeps_empty_cover_group(
+def test_equipment_projection_sums_detail_sheet_and_ignores_empty_cover_group(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -281,15 +345,12 @@ def test_equipment_projection_uses_cover_amount_and_keeps_empty_cover_group(
 
         groups = equipment.create_equipment_projection(session, result)
         assert [(group.equipment_name, group.quote_amount) for group in groups] == [
-            ("백래쉬시험기", Decimal("1000")),
-            ("비틀림시험기", Decimal("600")),
+            ("백래쉬시험기", Decimal("1300")),
         ]
         assert groups[0].negotiation_amount == Decimal("300")
-        assert groups[0].target_amount == Decimal("700")
+        assert groups[0].target_amount == Decimal("1000")
         assert groups[0].unallocated_amount == Decimal("0")
-        assert groups[1].line_count == 0
-        assert groups[1].target_amount == Decimal("600")
         assert len(
             session.scalars(select(QuoteAnalysisEquipmentGroup)).all()
-        ) == 2
+        ) == 1
     engine.dispose()

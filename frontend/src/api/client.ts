@@ -659,6 +659,25 @@ export interface QuoteAnalysisRun extends DocumentAnalysis {
   target_unavailable_count: number;
   target_lines: TargetPriceLine[];
   equipment_groups?: EquipmentAnalysisGroup[];
+  family_analysis?: FamilyAnalysisResult;
+}
+
+export interface FamilyAnalysisResult {
+  rule_version: string;
+  matched_count: number;
+  pending_count: number;
+  lines: Array<AnalysisLine & {
+    family_code?: string | null;
+    family_name?: string | null;
+    family_item_count?: number;
+    family_supplier_count?: number;
+  }>;
+  target_lines: TargetPriceLine[];
+  target_available_count: number;
+  target_unavailable_count: number;
+  quote_total_amount: string;
+  target_total_amount: string;
+  equipment_groups: EquipmentAnalysisGroup[];
 }
 
 export interface ItemFamilyTrendPoint extends PriceStatistics {

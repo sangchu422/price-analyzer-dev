@@ -69,19 +69,17 @@ def create_equipment_projection(
     }
     grouped: dict[str, list[int]] = defaultdict(list)
     definitions_by_key = {definition.key: definition for definition in definitions}
-    for definition in definitions:
-        if definition.cover_quote_amount is not None and definition.cover_quote_amount > 0:
-            grouped[definition.key]
     for raw_id, line in source_lines.items():
         definition = by_sheet.get(line.source.sheet or "")
         if definition is None:
-            fallback_key = "all-items"
+            sheet_name = (line.source.sheet or "").strip()
+            fallback_key = f"sheet:{sheet_name or 'all-items'}"
             definitions_by_key.setdefault(
                 fallback_key,
                 EquipmentDefinition(
                     fallback_key,
-                    "전체 설비",
-                    line.source.sheet or "",
+                    sheet_name or "전체 설비",
+                    sheet_name,
                     None,
                     "LINE_ITEM_FALLBACK",
                 ),
@@ -100,31 +98,32 @@ def create_equipment_projection(
             ),
             Decimal("0"),
         )
-        if (
-            (definition.cover_quote_amount is None or definition.cover_quote_amount <= 0)
-            and detail_quote <= 0
-        ):
+        if detail_quote <= 0:
             # Preformatted workbooks frequently ship unused numbered sheets.
-            # Their zero-value template rows are not real equipment groups.
+            # A cover amount alone does not create an equipment group because
+            # the detail sheet is the operational source of the calculation.
             continue
         raw_negotiation = sum(
             (_negotiation_amount(source_lines[raw_id].quote_amount, target_by_raw[raw_id].target_amount)
              for raw_id in raw_ids),
             Decimal("0"),
         ).quantize(KRW, rounding=ROUND_HALF_UP)
-        quote_amount = max(
-            definition.cover_quote_amount
-            if definition.cover_quote_amount is not None
-            else detail_quote,
-            Decimal("0"),
-        ).quantize(KRW, rounding=ROUND_HALF_UP)
+        # One detail sheet represents one equipment.  The equipment totals are
+        # therefore a straight projection of the rows in that sheet.  The
+        # cover amount is retained only as reconciliation evidence; it must not
+        # manufacture or allocate a target amount that is absent from details.
+        quote_amount = max(detail_quote, Decimal("0")).quantize(
+            KRW, rounding=ROUND_HALF_UP
+        )
         negotiation = min(raw_negotiation, quote_amount)
-        target_amount = max(quote_amount - negotiation, Decimal("0")).quantize(
+        # A line whose historical target is above the received quote has no
+        # additional negotiation room.  Keep that line at its received price,
+        # then sum the line-level targets so one expensive target cannot offset
+        # a saving identified on another line.
+        target_amount = (quote_amount - negotiation).quantize(
             KRW, rounding=ROUND_HALF_UP
         )
-        unallocated = max(quote_amount - detail_quote, Decimal("0")).quantize(
-            KRW, rounding=ROUND_HALF_UP
-        )
+        unallocated = Decimal("0")
         available = sum(target_by_raw[raw_id].status == "AVAILABLE" for raw_id in raw_ids)
         group = QuoteAnalysisEquipmentGroup(
             analysis_run_id=result.run_id,
@@ -147,7 +146,7 @@ def create_equipment_projection(
                     ),
                     "detail_quote_amount": str(detail_quote),
                     "detail_gap_amount": str(quote_amount - detail_quote),
-                    "allocation_policy": "갑지 금액에서 품목별 네고 가능금액만 차감",
+                    "allocation_policy": "상세 시트 품목별 금액 직접 합산",
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -266,20 +265,40 @@ def _equipment_definitions(result: AnalysisRunResult) -> tuple[EquipmentDefiniti
         )
         scale = _cover_scale(cover)
         cover_amounts: dict[str, Decimal] = {}
+        cover_names: dict[str, str] = {}
         for row_number in range(1, min(cover.max_row, 500) + 1):
             name = _cell_text(cover.cell(row_number, 3).value)
             amount = _decimal(cover.cell(row_number, 8).value)
             if name and amount is not None and amount > 0:
-                cover_amounts[name] = (amount * scale).quantize(KRW, rounding=ROUND_HALF_UP)
-        return tuple(
-            EquipmentDefinition(
+                scaled_amount = (amount * scale).quantize(KRW, rounding=ROUND_HALF_UP)
+                normalized_name = _normalized_name(name)
+                cover_names[normalized_name] = name
+                cover_amounts[normalized_name] = scaled_amount
+
+        def definition(detail: tuple[int, str, str]) -> EquipmentDefinition:
+            number, sheet_name, detail_name = detail
+            # The detail sheet is the calculation source.  When its title cell
+            # matches a cover row, preserve the cover's official display name and
+            # amount as reconciliation evidence only.
+            normalized_detail_name = _normalized_name(detail_name)
+            exact_amount = cover_amounts.get(normalized_detail_name)
+            if exact_amount is not None:
+                name = cover_names[normalized_detail_name]
+                cover_amount = exact_amount
+            else:
+                name = detail_name
+                cover_amount = None
+            return EquipmentDefinition(
                 key=f"equipment-{number}",
                 name=name,
                 sheet=sheet_name,
-                cover_quote_amount=cover_amounts.get(name),
+                cover_quote_amount=cover_amount,
                 source_kind="COVER_SHEET",
             )
-            for number, sheet_name, name in sorted(details)
+
+        return tuple(
+            definition(detail)
+            for detail in sorted(details)
         )
     finally:
         workbook.close()
@@ -314,6 +333,10 @@ def _cell_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalized_name(value: str) -> str:
+    return "".join(value.split()).casefold()
 
 
 def _decimal(value: object) -> Decimal | None:

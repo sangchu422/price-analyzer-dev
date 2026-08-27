@@ -20,7 +20,6 @@ import {
   getStandardPriceVersion,
   getStandardPriceVersions,
   getSourceCoverageSummary,
-  type EvidenceQuality,
   type ItemFamilyDetail,
   type ItemFamilySummary,
   type PriceVersion,
@@ -34,31 +33,9 @@ import { MetricStrip } from "../components/MetricStrip";
 import { reasonLabel } from "../components/reasonLabels";
 import { Skeleton } from "../components/Skeleton";
 
-const STANDARD_CATEGORIES = [
-  { code: "DRIVE_MOTION", name: "구동·모션" },
-  { code: "SENSOR_MEASUREMENT", name: "센서·계측" },
-  { code: "ELECTRICAL_CONTROL", name: "전장·제어" },
-  { code: "PNEUMATIC_HYDRAULIC", name: "공압·유압" },
-  { code: "MATERIAL_HANDLING", name: "이송·물류" },
-  { code: "MECHANICAL_FABRICATION", name: "기계·제작" },
-  { code: "TOOLING_FIXTURE", name: "치공구·금형" },
-  { code: "UTILITY_ENVIRONMENT", name: "유틸리티·환경" },
-  { code: "CABLE_CONNECTOR", name: "케이블·커넥터" },
-  { code: "FASTENER_CONSUMABLE", name: "체결·소모품" },
-  { code: "SAFETY", name: "안전·보호" },
-  { code: "IT_NETWORK", name: "IT·네트워크" },
-  { code: "LABOR_SERVICE", name: "노무·설치" },
-  { code: "GENERAL_COMPONENT", name: "공통 설비·부품" },
-] as const;
-
 export function StandardPricesPage() {
-  const [viewMode, setViewMode] = useState<"families" | "items">(
-    () => stringParam("view") === "items" || positiveIntegerParam("item_id") ? "items" : "families",
-  );
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [quality, setQuality] = useState<EvidenceQuality | "">("");
-  const [category, setCategory] = useState(stringParam("category"));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [requestedItemId, setRequestedItemId] = useState<number | null>(
     positiveIntegerParam("item_id"),
@@ -83,14 +60,12 @@ export function StandardPricesPage() {
   }, []);
 
   const catalog = useInfiniteQuery({
-    queryKey: ["standard-db", search, quality, category],
+    queryKey: ["standard-db", search],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
       getStandardItems({
         afterId: pageParam,
         search: search || undefined,
-        evidenceQuality: quality || undefined,
-        category: category || undefined,
         signal,
       }),
     getNextPageParam: safeNextCursor,
@@ -103,13 +78,6 @@ export function StandardPricesPage() {
   });
   const items = uniqueById(
     catalog.data?.pages.flatMap((page) => page.items) ?? [],
-  );
-  const displayedItems = [...items].sort((left, right) =>
-    left.current_version.canonical_name.localeCompare(
-      right.current_version.canonical_name,
-      "ko-KR",
-      { numeric: true },
-    ),
   );
   const {
     fetchNextPage: fetchNextCatalogPage,
@@ -192,14 +160,14 @@ export function StandardPricesPage() {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
   }, []);
 
-  const openDetail = (itemId: number) => {
+  const openFamilyMember = (itemId: number) => {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
-    returnFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    setRequestedItemId(null);
+    setSelectedFamilyCode(null);
+    setSearch("");
+    setSearchInput("");
+    setSelectedId(null);
     setRequestedVersionId(null);
-    setSelectedId(itemId);
+    setRequestedItemId(itemId);
     setModalPhase("open");
   };
 
@@ -287,13 +255,11 @@ export function StandardPricesPage() {
     retry: false,
   });
   const families = useQuery({
-    queryKey: ["standard-db-families", search, category],
+    queryKey: ["standard-db-families", search],
     queryFn: ({ signal }) => getItemFamilies({
       search: search || undefined,
-      category: category || undefined,
       signal,
     }),
-    enabled: viewMode === "families",
     retry: false,
   });
   const familyDetail = useQuery({
@@ -321,22 +287,13 @@ export function StandardPricesPage() {
       Number.isFinite(sourceCoverageData.unsupported_files),
   );
 
-  const exportParams = new URLSearchParams();
-  if (search) exportParams.set("search", search);
-  if (quality) exportParams.set("evidence_quality", quality);
-  if (category) exportParams.set("category", category);
-  const exportQuery = exportParams.toString();
-  const catalogExportHref = `/api/catalog/standard-items/export${
-    exportQuery ? `?${exportQuery}` : ""
-  }`;
-
   return (
     <main className="workspace-page standard-db-page">
       <header className="standard-db-heading">
         <div>
           <p className="section-kicker">과거 견적 기준</p>
           <h1>표준 DB</h1>
-          <p>과거 견적에서 정제한 품목별 단가 범위와 원본 근거를 확인합니다.</p>
+            <p>과거 견적에서 묶은 품목류별 단가 범위와 정확 품목의 원본 근거를 확인합니다.</p>
         </div>
         <div className="build-status" aria-label="최근 갱신 상태">
           <span>최근 갱신</span>
@@ -398,53 +355,6 @@ export function StandardPricesPage() {
         </details>
       )}
 
-      <nav className="standard-category-rail" aria-label="표준 DB 품목 카테고리">
-        <button
-          type="button"
-          aria-current={!category ? "page" : undefined}
-          onClick={() => {
-            setCategory("");
-            setSelectedId(null);
-          }}
-        >
-          <span>00</span><strong>전체 품목</strong>
-        </button>
-        {STANDARD_CATEGORIES.map((item, index) => (
-          <button
-            type="button"
-            key={item.code}
-            aria-current={category === item.code ? "page" : undefined}
-            onClick={() => {
-              setCategory(item.code);
-              setSelectedId(null);
-              setRequestedItemId(null);
-              setRequestedVersionId(null);
-            }}
-          >
-            <span>{String(index + 1).padStart(2, "0")}</span><strong>{item.name}</strong>
-          </button>
-        ))}
-      </nav>
-
-      <div className="standard-view-switch" role="group" aria-label="표준 DB 보기 방식">
-        <button
-          type="button"
-          aria-pressed={viewMode === "families"}
-          onClick={() => setViewMode("families")}
-        >
-          품목류로 보기
-          <small>유사 품목을 묶은 가격 흐름</small>
-        </button>
-        <button
-          type="button"
-          aria-pressed={viewMode === "items"}
-          onClick={() => setViewMode("items")}
-        >
-          정확 품목으로 보기
-          <small>품명·규격·단위가 같은 원본 근거</small>
-        </button>
-      </div>
-
       <form
         className="standard-db-toolbar"
         role="search"
@@ -467,27 +377,9 @@ export function StandardPricesPage() {
             type="search"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="품명·사양·단위 검색"
+            placeholder="품목류·품명·사양 검색"
           />
         </label>
-        {viewMode === "items" && <label className="standard-filter-control">
-          <span aria-hidden="true">근거</span>
-          <select
-            aria-label="근거 품질"
-            value={quality}
-            onChange={(event) => {
-              setSelectedId(null);
-              setRequestedItemId(null);
-              setRequestedVersionId(null);
-              setQuality(event.target.value as EvidenceQuality | "");
-            }}
-          >
-            <option value="">전체</option>
-            <option value="SUPPLIER_UNKNOWN">제출사 확인 필요</option>
-            <option value="SINGLE_OBSERVATION">견적 제출사 1곳</option>
-            <option value="MULTI_OBSERVATION">견적 제출사 2곳 이상</option>
-          </select>
-        </label>}
         <button type="submit" className="standard-search-submit">
           <svg aria-hidden="true" viewBox="0 0 24 24">
             <circle cx="11" cy="11" r="6" />
@@ -497,118 +389,16 @@ export function StandardPricesPage() {
         </button>
       </form>
 
-      {viewMode === "families" && (
-        <FamilyCatalog
-          data={families.data?.families ?? []}
-          pending={families.isPending}
-          error={families.isError}
-          retry={() => void families.refetch()}
-          onSelect={setSelectedFamilyCode}
-          totalItems={families.data?.item_count ?? 0}
-        />
-      )}
-
-      {viewMode === "items" && <div className="standard-db-catalog">
-        <section className="standard-db-table-panel" aria-label="표준 품목 목록">
-          <header>
-            <div>
-              <strong>표준 품목 목록</strong>
-              <small>품명·사양·단위별로 묶은 가격 기준</small>
-            </div>
-            <div className="table-panel-actions">
-              <span>
-                {catalog.isPending
-                  ? "불러오는 중…"
-                  : `${items.length.toLocaleString("ko-KR")}건 표시`}
-              </span>
-              <a className="table-export-link" href={catalogExportHref}>
-                엑셀 다운로드
-              </a>
-            </div>
-          </header>
-          {catalog.isPending && (
-            <StandardCatalogSkeleton />
-          )}
-          {catalog.isError && !isFetchNextCatalogPageError && (
-            <div className="inline-state is-error" role="alert">
-              <p>표준 품목을 불러오지 못했습니다.</p>
-              <button type="button" onClick={() => void catalog.refetch()}>
-                다시 시도
-              </button>
-            </div>
-          )}
-          {isFetchNextCatalogPageError && (
-            <div className="inline-state is-error" role="alert">
-              <p>다음 표준 품목을 불러오지 못했습니다.</p>
-              <button type="button" onClick={() => void fetchNextCatalogPage()}>
-                품목 다시 시도
-              </button>
-            </div>
-          )}
-          {requestedItemFetchFailed && (
-            <div className="inline-state is-error" role="alert">
-              <p>요청한 품목을 확인하는 중 오류가 발생했습니다.</p>
-              <button type="button" onClick={() => void fetchNextCatalogPage()}>
-                다시 시도
-              </button>
-            </div>
-          )}
-          {requestedItemExhausted && (
-            <p className="inline-state" role="status">
-              요청한 품목을 찾을 수 없습니다. 목록에서 다시 선택해 주세요.
-            </p>
-          )}
-          {!catalog.isPending && !catalog.isError && items.length === 0 && (
-            <p className="inline-state">검색 결과가 없습니다.</p>
-          )}
-          {displayedItems.length > 0 && (
-            <div className="table-scroll standard-catalog-scroll">
-              <table className="data-table standard-catalog-table">
-                <thead>
-                  <tr>
-                    <th>품명</th>
-                    <th>규격</th>
-                    <th>단위</th>
-                    <th className="numeric">최저</th>
-                    <th className="numeric">중앙값</th>
-                    <th className="numeric">평균</th>
-                    <th className="numeric">최고</th>
-                    <th className="numeric">근거</th>
-                    <th>제품 제조사</th>
-                    <th>견적 제출사</th>
-                    <th>최근 견적일</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayedItems.map((item) => (
-                    <StandardItemTableRow
-                      item={item}
-                      selected={selected?.id === item.id && modalPhase !== "closed"}
-                      key={item.id}
-                      onSelect={() => openDetail(item.id)}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {hasNextCatalogPage && (
-            <button
-              className="load-more-button"
-              type="button"
-              disabled={isFetchingNextCatalogPage}
-              onClick={() => void fetchNextCatalogPage()}
-            >
-              {isFetchingNextCatalogPage ? (
-                <LoadingLabel>불러오는 중…</LoadingLabel>
-              ) : (
-                "품목 더 보기"
-              )}
-            </button>
-          )}
-        </section>
-
-      </div>}
+      <FamilyCatalog
+        data={families.data?.families ?? []}
+        pending={families.isPending}
+        error={families.isError}
+        retry={() => void families.refetch()}
+        onSelect={setSelectedFamilyCode}
+        totalItems={families.data?.item_count ?? 0}
+      />
+      {requestedItemFetchFailed && <p className="inline-state is-error">요청한 정확 품목을 불러오지 못했습니다.</p>}
+      {requestedItemExhausted && <p className="inline-state">요청한 정확 품목을 찾을 수 없습니다.</p>}
       {selected && modalPhase !== "closed" && (
         <div
           className={`standard-detail-overlay ${modalPhase === "open" ? "is-open" : "is-closing"}`}
@@ -704,7 +494,9 @@ export function StandardPricesPage() {
                   <button type="button" onClick={() => void familyDetail.refetch()}>다시 시도</button>
                 </div>
               )}
-              {familyDetail.data && <FamilyDetail family={familyDetail.data} />}
+              {familyDetail.data && (
+                <FamilyDetail family={familyDetail.data} onSelectMember={openFamilyMember} />
+              )}
             </div>
           </div>
         </div>
@@ -777,7 +569,7 @@ function FamilyCatalog({
                   <td>
                     <button type="button" className="family-name-button" onClick={() => onSelect(family.code)}>
                       <strong>{family.name}</strong>
-                      <small>{family.category_names.join(" · ") || "공통 설비·부품"} · 상세 보기</small>
+                      <small>{family.item_count.toLocaleString("ko-KR")}개 정확 품목 · 상세 보기</small>
                     </button>
                   </td>
                   <td className="numeric">{family.item_count.toLocaleString("ko-KR")}개</td>
@@ -797,7 +589,13 @@ function FamilyCatalog({
   );
 }
 
-function FamilyDetail({ family }: { family: ItemFamilyDetail }) {
+function FamilyDetail({
+  family,
+  onSelectMember,
+}: {
+  family: ItemFamilyDetail;
+  onSelectMember: (itemId: number) => void;
+}) {
   return (
     <article className="family-detail">
       <header className="family-detail-heading">
@@ -844,7 +642,7 @@ function FamilyDetail({ family }: { family: ItemFamilyDetail }) {
             <tbody>
               {family.members.map((member) => (
                 <tr key={member.standard_item_id}>
-                  <td><strong>{member.name}</strong></td>
+                  <td><button type="button" className="family-member-button" onClick={() => onSelectMember(member.standard_item_id)}><strong>{member.name}</strong><small>원본 근거 보기</small></button></td>
                   <td>{member.spec || "원문에 규격 없음"}</td>
                   <td>{member.unit || "—"}</td>
                   <td className="numeric">{member.observation_count.toLocaleString("ko-KR")}건</td>
@@ -861,77 +659,6 @@ function FamilyDetail({ family }: { family: ItemFamilyDetail }) {
 
 function FamilyDetailSkeleton() {
   return <div className="family-skeleton" role="status" aria-label="품목류를 불러오는 중"><Skeleton height="58px" /><Skeleton height="190px" /><Skeleton height="110px" /></div>;
-}
-
-function StandardItemTableRow({
-  item,
-  selected,
-  onSelect,
-}: {
-  item: StandardItemSummary;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const price = item.current_price;
-  return (
-    <tr className={selected ? "is-selected" : undefined}>
-      <td>
-        <button
-          type="button"
-          className="standard-item-name-button"
-          aria-expanded={selected}
-          aria-haspopup="dialog"
-          aria-controls="standard-item-detail-modal"
-          onClick={onSelect}
-        >
-          <strong>{item.current_version.canonical_name}</strong>
-          <small>
-            {item.category_name ?? "공통 설비·부품"}
-            {item.category_confidence !== null && item.category_confidence !== undefined && Number(item.category_confidence) < 50 ? " · 추정 분류" : ""}
-            {` · 품목 #${item.id}`}
-          </small>
-        </button>
-      </td>
-      <td>{displaySpec(item)}</td>
-      <td>{item.current_version.canonical_unit ?? "원문에 단위 없음"}</td>
-      <td className="numeric">{formatWon(price?.minimum ?? null)}</td>
-      <td className="numeric is-emphasis">{formatWon(price?.median ?? null)}</td>
-      <td className="numeric">{formatWon(price?.average ?? null)}</td>
-      <td className="numeric">{formatWon(price?.maximum ?? null)}</td>
-      <td className="numeric">{formatObservationCount(item)}</td>
-      <td>{item.maker_summary.join(", ") || "원본에서 확인되지 않음"}</td>
-      <td>{item.supplier_summary.join(", ") || "원본에서 확인되지 않음"}</td>
-      <td>{formatQuoteDate(item.quote_date_end, item.quote_date_end_quality)}</td>
-    </tr>
-  );
-}
-
-function StandardCatalogSkeleton() {
-  const widths = ["82%", "70%", "42%", "64%", "68%", "64%", "64%", "38%", "70%", "70%", "58%"];
-  return (
-    <div className="table-scroll standard-catalog-scroll standard-catalog-skeleton" role="status" aria-label="표준 품목 목록을 불러오는 중" aria-busy="true">
-      <span className="sr-only">표준 품목 목록을 불러오는 중입니다.</span>
-      <table className="data-table standard-catalog-table" aria-hidden="true">
-        <thead>
-          <tr>
-            <th>품명</th><th>규격</th><th>단위</th><th>최저</th><th>중앙값</th><th>평균</th><th>최고</th><th>근거</th><th>제품 제조사</th><th>견적 제출사</th><th>최근 견적일</th>
-          </tr>
-        </thead>
-        <tbody>
-          {Array.from({ length: 8 }, (_, rowIndex) => (
-            <tr key={rowIndex}>
-              {widths.map((width, cellIndex) => (
-                <td key={cellIndex}>
-                  <Skeleton width={width} height={cellIndex === 0 ? "13px" : "10px"} />
-                  {cellIndex === 0 ? <Skeleton className="skeleton-subline" width="55%" height="8px" /> : null}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
 function StandardItemDetail({
@@ -1313,19 +1040,6 @@ function displaySpec(item: StandardItemSummary) {
   }
 }
 
-function formatObservationCount(item: StandardItemSummary) {
-  if (item.observation_count !== null) {
-    const suppliers = item.supplier_count ?? 0;
-    const supplierLabel = suppliers > 0
-      ? `견적 제출사 ${suppliers.toLocaleString("ko-KR")}곳`
-      : "견적 제출사 확인 필요";
-    return `${item.observation_count.toLocaleString("ko-KR")}건 · ${supplierLabel}`;
-  }
-  return item.operational_status === "NO_ELIGIBLE_EVIDENCE"
-    ? "근거 없음"
-    : "재구축 필요";
-}
-
 function formatWon(value: string | null) {
   if (value === null) return "—";
   const amount = Number(value);
@@ -1435,8 +1149,4 @@ function uniqueById<T extends { id: number }>(items: T[]) {
 function positiveIntegerParam(name: string) {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isInteger(value) && value > 0 ? value : null;
-}
-
-function stringParam(name: string) {
-  return new URLSearchParams(window.location.search).get(name)?.trim() ?? "";
 }

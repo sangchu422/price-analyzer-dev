@@ -262,25 +262,6 @@ export function QuoteAnalysisPage({
     setMarketResults,
   ]);
 
-  const metrics = useMemo(
-    () => summarize(
-      analysis?.lines ?? [],
-      submission?.raw_item_count ?? 0,
-      marketResults,
-    ),
-    [analysis, submission, marketResults],
-  );
-  const visibleLines = useMemo(
-    () => (analysis?.lines ?? []).filter(
-      (line) => lineMatches(
-        line,
-        resultFilter,
-        marketResults[line.raw_item_id],
-      ),
-    ),
-    [analysis, resultFilter, marketResults],
-  );
-
   return (
     <main className="workspace-page analysis-page">
       <header className="page-heading analysis-page-heading">
@@ -289,8 +270,8 @@ export function QuoteAnalysisPage({
           <h1>신규 견적 분석</h1>
         </div>
         <p>
-          표준 DB와 비교합니다. 매칭되지 않은 품목은 가격을 추정하지 않고
-          판정대기로 남깁니다.
+          품목류 또는 정확 품목 기준으로 표준 DB와 비교합니다. 신뢰할 비교군이
+          없는 품목은 가격을 만들지 않고 판정대기로 남깁니다.
         </p>
       </header>
 
@@ -410,8 +391,6 @@ export function QuoteAnalysisPage({
         <AnalysisResults
           analysis={analysis}
           submission={submission}
-          metrics={metrics}
-          lines={visibleLines}
           filter={resultFilter}
           onFilter={setResultFilter}
           marketResults={marketResults}
@@ -456,8 +435,6 @@ function WorkflowProgress({
 function AnalysisResults({
   analysis,
   submission,
-  metrics,
-  lines,
   filter,
   onFilter,
   marketResults,
@@ -470,8 +447,6 @@ function AnalysisResults({
 }: {
   analysis: QuoteAnalysisRun;
   submission: SubmissionResponse;
-  metrics: ReturnType<typeof summarize>;
-  lines: AnalysisLine[];
   filter: ResultFilter;
   onFilter: (filter: ResultFilter) => void;
   marketResults: Record<number, MarketLookupResult>;
@@ -483,6 +458,35 @@ function AnalysisResults({
   submittedBy: string;
 }) {
   const [activeTab, setActiveTab] = useState<"EQUIPMENT" | "THRESHOLD" | "TARGET">("EQUIPMENT");
+  const family = analysis.family_analysis;
+  const [analysisBasis, setAnalysisBasis] = useState<"FAMILY" | "EXACT">(
+    () => family ? "FAMILY" : "EXACT",
+  );
+  const displayedAnalysis = useMemo<QuoteAnalysisRun>(() => {
+    if (analysisBasis !== "FAMILY" || !family) return analysis;
+    return {
+      ...analysis,
+      lines: family.lines,
+      target_lines: family.target_lines,
+      target_available_count: family.target_available_count,
+      target_unavailable_count: family.target_unavailable_count,
+      quote_total_amount: family.quote_total_amount,
+      target_total_amount: family.target_total_amount,
+      equipment_groups: family.equipment_groups,
+    };
+  }, [analysis, analysisBasis, family]);
+  const displayedMarketResults = useMemo<Record<number, MarketLookupResult>>(
+    () => analysisBasis === "FAMILY" ? {} : marketResults,
+    [analysisBasis, marketResults],
+  );
+  const metrics = useMemo(
+    () => summarize(displayedAnalysis.lines, submission.raw_item_count, displayedMarketResults),
+    [displayedAnalysis.lines, displayedMarketResults, submission.raw_item_count],
+  );
+  const lines = useMemo(
+    () => displayedAnalysis.lines.filter((line) => lineMatches(line, filter, displayedMarketResults[line.raw_item_id])),
+    [displayedAnalysis.lines, displayedMarketResults, filter],
+  );
   return (
     <section className="analysis-results">
       <header className="result-heading">
@@ -499,6 +503,23 @@ function AnalysisResults({
           <small>평가 금액 커버리지 {formatPercent(metrics.coverage)}</small>
         </div>
       </header>
+
+      <div className="analysis-basis-switch" role="group" aria-label="가격 분석 기준">
+        <button
+          type="button"
+          className={analysisBasis === "FAMILY" ? "is-active" : ""}
+          aria-pressed={analysisBasis === "FAMILY"}
+          disabled={!family}
+          onClick={() => setAnalysisBasis("FAMILY")}
+        >
+          <span>품목류 기준</span>
+          <small>{family ? `${family.matched_count}개 품목 분석` : "품목류 결과 준비 중"}</small>
+        </button>
+        <button type="button" className={analysisBasis === "EXACT" ? "is-active" : ""} aria-pressed={analysisBasis === "EXACT"} onClick={() => setAnalysisBasis("EXACT")}>
+          <span>정확 품목 기준</span>
+          <small>품명·사양·단위가 같은 근거</small>
+        </button>
+      </div>
 
       <div className="analysis-mode-tabs" role="tablist" aria-label="견적 분석 방식">
         <button
@@ -519,7 +540,7 @@ function AnalysisResults({
           onClick={() => setActiveTab("THRESHOLD")}
         >
           가격 적정성
-          <small>설정한 임계값으로 고가·적정·저가 판정</small>
+          <small>{analysisBasis === "FAMILY" ? "동일 단위·유사 가격대 품목류 비교" : "정확 품명·사양의 기준가와 비교"}</small>
         </button>
         <button
           type="button"
@@ -529,12 +550,12 @@ function AnalysisResults({
           onClick={() => setActiveTab("TARGET")}
         >
           구매 목표가
-          <small>검증된 과거 최저가를 현재 가치로 환산</small>
+          <small>{analysisBasis === "FAMILY" ? "유사 가격대의 낮은 중앙값으로 협상선 제시" : "검증된 과거 최저가를 현재 가치로 환산"}</small>
         </button>
       </div>
 
       {activeTab === "EQUIPMENT" ? (
-        <EquipmentResults analysis={analysis} submittedBy={submittedBy} />
+        <EquipmentResults analysis={displayedAnalysis} submittedBy={submittedBy} analysisBasis={analysisBasis} />
       ) : activeTab === "THRESHOLD" ? (
         <>
 
@@ -570,12 +591,14 @@ function AnalysisResults({
       </div>
 
       <p className="price-policy-note">
-        {analysis.price_policy?.description ??
+        {analysisBasis === "FAMILY"
+          ? `품목류 중앙값 대비 ±${reviewPercent}% 이내 적정, ±${reviewPercent}~${highPercent}% 주의, ±${highPercent}% 초과 고가·저가`
+          : analysis.price_policy?.description ??
           "표준 대비 ±10% 이내 적정, ±10% 초과~±20% 주의, ±20% 초과 고가·저가"}
         . 판정 대기는 정제 미완료 또는 기준가가 없어 가격을 판단하지 못한 품목입니다.
       </p>
 
-      <div className="market-roadmap">
+      {analysisBasis === "EXACT" ? <div className="market-roadmap">
         <strong>{`시장가 확인 필요 ${metrics.market}건`}</strong>
         <span>DeviceMart 캐시 우선 조회</span>
         {marketLookupProgress && (
@@ -584,20 +607,19 @@ function AnalysisResults({
           </small>
         )}
         <p>캐시가 없거나 만료된 품목만 실시간 조회하며, 실패하면 가격을 만들지 않고 판정대기로 유지합니다.</p>
-      </div>
+      </div> : null}
 
       <div className="result-toolbar">
         <div>
           <h3>품목별 판정</h3>
-          <span>표시 {lines.length}건 / 전체 {analysis.lines.length}건</span>
+          <span>표시 {lines.length}건 / 전체 {displayedAnalysis.lines.length}건</span>
         </div>
         <div className="result-toolbar-actions">
-          <a
-            className="table-export-link"
-            href={`/api/analysis/documents/${analysis.document.id}/export?review_percent=${reviewPercent}&high_percent=${highPercent}`}
-          >
-            엑셀 다운로드
-          </a>
+          {analysisBasis === "EXACT" ? (
+            <a className="table-export-link" href={`/api/analysis/documents/${analysis.document.id}/export?review_percent=${reviewPercent}&high_percent=${highPercent}`}>
+              엑셀 다운로드
+            </a>
+          ) : <span className="analysis-basis-note">품목류 시연 기준</span>}
           <label>
             <span>결과 필터</span>
             <select value={filter} onChange={(event) => onFilter(event.target.value as ResultFilter)}>
@@ -634,7 +656,7 @@ function AnalysisResults({
               <AnalysisRow
                 key={line.raw_item_id}
                 line={line}
-                market={marketResults[line.raw_item_id] ?? null}
+                market={displayedMarketResults[line.raw_item_id] ?? null}
                 marketLookup={marketLookupItems[line.raw_item_id]}
                 onMarketResult={onMarketResult}
                 analysisRunId={analysis.run_id}
@@ -646,7 +668,7 @@ function AnalysisResults({
       </div>
         </>
       ) : (
-        <TargetPriceResults analysis={analysis} />
+        <TargetPriceResults analysis={displayedAnalysis} analysisBasis={analysisBasis} />
       )}
     </section>
   );
@@ -655,9 +677,11 @@ function AnalysisResults({
 function EquipmentResults({
   analysis,
   submittedBy,
+  analysisBasis,
 }: {
   analysis: QuoteAnalysisRun;
   submittedBy: string;
+  analysisBasis: "FAMILY" | "EXACT";
 }) {
   const [openGroups, setOpenGroups] = useState<Set<number>>(() => new Set());
   const [activationOpen, setActivationOpen] = useState(false);
@@ -714,15 +738,17 @@ function EquipmentResults({
   return (
     <section className="equipment-results" role="tabpanel">
       <div className="equipment-summary-band">
-        <div><span>갑지 견적 합계</span><strong>{formatMoney(String(totals.quote))}</strong></div>
+        <div><span>상세 시트 견적 합계</span><strong>{formatMoney(String(totals.quote))}</strong></div>
         <div><span>전체 협상 목표금액</span><strong>{formatMoney(String(totals.target))}</strong></div>
         <div className="is-negotiation"><span>네고 가능금액</span><strong>{formatMoney(String(totals.negotiation))}</strong></div>
-        <button type="button" onClick={() => setActivationOpen((open) => !open)}>
-          검토 완료 · 표준 DB 반영
-        </button>
+        {analysisBasis === "EXACT" ? (
+          <button type="button" onClick={() => setActivationOpen((open) => !open)}>
+            검토 완료 · 표준 DB 반영
+          </button>
+        ) : <span className="equipment-basis-badge">품목류 가격군 적용</span>}
       </div>
 
-      {activationOpen ? (
+      {analysisBasis === "EXACT" && activationOpen ? (
         <section className="quote-activation-panel" aria-label="신규 견적 표준 DB 반영">
           <div>
             <strong>담당자 승인 후 데이터 축적</strong>
@@ -745,12 +771,12 @@ function EquipmentResults({
       ) : null}
 
       <div className="result-toolbar equipment-toolbar">
-        <div><h3>설비별 협상 목표</h3><span>갑지 기준 {equipmentGroups.length}개 설비</span></div>
-        <small>네고 가능금액은 제시가가 목표가보다 높은 품목만 합산합니다.</small>
+        <div><h3>설비별 협상 목표</h3><span>상세 시트 기준 {equipmentGroups.length}개 설비</span></div>
+        <small>시트별 품목 금액을 직접 합산하고 갑지 설비명으로 표시합니다.</small>
       </div>
       <div className="analysis-table-scroll equipment-table-scroll">
         <table className="analysis-result-table equipment-summary-table" aria-label="갑지 설비별 견적 분석">
-          <thead><tr><th>설비명</th><th>갑지 견적가</th><th>협상 목표금액</th><th>네고 가능금액</th><th>분석 상태</th><th>상세</th></tr></thead>
+          <thead><tr><th>설비명</th><th>견적가</th><th>협상 목표금액</th><th>네고 가능금액</th><th>분석 상태</th><th>상세</th></tr></thead>
           <tbody>
             {equipmentGroups.length === 0 ? (
               <tr><td colSpan={6} className="equipment-empty-state">이 분석 이력에는 설비 갑지 연결 정보가 없습니다. 가격 적정성 탭에서 품목별 결과를 확인해 주세요.</td></tr>
@@ -760,7 +786,7 @@ function EquipmentResults({
               return (
                 <Fragment key={group.id}>
                   <tr className="equipment-group-row">
-                    <td><strong>{group.name}</strong><small>{group.line_count}개 품목 · {group.source_kind === "COVER_SHEET" ? "갑지 연결" : "품목 합산"}</small></td>
+                    <td><strong>{group.name}</strong><small>{group.line_count}개 품목 · {group.source_kind === "COVER_SHEET" ? "갑지 설비명" : "시트명"}</small></td>
                     <td className="numeric">{formatMoney(group.quote_amount)}</td>
                     <td className="numeric is-emphasis">{formatMoney(group.target_amount)}</td>
                     <td className="numeric is-negotiation">{formatMoney(group.negotiation_amount)}</td>
@@ -802,7 +828,7 @@ function EquipmentResults({
   );
 }
 
-function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
+function TargetPriceResults({ analysis, analysisBasis }: { analysis: QuoteAnalysisRun; analysisBasis: "FAMILY" | "EXACT" }) {
   const lineById = useMemo(
     () => new Map(analysis.lines.map((line) => [line.raw_item_id, line])),
     [analysis.lines],
@@ -843,7 +869,7 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
         <div>
           <span>산정 제외·대기</span>
           <strong>{analysis.target_unavailable_count}건</strong>
-          <small>날짜·지수·표준 DB 근거 부족</small>
+          <small>{analysisBasis === "FAMILY" ? "동일 단위·유사 가격대 비교군 부족" : "날짜·지수·표준 DB 근거 부족"}</small>
         </div>
         <div>
           <span>네고 가능금액</span>
@@ -861,12 +887,16 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
         <summary>구매 목표가 산정 방식 보기</summary>
         <div>
           <strong>
-            {isLegacyPpi
+            {analysisBasis === "FAMILY"
+              ? "같은 품목류 중 동일 단위·유사 가격대의 낮은 가격을 협상 목표로 사용합니다."
+              : isLegacyPpi
               ? "이 결과는 과거 목표가 정책으로 계산된 기록입니다."
               : "서로 다른 과거 견적에서 실제 확인된 최저 단가를 물가 보정해 협상 목표로 사용합니다."}
           </strong>
           <p>
-            {isLegacyPpi
+            {analysisBasis === "FAMILY"
+              ? "현재 단가의 ±30% 범위에 있는 정확 품목 중앙값만 비교해, 단위나 가격대가 다른 품목의 최저가가 섞이지 않도록 제한합니다."
+              : isLegacyPpi
               ? "이 결과는 과거 실행 당시 저장된 생산자물가지수 기준으로 재현한 기록입니다."
               : analysis.target_period
               ? `원본 날짜가 확인된 과거 단가를 ${analysis.target_period.slice(0, 4)}년 확정 소비자물가까지 보정한 뒤 가장 낮은 단가를 채택합니다.`
@@ -879,7 +909,7 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
             현재 제시가가 이미 과거 최저가보다 낮으면 네고 가능금액은 0원으로 처리합니다.
             중앙값과 가격 범위는 ‘가격 적정성’ 탭에서 별도로 확인할 수 있습니다.
           </p>
-          {analysis.inflation_source_url ? (
+          {analysisBasis === "EXACT" && analysis.inflation_source_url ? (
             <a href={analysis.inflation_source_url} target="_blank" rel="noreferrer">
               KOSIS 공식 통계 보기
             </a>
@@ -892,9 +922,11 @@ function TargetPriceResults({ analysis }: { analysis: QuoteAnalysisRun }) {
           <h3>품목별 협상 목표가</h3>
           <span>표시 {analysis.target_lines.length}건</span>
         </div>
-        <a className="table-export-link" href={`/api/analysis/runs/${analysis.run_id}/target-price-export`}>
-          엑셀 다운로드
-        </a>
+        {analysisBasis === "EXACT" ? (
+          <a className="table-export-link" href={`/api/analysis/runs/${analysis.run_id}/target-price-export`}>
+            엑셀 다운로드
+          </a>
+        ) : <span className="analysis-basis-note">품목류 시연 기준</span>}
       </div>
 
       <div className="analysis-table-scroll">

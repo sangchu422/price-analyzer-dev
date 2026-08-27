@@ -166,6 +166,9 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
           latest_build: build,
         });
       }
+      if (url.includes("/api/dashboard/item-families")) {
+        return jsonResponse({ families: [], family_count: 0, item_count: 0, rule_version: "item-family-keyword-v1" });
+      }
       if (url.includes("/standard-items/12/evidence?")) {
         return jsonResponse({
           standard_item_id: 12,
@@ -209,27 +212,18 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
     }),
   );
 
-  renderApp("/standard-prices?view=items");
+  renderApp("/standard-prices?item_id=12");
 
   expect(
     await screen.findByRole("heading", { name: "표준 DB" }, { timeout: 3000 }),
   ).toBeVisible();
-  const sensorButton = await screen.findByRole("button", { name: /SENSOR/ });
-  expect(sensorButton).toBeVisible();
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  await userEvent.click(sensorButton);
+  const sensorButton = screen.queryByRole("button", { name: /SENSOR/ });
+  expect(sensorButton).not.toBeInTheDocument();
   expect(await screen.findByRole("dialog", { name: "SENSOR" })).toBeVisible();
   expect(
     screen.getAllByText("가격 근거 1건 · 제출사 1곳").length,
   ).toBeGreaterThan(0);
-  expect(
-    screen.getAllByText("1건 · 견적 제출사 확인 필요").length,
-  ).toBeGreaterThan(0);
   expect(screen.getByText(/최근 갱신/)).toBeVisible();
-  expect(screen.getByRole("columnheader", { name: "최저" })).toBeVisible();
-  expect(screen.getByRole("columnheader", { name: "중앙값" })).toBeVisible();
-  expect(screen.getByRole("columnheader", { name: "평균" })).toBeVisible();
-  expect(screen.getByRole("columnheader", { name: "최고" })).toBeVisible();
   expect(screen.getAllByText("50,000원").length).toBeGreaterThan(0);
   const coverage = screen.getByRole("group", { name: "데이터 구축 현황" });
   expect(coverage).not.toHaveAttribute("open");
@@ -241,10 +235,6 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   expect(screen.getByText("미지원 형식")).toBeVisible();
   expect(screen.getByText(/열기 실패본 중 복구본 4개/)).toBeVisible();
   expect(screen.getByText(/나머지 53개는/)).toBeVisible();
-  expect(
-    within(screen.getByRole("region", { name: "표준 품목 목록" }))
-      .getByRole("columnheader", { name: "견적 제출사" }),
-  ).toBeVisible();
   expect(screen.getAllByText("SUPPLIER C").length).toBeGreaterThan(0);
   expect(
     screen.getByRole("link", { name: "원본 견적서 열기" }),
@@ -267,19 +257,15 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
       url.includes("include_observations=false"),
     ),
   ).toBe(true);
-  expect(screen.getByRole("button", { name: /SENSOR/ })).toHaveAttribute(
-    "aria-expanded",
-    "true",
-  );
   await userEvent.click(screen.getByRole("button", { name: "표준 품목 상세 닫기" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(document.body.style.overflow).toBe("");
 });
 
-it("shows a shimmering status message while the catalog is still loading", async () => {
-  let resolveCatalog!: (response: Response) => void;
-  const catalogResponse = new Promise<Response>((resolve) => {
-    resolveCatalog = resolve;
+it("shows a shimmering status message while item families are still loading", async () => {
+  let resolveFamilies!: (response: Response) => void;
+  const familyResponse = new Promise<Response>((resolve) => {
+    resolveFamilies = resolve;
   });
   vi.stubGlobal(
     "fetch",
@@ -289,33 +275,28 @@ it("shows a shimmering status message while the catalog is still loading", async
         return jsonResponse(sourceCoverage);
       }
       if (url.includes("/api/catalog/standard-items?")) {
-        return catalogResponse;
+        return jsonResponse({ items: [], next_cursor: null, limit: 50, latest_build: build });
+      }
+      if (url.includes("/api/dashboard/item-families")) {
+        return familyResponse;
       }
       throw new Error(`unexpected request: ${url}`);
     }),
   );
 
-  renderApp("/standard-prices?view=items");
+  renderApp("/standard-prices");
 
-  expect(screen.getByRole("status", { name: "표준 품목 목록을 불러오는 중" })).toHaveAttribute("aria-busy", "true");
-  expect(document.querySelectorAll(".standard-catalog-skeleton tbody tr")).toHaveLength(8);
-  expect(
-    within(screen.getByLabelText("최근 갱신 상태")).getByText("불러오는 중…"),
-  ).toBeVisible();
+  expect(screen.getByRole("status", { name: "품목류를 불러오는 중" })).toBeVisible();
+  expect(document.querySelectorAll(".family-skeleton")).toHaveLength(1);
 
-  resolveCatalog(
+  resolveFamilies(
     await jsonResponse({
-      items: [sensor],
-      next_cursor: null,
-      limit: 50,
-      latest_build: build,
+      families: [], family_count: 0, item_count: 0, rule_version: "item-family-keyword-v1",
     }),
   );
 
-  expect(
-    await screen.findByRole("button", { name: /SENSOR/ }),
-  ).toBeVisible();
-  expect(screen.queryByRole("status", { name: "표준 품목 목록을 불러오는 중" })).not.toBeInTheDocument();
+  expect(await screen.findByText("검색 결과가 없습니다.")).toBeVisible();
+  expect(screen.queryByRole("status", { name: "품목류를 불러오는 중" })).not.toBeInTheDocument();
 });
 
 it("keeps an analysis evidence link pinned to its immutable price version", async () => {
@@ -467,6 +448,9 @@ it("shows an empty evidence state without requesting evidence when no price exis
           latest_build: build,
         });
       }
+      if (url.includes("/api/dashboard/item-families")) {
+        return jsonResponse({ families: [], family_count: 0, item_count: 0, rule_version: "item-family-keyword-v1" });
+      }
       if (url.includes("/standard-items/14/versions?")) {
         return jsonResponse({
           standard_item_id: 14,
@@ -480,9 +464,7 @@ it("shows an empty evidence state without requesting evidence when no price exis
     }),
   );
 
-  renderApp("/standard-prices?view=items");
-
-  await userEvent.click(await screen.findByRole("button", { name: /UNPRICED SENSOR/ }));
+  renderApp("/standard-prices?item_id=14");
   expect(
     await screen.findByRole("heading", { name: "UNPRICED SENSOR" }),
   ).toBeVisible();
@@ -494,86 +476,68 @@ it("shows an empty evidence state without requesting evidence when no price exis
   ).toBe(false);
 });
 
-it("searches and filters standard groups through the paginated API", async () => {
+it("searches item families through the family API", async () => {
   const urls: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       urls.push(url);
+      if (url.includes("/api/dashboard/item-families")) {
+        return jsonResponse({
+          families: url.includes("search=PX-1") ? [{
+            code: "SENSOR", name: "센서류", rule_version: "item-family-keyword-v1",
+            category_codes: [], category_names: [], item_count: 2, observation_count: 5,
+            supplier_count: 2, year_count: 2, quote_date_start: "2024-01-01",
+            quote_date_end: "2025-01-01", undated_observation_count: 0,
+            price: { minimum: "40000", median: "50000", average: "52000", maximum: "70000" }, trend: [],
+          }] : [],
+          family_count: url.includes("search=PX-1") ? 1 : 0,
+          item_count: url.includes("search=PX-1") ? 2 : 0,
+          rule_version: "item-family-keyword-v1",
+        });
+      }
       if (url.includes("/api/catalog/standard-items?")) {
-        return jsonResponse({
-          items: url.includes("search=PX-1") ? [sensor] : [],
-          next_cursor: null,
-          limit: 50,
-          latest_build: build,
-        });
-      }
-      if (url.includes("/standard-items/12/evidence?")) {
-        return jsonResponse({
-          standard_item_id: 12,
-          standard_price_version_id: 31,
-          observation_count: 1,
-          evidence_quality: "SINGLE_OBSERVATION",
-          provenance: build,
-          observations: [],
-          next_cursor: null,
-          limit: 50,
-        });
-      }
-      if (url.includes("/standard-items/12/versions?")) {
-        return jsonResponse({
-          standard_item_id: 12,
-          versions: [],
-          next_cursor: null,
-          limit: 50,
-          latest_build: build,
-        });
+        return jsonResponse({ items: [], next_cursor: null, limit: 50, latest_build: build });
       }
       throw new Error(`unexpected request: ${url}`);
     }),
   );
   const user = userEvent.setup();
-  renderApp("/standard-prices?view=items");
+  renderApp("/standard-prices");
 
   expect(await screen.findByText("검색 결과가 없습니다.")).toBeVisible();
   await user.type(screen.getByRole("searchbox", { name: "표준 품목 검색" }), "PX-1");
   await user.click(screen.getByRole("button", { name: "검색" }));
 
-  expect(await screen.findByRole("button", { name: /SENSOR/ })).toBeVisible();
+  expect(await screen.findByRole("button", { name: /센서류/ })).toBeVisible();
   expect(urls.some((url) => url.includes("search=PX-1"))).toBe(true);
 });
 
-it("merges paginated catalog, evidence, and history without duplicates and retries a failed cursor", async () => {
-  const secondItem = {
-    ...sensor,
-    id: 13,
-    current_version: {
-      ...sensor.current_version,
-      id: 23,
-      standard_item_id: 13,
-      canonical_name: "SENSOR TWO",
-    },
-  };
+it("opens an exact member from a family and paginates evidence and history", async () => {
   let evidenceCursorAttempts = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/api/dashboard/item-families/SENSOR")) {
+        return jsonResponse({
+          code: "SENSOR", name: "센서류", rule_version: "item-family-keyword-v1",
+          category_codes: [], category_names: [], item_count: 1, observation_count: 2,
+          supplier_count: 2, year_count: 1, quote_date_start: "2026-01-01",
+          quote_date_end: "2026-07-03", undated_observation_count: 0,
+          price: sensor.current_price, trend: [],
+          members: [{ standard_item_id: 12, name: "SENSOR", spec: "PX-1", unit: "EA", observation_count: 2, price: sensor.current_price }],
+        });
+      }
+      if (url.includes("/api/dashboard/item-families")) {
+        return jsonResponse({
+          families: [{ code: "SENSOR", name: "센서류", rule_version: "item-family-keyword-v1", category_codes: [], category_names: [], item_count: 1, observation_count: 2, supplier_count: 2, year_count: 1, quote_date_start: "2026-01-01", quote_date_end: "2026-07-03", undated_observation_count: 0, price: sensor.current_price, trend: [] }],
+          family_count: 1, item_count: 1, rule_version: "item-family-keyword-v1",
+        });
+      }
       if (url.includes("/api/catalog/standard-items?")) {
-        return url.includes("after_id=12")
-          ? jsonResponse({
-              items: [sensor, secondItem],
-              next_cursor: null,
-              limit: 50,
-              latest_build: build,
-            })
-          : jsonResponse({
-              items: [sensor],
-              next_cursor: 12,
-              limit: 50,
-              latest_build: build,
-            });
+        return jsonResponse({ items: [sensor], next_cursor: null, limit: 50, latest_build: build });
       }
       if (url.includes("/standard-items/12/evidence?")) {
         const row = (id: number) => ({
@@ -642,13 +606,11 @@ it("merges paginated catalog, evidence, and history without duplicates and retri
     }),
   );
   const user = userEvent.setup();
-  renderApp("/standard-prices?view=items");
+  renderApp("/standard-prices");
 
-  await user.click(await screen.findByRole("button", { name: "품목 더 보기" }));
-  expect(screen.getAllByRole("button", { name: /SENSOR/ })).toHaveLength(2);
-  expect(screen.queryByRole("button", { name: "품목 더 보기" })).not.toBeInTheDocument();
-
-  await user.click(screen.getAllByRole("button", { name: /SENSOR/ })[0]);
+  await user.click(await screen.findByRole("button", { name: /센서류/ }));
+  const familyDialog = await screen.findByRole("dialog", { name: "센서류" });
+  await user.click(within(familyDialog).getByRole("button", { name: /SENSOR/ }));
   await user.click(await screen.findByRole("button", { name: "근거 더 보기" }));
   expect(
     await screen.findByText("다음 가격 근거를 불러오지 못했습니다."),
