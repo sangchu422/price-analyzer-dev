@@ -43,10 +43,13 @@ from app.procurement.models import (
     AlertNotificationDelivery,
     ItemCategory,
     ProcurementPriceAlert,
+    ProcurementIndicatorPoint,
+    ProcurementIndicatorSyncRun,
     QuoteAnalysisEquipmentGroup,
     QuoteAnalysisEquipmentLine,
     QuoteCatalogActivationEntry,
     QuoteCatalogActivationRun,
+    QuoteCatalogStateDecision,
     StandardItemCategoryAssignment,
 )
 
@@ -91,5 +94,8 @@ __all__ = [
     "QuoteCatalogActivationRun",
     "QuoteCatalogActivationEntry",
     "ProcurementPriceAlert",
+    "ProcurementIndicatorSyncRun",
+    "ProcurementIndicatorPoint",
     "AlertNotificationDelivery",
+    "QuoteCatalogStateDecision",
 ]

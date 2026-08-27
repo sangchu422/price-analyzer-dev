@@ -717,6 +717,7 @@ export interface ItemFamilyMember {
 export interface ItemFamilySummary {
   code: string;
   name: string;
+  display_name: string;
   rule_version: string;
   category_codes: string[];
   category_names: string[];
@@ -797,6 +798,7 @@ export interface DashboardOverview {
   families: Array<{
     code: string;
     name: string;
+    display_name: string;
     item_count: number;
     observation_count: number;
     share_percent: string;
@@ -806,25 +808,31 @@ export interface DashboardOverview {
     top_reasons: Array<{ reason_code: string; count: number }>;
   };
   monthly_performance: {
-    year: number;
+    default_year: number;
+    available_years: number[];
     current_month: number;
     forecast_method: string;
-    source_status: "OPERATIONAL";
-    series: Array<{
-      month: number;
-      label: string;
-      count: number;
-      kind: "ACTUAL" | "FORECAST";
-    }>;
+    source_status: "DEPARTMENT_SUPPLIED";
+    series_by_year: Record<string, Array<{
+        month: number;
+        label: string;
+        equipment_purchase: number;
+        integrated_purchase: number;
+        total: number;
+        kind: "ACTUAL" | "FORECAST";
+      }>>;
   };
   indicators: Array<{
     code: string;
     name: string;
     group: string;
     unit: string;
-    source_status: "DEMO" | "OFFICIAL_CACHE";
+    source_status: "LIVE_CACHE" | "STALE" | "UNAVAILABLE" | "OFFICIAL_CACHE";
     source_label: string;
     source_url?: string;
+    latest_period?: string | null;
+    synced_at?: string | null;
+    error_detail?: string | null;
     points: Array<{ period: string; value: number | string }>;
     affected_families: Array<{
       family_code: string;
@@ -1093,6 +1101,81 @@ export function getStandardItems({
 
 export function getDashboardOverview(signal?: AbortSignal) {
   return requestJson<DashboardOverview>("/api/dashboard/overview", { signal });
+}
+
+export function syncProcurementIndicators(signal?: AbortSignal) {
+  return requestJson<DashboardOverview["indicators"]>(
+    "/api/dashboard/indicators/sync",
+    { method: "POST", signal },
+  );
+}
+
+export type QuoteCatalogState = "NOT_INCLUDED" | "INCLUDED" | "EXCLUDED";
+
+export interface AnalysisHistoryItem {
+  run_id: number;
+  document_id: number;
+  file_name: string;
+  created_by: string;
+  analyzed_at: string;
+  total_line_count: number;
+  target_available_count: number;
+  quote_total_amount: string | null;
+  target_total_amount: string | null;
+  catalog_state: QuoteCatalogState;
+  current_decision_id: number | null;
+  state_decided_by: string | null;
+  state_decided_at: string | null;
+}
+
+export interface AnalysisHistoryResponse {
+  items: AnalysisHistoryItem[];
+  total: number;
+  next_cursor: number | null;
+  limit: number;
+}
+
+export function getAnalysisHistory({
+  state,
+  afterId,
+  signal,
+}: {
+  state?: QuoteCatalogState;
+  afterId?: number;
+  signal?: AbortSignal;
+} = {}) {
+  const params = new URLSearchParams({ limit: "30" });
+  if (state) params.set("state", state);
+  if (afterId !== undefined) params.set("after_id", String(afterId));
+  return requestJson<AnalysisHistoryResponse>(`/api/analysis/history?${params}`, { signal });
+}
+
+export function setQuoteCatalogState({
+  runId,
+  state,
+  decidedBy,
+  reasonDetail,
+  expectedCurrentDecisionId,
+}: {
+  runId: number;
+  state: Exclude<QuoteCatalogState, "NOT_INCLUDED">;
+  decidedBy: string;
+  reasonDetail: string;
+  expectedCurrentDecisionId: number | null;
+}) {
+  return requestJson<{
+    decision_id: number;
+    state: QuoteCatalogState;
+    decided_at: string;
+  }>(`/api/analysis/runs/${runId}/catalog-state`, {
+    method: "POST",
+    body: JSON.stringify({
+      state,
+      decided_by: decidedBy,
+      reason_detail: reasonDetail,
+      expected_current_decision_id: expectedCurrentDecisionId,
+    }),
+  });
 }
 
 export function getItemFamilies({

@@ -76,6 +76,13 @@ def test_0016_backfills_every_standard_item_and_round_trips(tmp_path: Path) -> N
             ).tuples().all()
         )
         assert categories == {1: "DRIVE_MOTION", 2: "GENERAL_COMPONENT"}
+    upgrade_head = _alembic(backend_path, environment, "upgrade", "head")
+    assert upgrade_head.returncode == 0, upgrade_head.stdout + upgrade_head.stderr
+    with engine.connect() as connection:
+        tables = set(inspect(engine).get_table_names())
+        assert "quote_catalog_state_decision" in tables
+        assert "procurement_indicator_sync_run" in tables
+        assert "procurement_indicator_point" in tables
     check = _alembic(backend_path, environment, "check")
     assert check.returncode == 0, check.stdout + check.stderr
 

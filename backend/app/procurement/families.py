@@ -330,4 +330,4 @@ def get_item_family(session: Session, code: str) -> dict[str, object]:
     for family in item_family_projection(session):
         if family["code"] == code:
             return family
-    raise LookupError("품목류를 찾을 수 없습니다.")
+    raise LookupError("품목을 찾을 수 없습니다.")

@@ -45,15 +45,15 @@ it("groups exact standard items into an item family and opens its trend modal", 
   }));
 
   renderApp("/standard-prices");
-  expect(await screen.findByRole("button", { name: /센서류/ }, { timeout: 5_000 })).toBeVisible();
-  expect(screen.getByText("1개 품목류 · 2개 품목")).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: /센서류/ }));
-  const dialog = await screen.findByRole("dialog", { name: "센서류" });
+  expect(await screen.findByRole("button", { name: /센서/ }, { timeout: 5_000 })).toBeVisible();
+  expect(screen.getByText("1개 품목 · 2개 상세 품목")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: /센서/ }));
+  const dialog = await screen.findByRole("dialog", { name: "센서" });
   expect(within(dialog).getByText("2개 상세 품목 · 5건 가격 근거 · 2개 견적 제출사")).toBeVisible();
   expect(within(dialog).getByText("PHOTO SENSOR")).toBeVisible();
   expect(within(dialog).getAllByText("OMRON").length).toBeGreaterThan(0);
   expect(within(dialog).getByText("SUPPLIER A")).toBeVisible();
-  expect(within(dialog).getByLabelText("센서류 연도별 가격 변화")).toBeVisible();
+  expect(within(dialog).getByLabelText("센서 연도별 가격 변화")).toBeVisible();
 });
 
 const build = {
@@ -288,7 +288,7 @@ it("shows a shimmering status message while item families are still loading", as
 
   renderApp("/standard-prices");
 
-  expect(screen.getByRole("status", { name: "품목류를 불러오는 중" })).toBeVisible();
+  expect(screen.getByRole("status", { name: "품목을 불러오는 중" })).toBeVisible();
   expect(document.querySelectorAll(".family-skeleton")).toHaveLength(1);
 
   resolveFamilies(
@@ -298,7 +298,7 @@ it("shows a shimmering status message while item families are still loading", as
   );
 
   expect(await screen.findByText("검색 결과가 없습니다.")).toBeVisible();
-  expect(screen.queryByRole("status", { name: "품목류를 불러오는 중" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "품목을 불러오는 중" })).not.toBeInTheDocument();
 });
 
 it("keeps an analysis evidence link pinned to its immutable price version", async () => {
@@ -512,7 +512,7 @@ it("searches item families through the family API", async () => {
   await user.type(screen.getByRole("searchbox", { name: "표준 품목 검색" }), "PX-1");
   await user.click(screen.getByRole("button", { name: "검색" }));
 
-  expect(await screen.findByRole("button", { name: /센서류/ })).toBeVisible();
+  expect(await screen.findByRole("button", { name: /센서/ })).toBeVisible();
   expect(urls.some((url) => url.includes("search=PX-1"))).toBe(true);
 });
 
@@ -610,8 +610,8 @@ it("opens an exact member from a family and paginates evidence and history", asy
   const user = userEvent.setup();
   renderApp("/standard-prices");
 
-  await user.click(await screen.findByRole("button", { name: /센서류/ }));
-  const familyDialog = await screen.findByRole("dialog", { name: "센서류" });
+  await user.click(await screen.findByRole("button", { name: /센서/ }));
+  const familyDialog = await screen.findByRole("dialog", { name: "센서" });
   await user.click(within(familyDialog).getByRole("button", { name: /SENSOR/ }));
   await user.click(await screen.findByRole("button", { name: "근거 더 보기" }));
   expect(

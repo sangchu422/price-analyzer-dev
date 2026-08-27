@@ -4,15 +4,40 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
+from app.core.config import settings
 from app.procurement.dashboard import (
     dashboard_overview,
     family_indicator_impacts,
     price_trend,
 )
 from app.procurement.families import get_item_family, list_item_families
+from app.procurement.indicators import indicator_cache_payloads, sync_procurement_indicators
 
 
 router = APIRouter()
+
+
+def _family_payload(family: dict[str, object]) -> dict[str, object]:
+    payload = {key: value for key, value in family.items() if key != "members"}
+    name = str(payload.get("name", "")).strip()
+    payload["display_name"] = name[:-1].rstrip() if name.endswith("류") else name
+    return payload
+
+
+@router.get("/indicators")
+def get_procurement_indicators(
+    session: Session = Depends(get_session),
+) -> list[dict[str, object]]:
+    return indicator_cache_payloads(session)
+
+
+@router.post("/indicators/sync")
+def post_procurement_indicator_sync(
+    session: Session = Depends(get_session),
+) -> list[dict[str, object]]:
+    sync_procurement_indicators(session, settings)
+    session.commit()
+    return indicator_cache_payloads(session)
 
 
 @router.get("/overview")
@@ -43,7 +68,7 @@ def get_item_families(
     families = list_item_families(session, search=search, category_code=category)
     return {
         "families": [
-            {key: value for key, value in family.items() if key != "members"}
+            _family_payload(family)
             for family in families
         ],
         "family_count": len(families),
@@ -60,7 +85,8 @@ def get_item_family_detail(
     try:
         family = get_item_family(session, family_code)
         return {
-            **family,
+            **_family_payload(family),
+            "members": family.get("members", []),
             "indicator_impacts": family_indicator_impacts(family_code),
         }
     except LookupError as exc:

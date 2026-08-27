@@ -14,7 +14,19 @@ from app.quotes.models import RawQuoteItem
 from app.standard_database.models import QuoteDocumentPurpose, QuoteDocumentRole
 
 
-def test_dashboard_exposes_operational_counts_and_labels_demo_indicators(
+class _IndicatorResponse:
+    def __init__(self, *, text: str = "", payload: object | None = None) -> None:
+        self.text = text
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return self._payload
+
+
+def test_dashboard_exposes_operational_counts_and_real_indicator_states(
     client: TestClient,
     api_session: Session,
 ) -> None:
@@ -59,10 +71,11 @@ def test_dashboard_exposes_operational_counts_and_labels_demo_indicators(
     assert payload["catalog"]["family_classified_items"] == 0
     assert payload["categories"] == []
     assert payload["families"] == []
-    assert len(payload["monthly_performance"]["series"]) == 12
+    assert payload["monthly_performance"]["available_years"] == [2025, 2026]
+    assert len(payload["monthly_performance"]["series_by_year"]["2026"]) == 12
     assert all(
-        indicator["source_status"] == "DEMO"
-        and "공식 데이터 연동 전" in indicator["source_label"]
+        indicator["source_status"] == "UNAVAILABLE"
+        and indicator["points"] == []
         for indicator in payload["indicators"]
     )
 
@@ -79,7 +92,36 @@ def test_dashboard_price_trend_returns_404_for_unknown_item(
     assert response.status_code == 404
 
 
-def test_monthly_performance_keeps_an_activated_incoming_quote(
+def test_indicator_sync_uses_public_series_and_persists_cache(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def fake_get(url: str, *, params: dict[str, str], **_kwargs):
+        if "fredgraph.csv" in url:
+            series = params["id"]
+            return _IndicatorResponse(text=f"DATE,{series}\n2026-07-01,100\n2026-08-01,110\n")
+        item_id = params["itmId"]
+        value = "160" if item_id.endswith("_7") else "4000000"
+        return _IndicatorResponse(payload=[{
+            "ITM_ID": item_id,
+            "PRD_DE": params["startPrdDe"],
+            "DT": value,
+        }])
+
+    monkeypatch.setattr("app.procurement.indicators.httpx.get", fake_get)
+    response = client.post("/api/dashboard/indicators/sync")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert len(payload) == 5
+    assert all(item["source_status"] == "LIVE_CACHE" for item in payload)
+    wage = next(item for item in payload if item["code"] == "WAGE")
+    assert wage["points"][-1]["value"] == "25000.000000"
+    exchange = next(item for item in payload if item["code"] == "USD_KRW")
+    assert exchange["points"][-1] == {"period": "2026-08", "value": "110.000000"}
+
+
+def test_monthly_performance_uses_supplied_department_counts(
     api_session: Session,
 ) -> None:
     document = SourceDocument(
@@ -110,13 +152,18 @@ def test_monthly_performance_keeps_an_activated_incoming_quote(
 
     overview = dashboard_overview(api_session, today=date(2026, 8, 26))
 
-    august = overview["monthly_performance"]["series"][7]
+    august = overview["monthly_performance"]["series_by_year"][2026][7]
     assert august == {
         "month": 8,
         "label": "8월",
-        "count": 1,
+        "equipment_purchase": 81,
+        "integrated_purchase": 474,
+        "total": 555,
         "kind": "ACTUAL",
     }
+    september = overview["monthly_performance"]["series_by_year"][2026][8]
+    assert september["total"] == 351
+    assert september["kind"] == "FORECAST"
 
 
 def test_dashboard_todo_matches_document_grouped_review_queue(

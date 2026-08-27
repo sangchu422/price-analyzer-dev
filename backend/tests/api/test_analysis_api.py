@@ -27,6 +27,7 @@ from app.procurement.models import (
     ItemCategory,
     QuoteCatalogActivationEntry,
     QuoteCatalogActivationRun,
+    QuoteCatalogStateDecision,
     StandardItemCategoryAssignment,
 )
 from app.standard_database.models import (
@@ -309,6 +310,89 @@ def test_activation_appends_new_catalog_evidence_once(
         select(func.count(QuoteCatalogActivationEntry.id))
     ) == 2
     assert api_session.scalar(select(func.count(StandardPriceVersion.id))) == 1
+
+
+def test_analysis_history_controls_catalog_inclusion_without_deleting_source(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    api_session.add(
+        ItemCategory(
+            code="GENERAL_COMPONENT",
+            name="공통 설비·부품",
+            description="테스트용 기본 분류",
+            sort_order=900,
+        )
+    )
+    api_session.commit()
+    document = _document(api_session, name="received/history-control.xlsx", rows=1)
+    run_response = client.post(
+        f"/api/analysis/documents/{document.id}/runs",
+        json={"created_by": "buyer-01", "review_percent": 10, "high_percent": 20},
+    )
+    assert run_response.status_code == 200, run_response.text
+    run_id = run_response.json()["run_id"]
+
+    before = client.get("/api/analysis/history")
+    assert before.status_code == 200
+    item = before.json()["items"][0]
+    assert item["run_id"] == run_id
+    assert item["catalog_state"] == "NOT_INCLUDED"
+    assert item["current_decision_id"] is None
+
+    included = client.post(
+        f"/api/analysis/runs/{run_id}/catalog-state",
+        json={
+            "state": "INCLUDED",
+            "decided_by": "buyer-01",
+            "reason_detail": "담당자 검토 후 가격 근거 반영",
+            "expected_current_decision_id": None,
+        },
+    )
+    assert included.status_code == 200, included.text
+    included_id = included.json()["decision_id"]
+    assert included.json()["state"] == "INCLUDED"
+
+    excluded = client.post(
+        f"/api/analysis/runs/{run_id}/catalog-state",
+        json={
+            "state": "EXCLUDED",
+            "decided_by": "buyer-01",
+            "reason_detail": "운영 가격 기준에서 제외",
+            "expected_current_decision_id": included_id,
+        },
+    )
+    assert excluded.status_code == 200, excluded.text
+    assert excluded.json()["state"] == "EXCLUDED"
+    assert api_session.get(SourceDocument, document.id) is not None
+    assert api_session.scalar(
+        select(func.count(RawQuoteItem.id)).join(SourceVariant).where(
+            SourceVariant.document_id == document.id
+        )
+    ) == 1
+    assert api_session.scalar(select(func.count(QuoteCatalogStateDecision.id))) == 2
+
+    current = client.get("/api/analysis/history", params={"state": "EXCLUDED"})
+    assert current.status_code == 200
+    assert current.json()["items"][0]["catalog_state"] == "EXCLUDED"
+
+    stale = client.post(
+        f"/api/analysis/runs/{run_id}/catalog-state",
+        json={
+            "state": "INCLUDED",
+            "decided_by": "buyer-02",
+            "reason_detail": "오래된 화면에서 재반영 시도",
+            "expected_current_decision_id": included_id,
+        },
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["error_code"] == "STALE_CATALOG_STATE"
+    assert api_session.scalar(
+        select(QuoteDocumentRole.purpose)
+        .where(QuoteDocumentRole.document_id == document.id)
+        .order_by(QuoteDocumentRole.id.desc())
+        .limit(1)
+    ) == QuoteDocumentPurpose.INCOMING_BID
 
 
 def test_incoming_exact_key_uses_standard_price_without_membership_write(

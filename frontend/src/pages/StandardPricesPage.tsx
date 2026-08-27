@@ -295,7 +295,7 @@ export function StandardPricesPage() {
         <div>
           <p className="section-kicker">과거 견적 기준</p>
           <h1>표준 DB</h1>
-            <p>과거 견적에서 묶은 품목류별 단가 범위와 상세 품목의 원본 근거를 확인합니다.</p>
+            <p>과거 견적에서 묶은 품목별 단가 범위와 상세 품목의 원본 근거를 확인합니다.</p>
         </div>
         <div className="build-status" aria-label="최근 갱신 상태">
           <span>최근 갱신</span>
@@ -379,7 +379,7 @@ export function StandardPricesPage() {
             type="search"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="품목류·품명·사양 검색"
+            placeholder="품목·품명·사양 검색"
           />
         </label>
         <button type="submit" className="standard-search-submit">
@@ -482,8 +482,8 @@ export function StandardPricesPage() {
             }}
           >
             <header className="standard-detail-modal-bar">
-              <div><span>ITEM FAMILY</span><strong>품목류 상세</strong></div>
-              <button type="button" onClick={() => setSelectedFamilyCode(null)} aria-label="품목류 상세 닫기">
+              <div><span>ITEM FAMILY</span><strong>품목 상세</strong></div>
+              <button type="button" onClick={() => setSelectedFamilyCode(null)} aria-label="품목 상세 닫기">
                 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
                 닫기
               </button>
@@ -492,7 +492,7 @@ export function StandardPricesPage() {
               {familyDetail.isPending && <FamilyDetailSkeleton />}
               {familyDetail.isError && (
                 <div className="inline-state is-error">
-                  <p>품목류를 불러오지 못했습니다.</p>
+                  <p>품목을 불러오지 못했습니다.</p>
                   <button type="button" onClick={() => void familyDetail.refetch()}>다시 시도</button>
                 </div>
               )}
@@ -539,16 +539,16 @@ function FamilyCatalog({
   totalItems: number;
 }) {
   return (
-    <section className="standard-family-panel" aria-label="품목류 목록">
+    <section className="standard-family-panel" aria-label="품목 목록">
       <header>
         <div>
-          <strong>품목류 가격 기준</strong>
+          <strong>품목 가격 기준</strong>
           <small>전 품목을 용도와 명칭 기준으로 묶고 상세 품목의 원본 근거를 보존합니다.</small>
         </div>
-        <span>{pending ? "묶는 중…" : `${data.length.toLocaleString("ko-KR")}개 품목류 · ${totalItems.toLocaleString("ko-KR")}개 품목`}</span>
+        <span>{pending ? "묶는 중…" : `${data.length.toLocaleString("ko-KR")}개 품목 · ${totalItems.toLocaleString("ko-KR")}개 상세 품목`}</span>
       </header>
       {pending && <FamilyDetailSkeleton />}
-      {error && <div className="inline-state is-error"><p>품목류를 불러오지 못했습니다.</p><button type="button" onClick={retry}>다시 시도</button></div>}
+      {error && <div className="inline-state is-error"><p>품목을 불러오지 못했습니다.</p><button type="button" onClick={retry}>다시 시도</button></div>}
       {!pending && !error && data.length === 0 && <p className="inline-state">검색 결과가 없습니다.</p>}
       {data.length > 0 && (
         <div className="table-scroll standard-family-scroll">
@@ -562,7 +562,7 @@ function FamilyCatalog({
             </colgroup>
             <thead>
               <tr>
-                <th>품목류</th>
+                <th>품목</th>
                 <th className="numeric">상세 품목</th>
                 <th className="numeric">가격 근거</th>
                 <th className="numeric">관측 연도</th>
@@ -577,7 +577,7 @@ function FamilyCatalog({
                 <tr key={family.code}>
                   <td>
                     <button type="button" className="family-name-button" onClick={() => onSelect(family.code)}>
-                      <strong>{family.name}</strong>
+                      <strong>{family.display_name ?? displayFamilyName(family.name)}</strong>
                       <small>{family.item_count.toLocaleString("ko-KR")}개 상세 품목 · 상세 보기</small>
                     </button>
                   </td>
@@ -609,8 +609,8 @@ function FamilyDetail({
     <article className="family-detail">
       <header className="family-detail-heading">
         <div>
-          <p className="section-kicker">품목류 가격 분석</p>
-          <h2 id="family-detail-title">{family.name}</h2>
+          <p className="section-kicker">품목 가격 분석</p>
+          <h2 id="family-detail-title">{family.display_name ?? displayFamilyName(family.name)}</h2>
           <p>{family.item_count.toLocaleString("ko-KR")}개 상세 품목 · {family.observation_count.toLocaleString("ko-KR")}건 가격 근거 · {family.supplier_count.toLocaleString("ko-KR")}개 견적 제출사</p>
         </div>
         <span>{family.year_count ? `${family.year_count}개년 추이` : "견적일 확인 필요"}</span>
@@ -624,7 +624,7 @@ function FamilyDetail({
       <section className="family-impact-section" aria-labelledby="family-impact-title">
         <div className="section-title">
           <p className="section-kicker">구매 참고 지표</p>
-          <h3 id="family-impact-title">이 품목류에 영향을 줄 수 있는 지표</h3>
+          <h3 id="family-impact-title">이 품목에 영향을 줄 수 있는 지표</h3>
         </div>
         <p className="family-impact-note">규칙 기반 참고 정보이며 구매 목표가 계산에는 반영하지 않습니다.</p>
         <div className="family-impact-grid">
@@ -644,7 +644,7 @@ function FamilyDetail({
           <h3 id="family-trend-title">연도별 중앙값</h3>
         </div>
         {family.trend.length > 0 ? (
-          <div className="family-trend-chart" aria-label={`${family.name} 연도별 가격 변화`}>
+          <div className="family-trend-chart" aria-label={`${family.display_name ?? displayFamilyName(family.name)} 연도별 가격 변화`}>
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={family.trend} margin={{ top: 16, right: 18, bottom: 0, left: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -705,7 +705,7 @@ function indicatorLabel(code: string) {
 }
 
 function FamilyDetailSkeleton() {
-  return <div className="family-skeleton" role="status" aria-label="품목류를 불러오는 중"><Skeleton height="58px" /><Skeleton height="190px" /><Skeleton height="110px" /></div>;
+  return <div className="family-skeleton" role="status" aria-label="품목을 불러오는 중"><Skeleton height="58px" /><Skeleton height="190px" /><Skeleton height="110px" /></div>;
 }
 
 function StandardItemDetail({
@@ -1202,6 +1202,10 @@ function uniqueById<T extends { id: number }>(items: T[]) {
 function positiveIntegerParam(name: string) {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function displayFamilyName(value: string) {
+  return value.replace(/류$/, "");
 }
 
 function queryParam(name: string) {

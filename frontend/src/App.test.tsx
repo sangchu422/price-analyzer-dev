@@ -147,8 +147,21 @@ it("presents the command center and three primary workflow destinations", () => 
   expect(navigation).not.toHaveTextContent("견적 비교");
   expect(navigation).not.toHaveTextContent("LOCAL MODE");
   expect(
-    Array.from(navigation.querySelectorAll(".navigation-links a"), (link) => link.textContent),
+    Array.from(navigation.querySelectorAll(".navigation-links > a, .navigation-links > .navigation-menu > a"), (link) => link.textContent),
   ).toEqual(["종합현황", "표준 DB", "신규 견적 분석", "정제 검토", "설정"]);
+});
+
+it("opens analysis history from the animated analysis menu", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ items: [], total: 0, next_cursor: null, limit: 30 })));
+  renderApp("/unknown");
+
+  await user.hover(screen.getByRole("link", { name: "신규 견적 분석" }));
+  const historyLink = await screen.findByRole("link", { name: /분석 이력 관리/ });
+  await user.click(historyLink);
+
+  expect(await screen.findByRole("heading", { name: "분석 이력 관리" })).toBeVisible();
+  expect(window.location.pathname).toBe("/analysis/history");
 });
 
 it("changes primary pages without overlapping scroll and focus movement", async () => {

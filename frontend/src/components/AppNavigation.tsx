@@ -1,5 +1,7 @@
 import {
+  ChevronDown,
   Database,
+  FileClock,
   LayoutDashboard,
   Moon,
   ScanSearch,
@@ -7,13 +9,16 @@ import {
   ShieldCheck,
   Sun,
 } from "lucide-react";
+import { useState } from "react";
 
 import type { AppTheme } from "../theme";
 
 const destinations = [
   { path: "/dashboard", label: "종합현황", icon: LayoutDashboard },
   { path: "/standard-prices", label: "표준 DB", icon: Database },
-  { path: "/analysis", label: "신규 견적 분석", icon: ScanSearch },
+] as const;
+
+const trailingDestinations = [
   { path: "/cleansing", label: "정제 검토", icon: ShieldCheck },
   { path: "/settings", label: "설정", icon: Settings },
 ] as const;
@@ -29,6 +34,7 @@ export function AppNavigation({
   theme: AppTheme;
   onThemeChange: (theme: AppTheme) => void;
 }) {
+  const [analysisMenuOpen, setAnalysisMenuOpen] = useState(false);
   const lightThemeActive = theme === "light";
   const nextTheme = lightThemeActive ? "dark" : "light";
   const themeToggleLabel = lightThemeActive
@@ -56,6 +62,51 @@ export function AppNavigation({
           const active =
             currentPath === path ||
             (currentPath === "/" && path === "/dashboard");
+          return (
+            <a
+              key={path}
+              href={path}
+              aria-current={active ? "page" : undefined}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate(path);
+              }}
+            >
+              <Icon aria-hidden="true" size={15} strokeWidth={1.7} />
+              {label}
+            </a>
+          );
+        })}
+        <div
+          className="navigation-menu"
+          onMouseEnter={() => setAnalysisMenuOpen(true)}
+          onMouseLeave={() => setAnalysisMenuOpen(false)}
+          onFocus={() => setAnalysisMenuOpen(true)}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAnalysisMenuOpen(false);
+          }}
+        >
+          <a
+            href="/analysis"
+            aria-current={currentPath.startsWith("/analysis") ? "page" : undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate("/analysis");
+              setAnalysisMenuOpen(false);
+            }}
+          >
+            <ScanSearch aria-hidden="true" size={15} strokeWidth={1.7} />
+            신규 견적 분석
+            <ChevronDown aria-hidden="true" className="navigation-menu-chevron" size={13} />
+          </a>
+          <button type="button" className="navigation-menu-toggle" aria-label="신규 견적 분석 메뉴" aria-expanded={analysisMenuOpen} onClick={() => setAnalysisMenuOpen((open) => !open)}><ChevronDown size={13} /></button>
+          <div className={`navigation-submenu${analysisMenuOpen ? " is-open" : ""}`} aria-hidden={!analysisMenuOpen}>
+            <a href="/analysis" onClick={(event) => { event.preventDefault(); onNavigate("/analysis"); setAnalysisMenuOpen(false); }}><ScanSearch size={16} /><span><strong>새 견적 분석</strong><small>견적서를 올리고 결과 확인</small></span></a>
+            <a href="/analysis/history" aria-current={currentPath === "/analysis/history" ? "page" : undefined} onClick={(event) => { event.preventDefault(); onNavigate("/analysis/history"); setAnalysisMenuOpen(false); }}><FileClock size={16} /><span><strong>분석 이력 관리</strong><small>표준 DB 반영·제외 선택</small></span></a>
+          </div>
+        </div>
+        {trailingDestinations.map(({ path, label, icon: Icon }) => {
+          const active = currentPath === path;
           return (
             <a
               key={path}

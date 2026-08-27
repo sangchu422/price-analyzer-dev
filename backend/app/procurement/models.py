@@ -256,6 +256,92 @@ class QuoteCatalogActivationEntry(_ImmutableProcurementRow, Base):
     evidence_json: Mapped[str] = mapped_column(Text)
 
 
+class QuoteCatalogStateDecision(_ImmutableProcurementRow, Base):
+    """Append-only document-level choice to include an analysis in the catalog."""
+
+    __tablename__ = "quote_catalog_state_decision"
+    __table_args__ = (
+        UniqueConstraint(
+            "supersedes_decision_id",
+            name="uq_quote_catalog_state_decision_supersedes",
+        ),
+        CheckConstraint(
+            "state IN ('NOT_INCLUDED', 'INCLUDED', 'EXCLUDED')",
+            name="ck_quote_catalog_state_decision_state",
+        ),
+        CheckConstraint(
+            "supersedes_decision_id IS NULL OR supersedes_decision_id <> id",
+            name="ck_quote_catalog_state_decision_not_self",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_run_id: Mapped[int] = mapped_column(
+        ForeignKey("quote_analysis_run.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("source_document.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    state: Mapped[str] = mapped_column(String(32))
+    supersedes_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("quote_catalog_state_decision.id", ondelete="RESTRICT")
+    )
+    decided_by: Mapped[str] = mapped_column(String(100))
+    reason_detail: Mapped[str] = mapped_column(Text)
+    decided_at: Mapped[datetime] = mapped_column(
+        NaiveUTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+
+class ProcurementIndicatorSyncRun(_ImmutableProcurementRow, Base):
+    __tablename__ = "procurement_indicator_sync_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('SUCCEEDED', 'FAILED')",
+            name="ck_procurement_indicator_sync_status",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    indicator_code: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32))
+    source_label: Mapped[str] = mapped_column(String(255))
+    source_url: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(String(64))
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    synced_at: Mapped[datetime] = mapped_column(
+        NaiveUTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+
+class ProcurementIndicatorPoint(_ImmutableProcurementRow, Base):
+    __tablename__ = "procurement_indicator_point"
+    __table_args__ = (
+        UniqueConstraint(
+            "sync_run_id",
+            "period",
+            name="uq_procurement_indicator_point_period",
+        ),
+        {"info": {"evidence_immutable": True}},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sync_run_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_indicator_sync_run.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    period: Mapped[str] = mapped_column(String(10))
+    value: Mapped[Decimal] = mapped_column(ExactDecimal())
+
+
 class ProcurementPriceAlert(_ImmutableProcurementRow, Base):
     __tablename__ = "procurement_price_alert"
     __table_args__ = (

@@ -1,14 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
   ArrowRight,
   Database,
   Gauge,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
-import { motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -22,7 +21,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { getDashboardOverview, type DashboardOverview } from "../api/client";
+import { getDashboardOverview, syncProcurementIndicators, type DashboardOverview } from "../api/client";
 import { AnimatedNumber } from "../components/AnimatedNumber";
 import { reasonLabel } from "../components/reasonLabels";
 import { Skeleton } from "../components/Skeleton";
@@ -30,6 +29,10 @@ import { WiaInteractiveMark } from "../components/WiaInteractiveMark";
 
 export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [selectedIndicatorCode, setSelectedIndicatorCode] = useState<string | null>(null);
+  const [familiesExpanded, setFamiliesExpanded] = useState(false);
+  const [performanceYear, setPerformanceYear] = useState(2026);
+  const indicatorSyncAttempted = useRef(false);
+  const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ["dashboard-overview"],
     queryFn: ({ signal }) => getDashboardOverview(signal),
@@ -42,6 +45,20 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
       document.title = "통합 견적 분석 시스템";
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      indicatorSyncAttempted.current
+      || !query.data
+      || !query.data.indicators.some((indicator) => indicator.source_status === "UNAVAILABLE" || indicator.source_status === "STALE")
+    ) return;
+    indicatorSyncAttempted.current = true;
+    const controller = new AbortController();
+    void syncProcurementIndicators(controller.signal)
+      .then(() => queryClient.invalidateQueries({ queryKey: ["dashboard-overview"] }))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [query.data, queryClient]);
 
   if (query.isLoading) {
     return (
@@ -83,6 +100,19 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
     ? (eligibleItemCount === 0 ? 0 : standardizedItemCount / eligibleItemCount * 100)
     : Number(data.catalog.standardization_percent);
   const selectedIndicator = data.indicators.find((item) => item.code === selectedIndicatorCode) ?? null;
+  const visibleFamilies = familiesExpanded ? data.families : data.families.slice(0, 12);
+  const monthlyPerformance = data.monthly_performance as DashboardOverview["monthly_performance"] & {
+    year?: number;
+    series?: Array<{ month: number; label: string; count: number; kind: "ACTUAL" | "FORECAST" }>;
+  };
+  const availableYears = monthlyPerformance.available_years ?? [monthlyPerformance.year ?? 2026];
+  const legacySeries = (monthlyPerformance.series ?? []).map((entry) => ({
+    ...entry,
+    equipment_purchase: 0,
+    integrated_purchase: entry.count,
+    total: entry.count,
+  }));
+  const performanceSeries = monthlyPerformance.series_by_year?.[String(performanceYear)] ?? legacySeries;
 
   return (
     <main className="dashboard-page">
@@ -142,27 +172,42 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             <header>
               <div>
                 <span>ITEM FAMILY DISTRIBUTION</span>
-                <h2 id="category-spectrum-title">품목류 분포</h2>
+                <h2 id="category-spectrum-title">품목</h2>
               </div>
-              <small>전체 {data.families.length.toLocaleString("ko-KR")}개 품목류를 모두 표시합니다.</small>
+              <small>표준 DB를 구매 관점의 {data.families.length.toLocaleString("ko-KR")}개 품목으로 묶었습니다.</small>
             </header>
-            <div className="category-spectrum-list">
-              {(data.families ?? []).map((family, index) => (
+            <motion.div className="category-spectrum-list" layout>
+              <AnimatePresence initial={false}>
+              {visibleFamilies.map((family, index) => (
                 <motion.button
                   key={family.code}
                   type="button"
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  layout
                   transition={{ delay: Math.min(index * 0.035, 0.3) }}
                   onClick={() => onNavigate(`/standard-prices?family=${encodeURIComponent(family.code)}`)}
                 >
                   <span>{String(index + 1).padStart(2, "0")}</span>
-                  <strong>{family.name}</strong>
+                  <strong>{family.display_name ?? displayFamilyName(family.name)}</strong>
                   <AnimatedNumber value={family.item_count} className="category-count" />
                   <i style={{ "--share": `${Math.max(Number(family.share_percent), 2)}%` } as React.CSSProperties} />
                 </motion.button>
               ))}
-            </div>
+              </AnimatePresence>
+            </motion.div>
+            {data.families.length > 12 ? (
+              <button
+                type="button"
+                className="category-spectrum-toggle"
+                aria-expanded={familiesExpanded}
+                onClick={() => setFamiliesExpanded((current) => !current)}
+              >
+                {familiesExpanded ? "품목 접기" : `전체 ${data.families.length.toLocaleString("ko-KR")}개 품목 펼치기`}
+                <ArrowRight aria-hidden="true" size={14} />
+              </button>
+            ) : null}
           </section>
 
           <section className="todo-command">
@@ -186,20 +231,29 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             <header>
               <div>
                 <span>ACTUAL / FORECAST</span>
-                <h2 id="performance-title">월별 견적 분석 계획</h2>
+                <h2 id="performance-title">월별 견적 분석 현황</h2>
               </div>
-              <Activity aria-hidden="true" />
+              <div className="performance-year-switch" aria-label="현황 연도">
+                {availableYears.map((year) => (
+                  <button type="button" key={year} aria-pressed={performanceYear === year} onClick={() => setPerformanceYear(year)}>{year}</button>
+                ))}
+              </div>
             </header>
             <div className="performance-chart">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.monthly_performance.series} barCategoryGap="28%">
+                <BarChart data={performanceSeries} barCategoryGap="28%">
                   <CartesianGrid vertical={false} stroke="var(--dashboard-grid)" />
                   <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 10 }} />
                   <YAxis hide />
                   <Tooltip content={<PerformanceTooltip />} cursor={{ fill: "rgba(0,40,122,.04)" }} />
-                  <Bar dataKey="count" radius={[2, 2, 0, 0]} animationDuration={950}>
-                    {data.monthly_performance.series.map((entry) => (
-                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#00287a" : "rgba(0,40,122,.24)"} stroke={entry.kind === "FORECAST" ? "#00287a" : "none"} strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
+                  <Bar name="설비구매" dataKey="equipment_purchase" stackId="volume" animationDuration={950}>
+                    {performanceSeries.map((entry) => (
+                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#00287a" : "rgba(0,40,122,.24)"} stroke="#00287a" strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
+                    ))}
+                  </Bar>
+                  <Bar name="통합구매" dataKey="integrated_purchase" stackId="volume" radius={[2, 2, 0, 0]} animationDuration={950}>
+                    {performanceSeries.map((entry) => (
+                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#5f86d5" : "rgba(95,134,213,.22)"} stroke="#5f86d5" strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -209,6 +263,8 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             <footer>
               <span><i className="is-actual" /> 실적</span>
               <span><i className="is-forecast" /> 예상</span>
+              <span><i className="is-equipment" /> 설비구매</span>
+              <span><i className="is-integrated" /> 통합구매</span>
               <small>{data.monthly_performance.forecast_method}</small>
             </footer>
           </section>
@@ -234,7 +290,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
                 ))}
               </div>
               {selectedIndicator ? (
-                <div className="market-impact-panel" role="region" aria-label={`${selectedIndicator.name} 영향 품목류`}>
+                <div className="market-impact-panel" role="region" aria-label={`${selectedIndicator.name} 영향 품목`}>
                   <div>
                     <strong>{selectedIndicator.name} 영향 예상</strong>
                     <span>규칙 기반 참고 · 구매 목표가 계산에는 반영하지 않습니다.</span>
@@ -314,6 +370,7 @@ function FunnelLine({ label, value, max, unit = "", accent = false, warning = fa
 }
 
 function MarketSignalTile({ indicator, index, selected, onSelect }: { indicator: DashboardOverview["indicators"][number]; index: number; selected: boolean; onSelect: () => void }) {
+  const available = indicator.points.length > 0;
   const first = Number(indicator.points[0]?.value ?? 0);
   const last = Number(indicator.points.at(-1)?.value ?? 0);
   const difference = last - first;
@@ -325,14 +382,14 @@ function MarketSignalTile({ indicator, index, selected, onSelect }: { indicator:
       type="button"
       onClick={onSelect}
       aria-expanded={selected}
-      className={`${rising ? "market-signal is-up" : "market-signal is-down"}${selected ? " is-selected" : ""}`}
+      className={`${rising ? "market-signal is-up" : "market-signal is-down"}${selected ? " is-selected" : ""}${available ? "" : " is-unavailable"}`}
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.055, 0.28), duration: 0.45 }}
       style={{ "--signal-delay": `${0.45 + Math.min(index * 0.08, 0.4)}s` } as React.CSSProperties}
     >
       <div className="market-sparkline" aria-hidden="true">
-        <ResponsiveContainer width="100%" height="100%">
+        {available ? <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={indicator.points} margin={{ top: 5, right: 2, bottom: 2, left: 2 }}>
             <defs>
               <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
@@ -353,21 +410,26 @@ function MarketSignalTile({ indicator, index, selected, onSelect }: { indicator:
               animationEasing="ease-out"
             />
           </AreaChart>
-        </ResponsiveContainer>
+        </ResponsiveContainer> : <span className="market-signal-empty">SYNC</span>}
         <span className="market-readhead" />
       </div>
       <div className="market-signal-copy">
         <span>{indicator.name} <small>{indicator.group}</small></span>
-        <strong><AnimatedNumber value={last} decimals={indicator.unit === "%" ? 1 : 1} /></strong>
-        <em>
+        <strong>{available ? <AnimatedNumber value={last} decimals={1} /> : "자료 확인 중"}</strong>
+        {available ? <em>
           {rising ? "+" : ""}{difference.toFixed(1)} ({rising ? "+" : ""}{delta.toFixed(1)}%)
-        </em>
+        </em> : <em>{indicator.source_status === "STALE" ? "갱신 지연" : "연결 중"}</em>}
+        <small className="market-source-period">{indicator.latest_period ?? "—"} · {indicator.source_status === "STALE" ? "저장 자료" : indicator.source_status === "UNAVAILABLE" ? "자료 없음" : "최신 자료"}</small>
       </div>
     </motion.button>
   );
 }
 
-function PerformanceTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; payload: { kind: string } }>; label?: string }) {
+function PerformanceTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; payload: { kind: string; total: number } }>; label?: string }) {
   if (!active || !payload?.length) return null;
-  return <div className="dashboard-tooltip"><span>{label} · {payload[0].payload.kind === "ACTUAL" ? "실적" : "예상"}</span><strong>{payload[0].value.toLocaleString("ko-KR")}건</strong></div>;
+  return <div className="dashboard-tooltip"><span>{label} · {payload[0].payload.kind === "ACTUAL" ? "실적" : "예상"}</span>{payload.map((entry) => <small key={entry.name}>{entry.name} {entry.value.toLocaleString("ko-KR")}건</small>)}<strong>합계 {payload[0].payload.total.toLocaleString("ko-KR")}건</strong></div>;
+}
+
+function displayFamilyName(value: string) {
+  return value.replace(/류$/, "");
 }

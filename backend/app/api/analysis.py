@@ -62,6 +62,14 @@ from app.procurement.activation import (
     activation_payload,
     deliver_outlook_alerts,
 )
+from app.procurement.history import (
+    CatalogStateConflict,
+    catalog_state_payload,
+    current_catalog_state,
+    list_analysis_history,
+    set_catalog_state,
+)
+from app.procurement.models import QuoteCatalogStateDecision
 from app.analysis.family_analysis import family_analysis_payload
 from app.procurement.equipment import (
     create_equipment_projection,
@@ -347,6 +355,70 @@ class QuoteActivationRequest(BaseModel):
     reason_detail: str = Field(min_length=3, max_length=1000)
     send_outlook: bool = False
     outlook_recipient: str | None = Field(default=None, max_length=320)
+
+
+class QuoteCatalogStateRequest(BaseModel):
+    state: Literal["INCLUDED", "EXCLUDED"]
+    decided_by: str = Field(min_length=1, max_length=100)
+    reason_detail: str = Field(min_length=3, max_length=1000)
+    expected_current_decision_id: int | None = None
+
+
+@router.get("/history")
+def get_analysis_history(
+    session: Session = Depends(get_session),
+    *,
+    limit: int = Query(30, ge=1, le=100),
+    after_id: int | None = Query(None, ge=1),
+    state: Literal["NOT_INCLUDED", "INCLUDED", "EXCLUDED"] | None = Query(None),
+) -> dict[str, object]:
+    page = list_analysis_history(
+        session,
+        limit=limit,
+        after_id=after_id,
+        state=state,
+    )
+    return {
+        "items": page.items,
+        "total": page.total,
+        "next_cursor": page.next_cursor,
+        "limit": limit,
+    }
+
+
+@router.post("/runs/{run_id}/catalog-state")
+def post_catalog_state(
+    run_id: int,
+    body: QuoteCatalogStateRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    try:
+        decision = set_catalog_state(
+            session,
+            run_id,
+            state=body.state,
+            decided_by=body.decided_by,
+            reason_detail=body.reason_detail,
+            expected_current_decision_id=body.expected_current_decision_id,
+        )
+        session.commit()
+        return catalog_state_payload(decision)
+    except CatalogStateConflict as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "STALE_CATALOG_STATE",
+                "message": str(exc),
+                "current_decision_id": exc.current_decision_id,
+            },
+        ) from exc
+    except ActivationNotFound as exc:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/documents", response_model=AnalysisDocumentListResponse)
@@ -659,6 +731,17 @@ def post_activate_analysis_run(
             activated_by=body.activated_by,
             reason_detail=body.reason_detail,
         )
+        if current_catalog_state(session, activation.document_id) is None:
+            session.add(
+                QuoteCatalogStateDecision(
+                    analysis_run_id=run_id,
+                    document_id=activation.document_id,
+                    state="INCLUDED",
+                    supersedes_decision_id=None,
+                    decided_by=body.activated_by.strip(),
+                    reason_detail=body.reason_detail.strip(),
+                )
+            )
         session.commit()
     except ActivationNotFound as exc:
         session.rollback()

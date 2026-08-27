@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from statistics import median
 
@@ -27,6 +27,7 @@ from app.cleansing.review_cases import (
 )
 from app.documents.models import SourceDocument, SourceVariant
 from app.procurement.families import item_family_projection
+from app.procurement.indicators import indicator_cache_payloads
 from app.procurement.models import (
     ProcurementPriceAlert,
 )
@@ -42,14 +43,16 @@ from app.standard_database.models import (
 )
 
 
-_DEMO_PERIODS = tuple(f"2026-{month:02d}" for month in range(1, 13))
-_INDICATORS = (
-    ("USD_KRW", "원/달러", "환율", "index", (100, 101, 100, 103, 105, 104, 107, 106, 108, 107, 109, 110)),
-    ("COPPER", "전기동", "원자재", "index", (100, 102, 105, 104, 108, 110, 109, 112, 114, 113, 115, 117)),
-    ("STEEL", "냉연강판", "원자재", "index", (100, 99, 101, 102, 103, 102, 104, 105, 106, 106, 107, 108)),
-    ("WAGE", "제조 임율", "임율", "index", (100, 100, 101, 101, 102, 102, 103, 103, 104, 104, 105, 105)),
-    ("SEMICON", "반도체 수급", "시황", "index", (100, 98, 96, 95, 97, 99, 101, 103, 102, 104, 105, 106)),
-)
+_MONTHLY_COUNTS = {
+    2025: {
+        "equipment_purchase": (57, 192, 171, 142, 84, 201, 166, 128, 108, 103, 130, 128),
+        "integrated_purchase": (473, 555, 624, 700, 578, 596, 661, 583, 787, 473, 687, 710),
+    },
+    2026: {
+        "equipment_purchase": (116, 129, 146, 96, 138, 263, 159, 81, 106, 63, 90, 102),
+        "integrated_purchase": (543, 664, 750, 737, 640, 772, 814, 474, 245, 148, 226, 214),
+    },
+}
 
 _INDICATOR_IMPACT_RULES: dict[str, tuple[set[str], str, str]] = {
     "USD_KRW": (
@@ -130,6 +133,7 @@ def dashboard_overview(session: Session, *, today: date | None = None) -> dict[s
         {
             "code": family["code"],
             "name": family["name"],
+            "display_name": _display_family_name(str(family["name"])),
             "item_count": family["item_count"],
             "observation_count": family["observation_count"],
             "share_percent": (
@@ -345,49 +349,30 @@ def _unmatched_included_count(
 
 
 def _monthly_performance(session: Session, today: date) -> dict[str, object]:
-    # Activation appends a HISTORICAL_REFERENCE role, but the document must
-    # remain part of received-quote performance.  Count documents that have
-    # ever been received as INCOMING_BID, rather than only their latest role.
-    incoming_documents = (
-        select(QuoteDocumentRole.document_id)
-        .where(QuoteDocumentRole.purpose == QuoteDocumentPurpose.INCOMING_BID)
-        .distinct()
-        .subquery("dashboard_incoming_documents")
-    )
-    latest_metadata = (
-        select(DocumentMetadataVersion.source_document_id, func.max(DocumentMetadataVersion.id).label("metadata_id"))
-        .group_by(DocumentMetadataVersion.source_document_id)
-        .subquery("dashboard_latest_metadata")
-    )
-    dates = session.execute(
-        select(DocumentMetadataVersion.quote_date, SourceDocument.created_at)
-        .join(incoming_documents, incoming_documents.c.document_id == SourceDocument.id)
-        .outerjoin(latest_metadata, latest_metadata.c.source_document_id == SourceDocument.id)
-        .outerjoin(DocumentMetadataVersion, DocumentMetadataVersion.id == latest_metadata.c.metadata_id)
-    ).all()
-    counts: Counter[int] = Counter()
-    for quote_date, created_at in dates:
-        value = quote_date or (created_at.date() if isinstance(created_at, datetime) else None)
-        if value is not None and value.year == today.year:
-            counts[value.month] += 1
-    completed_months = max(today.month - 1, 1)
-    baseline = [counts[month] for month in range(1, completed_months + 1)]
-    forecast = int(round(sum(baseline) / len(baseline))) if baseline else 0
-    series = [
-        {
-            "month": month,
-            "label": f"{month}월",
-            "count": counts[month] if month <= today.month else forecast,
-            "kind": "ACTUAL" if month <= today.month else "FORECAST",
-        }
-        for month in range(1, 13)
-    ]
+    del session  # Supplied departmental KPI counts are independent of parsed rows.
+    by_year: dict[int, list[dict[str, object]]] = {}
+    for year, values in _MONTHLY_COUNTS.items():
+        by_year[year] = []
+        for month in range(1, 13):
+            equipment = values["equipment_purchase"][month - 1]
+            integrated = values["integrated_purchase"][month - 1]
+            by_year[year].append(
+                {
+                    "month": month,
+                    "label": f"{month}월",
+                    "equipment_purchase": equipment,
+                    "integrated_purchase": integrated,
+                    "total": equipment + integrated,
+                    "kind": "FORECAST" if year == 2026 and month >= 9 else "ACTUAL",
+                }
+            )
     return {
-        "year": today.year,
+        "default_year": 2026,
+        "available_years": [2025, 2026],
         "current_month": today.month,
-        "series": series,
-        "forecast_method": "완료 월의 월평균 접수 건수",
-        "source_status": "OPERATIONAL",
+        "series_by_year": by_year,
+        "forecast_method": "2026년 9~12월은 2025년 경향을 반영한 예상 건수",
+        "source_status": "DEPARTMENT_SUPPLIED",
     }
 
 
@@ -395,21 +380,7 @@ def _indicator_payloads(
     session: Session,
     families: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    payloads = [
-        {
-            "code": code,
-            "name": name,
-            "group": group,
-            "unit": unit,
-            "source_status": "DEMO",
-            "source_label": "시연 인덱스 · 공식 데이터 연동 전",
-            "points": [
-                {"period": period, "value": value}
-                for period, value in zip(_DEMO_PERIODS, values, strict=True)
-            ],
-        }
-        for code, name, group, unit, values in _INDICATORS
-    ]
+    payloads = indicator_cache_payloads(session)
     family_lookup = {str(family["code"]): family for family in families}
     for payload in payloads:
         affected = []
@@ -426,7 +397,7 @@ def _indicator_payloads(
                 affected.append(
                     {
                         "family_code": family_code,
-                        "family_name": family["name"],
+                        "family_name": _display_family_name(str(family["name"])),
                         **impact,
                     }
                 )
@@ -445,6 +416,9 @@ def _indicator_payloads(
                 "source_status": "OFFICIAL_CACHE",
                 "source_label": "KOSIS 확정 연간 자료",
                 "source_url": cpi_run.source_url,
+                "latest_period": cpi_run.latest_period,
+                "synced_at": cpi_run.fetched_at.isoformat(),
+                "error_detail": None,
                 "points": [
                     {"period": period, "value": value}
                     for period, value in sorted(cpi_points.items())[-8:]
@@ -453,6 +427,11 @@ def _indicator_payloads(
             }
         )
     return payloads
+
+
+def _display_family_name(name: str) -> str:
+    value = name.strip()
+    return value[:-1].rstrip() if value.endswith("류") else value
 
 
 def _recent_alerts(session: Session) -> list[dict[str, object]]:

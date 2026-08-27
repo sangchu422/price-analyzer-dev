@@ -19,6 +19,9 @@ const DashboardPage = lazy(() => dashboardPagePromise.then(
 const StandardPricesPage = lazy(() => import("./pages/StandardPricesPage").then(
   (module) => ({ default: module.StandardPricesPage }),
 ));
+const AnalysisHistoryPage = lazy(() => import("./pages/AnalysisHistoryPage").then(
+  (module) => ({ default: module.AnalysisHistoryPage }),
+));
 export function App() {
   const [path, setPath] = useState(currentPathname);
   const [theme, setTheme] = useState<AppTheme>(getStoredTheme);
@@ -74,6 +77,9 @@ export function App() {
       break;
     case "/analysis":
       page = <QuoteAnalysisPage workflow={quoteAnalysisWorkflow} />;
+      break;
+    case "/analysis/history":
+      page = <AnalysisHistoryPage />;
       break;
     case "/settings":
       page = <SettingsPage />;

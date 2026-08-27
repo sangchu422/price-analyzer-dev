@@ -43,7 +43,7 @@ def family_analysis_payload(
 
     for source_line in result.analysis.lines:
         line = asdict(source_line)
-        target = _unavailable_target(source_line.raw_item_id, "품목류 가격 근거를 적용할 수 없습니다.")
+        target = _unavailable_target(source_line.raw_item_id, "대품목 가격 근거를 적용할 수 없습니다.")
         family = (
             family_by_item.get(source_line.standard_item_id)
             if source_line.standard_item_id is not None
@@ -174,7 +174,7 @@ def family_analysis_payload(
             if source_line.match_status == "EXCLUDED":
                 target = _unavailable_target(source_line.raw_item_id, "합계·소계 등 분석 대상이 아닌 행입니다.", status="NOT_APPLICABLE")
             elif source_line.match_status == "REVIEW_REQUIRED":
-                target = _unavailable_target(source_line.raw_item_id, "정제 검토 후 품목류 목표가를 적용할 수 있습니다.")
+                target = _unavailable_target(source_line.raw_item_id, "정제 검토 후 대품목 목표가를 적용할 수 있습니다.")
         lines.append(line)
         targets.append(target)
         target_by_raw[source_line.raw_item_id] = target

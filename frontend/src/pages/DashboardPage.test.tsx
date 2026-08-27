@@ -49,8 +49,8 @@ it("renders the procurement command center with honest data-source labels", asyn
         },
       ],
       families: [
-        { code: "MOTOR", name: "모터류", item_count: 619, observation_count: 1200, share_percent: "8.1" },
-        { code: "GENERAL", name: "공통 설비·부품류", item_count: 2842, observation_count: 3200, share_percent: "37.0" },
+        { code: "MOTOR", name: "모터류", display_name: "모터", item_count: 619, observation_count: 1200, share_percent: "8.1" },
+        { code: "GENERAL", name: "공통 설비·부품류", display_name: "공통 설비·부품", item_count: 2842, observation_count: 3200, share_percent: "37.0" },
       ],
       cleansing_todo: {
         count: 1022,
@@ -116,7 +116,7 @@ it("renders the procurement command center with honest data-source labels", asyn
   expect(document.querySelector(".performance-readhead")).toBeInTheDocument();
   expect(document.querySelector(".market-readhead")).toBeInTheDocument();
   expect(screen.getAllByLabelText("23,436").length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: /모터류/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /모터/ })).toBeInTheDocument();
   expect(screen.queryByText("품목군 분포")).not.toBeInTheDocument();
   expect(document.querySelector(".todo-command strong")).toHaveTextContent("미분류·검토 대기");
   expect(screen.getByLabelText("1,022건")).toBeInTheDocument();

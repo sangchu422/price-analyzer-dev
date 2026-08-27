@@ -291,10 +291,9 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(within(servo).getByText("판정 대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
 
-  await user.click(screen.getByRole("tab", { name: /설비별 협상/ }));
-  await user.click(screen.getByRole("button", { name: "검토 완료 · 표준 DB 반영" }));
-  expect(screen.getByLabelText("반영 담당자")).toHaveValue("설비구매팀");
-  expect(screen.getByRole("button", { name: "승인하고 표준 DB에 추가" })).toBeEnabled();
+  await user.click(screen.getByRole("tab", { name: /설비별 구매 목표/ }));
+  expect(screen.getByText("표준 DB 미반영 · 이력관리에서 선택")).toBeVisible();
+  expect(screen.queryByLabelText("반영 담당자")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
   expect(
