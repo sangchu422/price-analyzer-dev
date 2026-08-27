@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { motion, useReducedMotion } from "motion/react";
 import {
   Area,
   AreaChart,
@@ -32,6 +33,169 @@ import { LoadingLabel } from "../components/LoadingLabel";
 import { MetricStrip } from "../components/MetricStrip";
 import { reasonLabel } from "../components/reasonLabels";
 import { Skeleton } from "../components/Skeleton";
+
+const playedStandardizationFlows = new Set<string>();
+
+function StandardizationFlow({
+  totalQuoteItems,
+  linkedQuoteItems,
+  activePriceItems,
+  standardizationPercent,
+}: {
+  totalQuoteItems: number;
+  linkedQuoteItems: number;
+  activePriceItems: number;
+  standardizationPercent: number;
+}) {
+  const reduceMotion = useReducedMotion();
+  const [shouldAnimate] = useState(
+    () => !reduceMotion && !playedStandardizationFlows.has("standard-db-flow"),
+  );
+
+  useEffect(() => {
+    playedStandardizationFlows.add("standard-db-flow");
+  }, []);
+
+  const stageInitial = shouldAnimate ? { opacity: 0, y: 8 } : false;
+  const stageAnimate = { opacity: 1, y: 0 };
+  const stageTransition = (delay: number) => ({
+    delay: shouldAnimate ? delay : 0,
+    duration: shouldAnimate ? 0.38 : 0,
+    ease: [0.22, 1, 0.36, 1] as const,
+  });
+  const lineTransition = (delay: number, duration = 0.42) => ({
+    delay: shouldAnimate ? delay : 0,
+    duration: shouldAnimate ? duration : 0,
+    ease: [0.22, 1, 0.36, 1] as const,
+  });
+
+  return (
+    <section className="standardization-flow" aria-label="표준 DB 구축 현황">
+      <header className="standardization-flow-intro">
+        <span>STANDARDIZATION FLOW</span>
+        <strong>견적 품목이 가격 기준이 되는 과정</strong>
+        <small>연결된 원본 가운데 품명·규격·단위가 같은 행을 하나의 표준 품목으로 묶습니다.</small>
+      </header>
+
+      <div className="standardization-flow-diagram is-beam-flow">
+        <motion.div
+          className="standardization-beam-stage is-source"
+          initial={stageInitial}
+          animate={stageAnimate}
+          transition={stageTransition(0.08)}
+        >
+          <span>전체 견적 품목</span>
+          <strong>{totalQuoteItems.toLocaleString("ko-KR")}개</strong>
+          <small>견적서 483건에서 수집</small>
+        </motion.div>
+
+        <div className="standardization-beam-link is-link" aria-hidden="true">
+          <svg viewBox="0 0 180 64" preserveAspectRatio="none">
+            <path className="beam-track" d="M4 32C58 32 112 32 176 32" />
+            <motion.path
+              className="beam-energy"
+              d="M4 32C58 32 112 32 176 32"
+              initial={shouldAnimate ? { pathLength: 0, opacity: 0 } : false}
+              animate={{ pathLength: 1, opacity: 1 }}
+              transition={lineTransition(0.28)}
+            />
+          </svg>
+          <motion.span initial={stageInitial} animate={stageAnimate} transition={stageTransition(0.38)}>
+            {standardizationPercent.toFixed(1)}% 연결
+          </motion.span>
+        </div>
+
+        <motion.div
+          className="standardization-beam-stage is-linked"
+          initial={stageInitial}
+          animate={stageAnimate}
+          transition={stageTransition(0.44)}
+        >
+          <span>표준 DB 연결</span>
+          <strong>{linkedQuoteItems.toLocaleString("ko-KR")}개</strong>
+          <small>가격 근거로 사용할 원본</small>
+        </motion.div>
+
+        <div className="standardization-beam-core" aria-label="품명, 규격, 단위가 같으면 통합">
+          <svg viewBox="0 0 260 156" preserveAspectRatio="none" aria-hidden="true">
+            {[30, 78, 126].map((y, index) => (
+              <g key={y}>
+                <path className="beam-track" d={`M4 78C68 78 70 ${y} 91 ${y}`} />
+                <path className="beam-track" d={`M169 ${y}C184 ${y} 176 78 194 78`} />
+                <motion.path
+                  className="beam-energy"
+                  d={`M4 78C68 78 70 ${y} 91 ${y}`}
+                  initial={shouldAnimate ? { pathLength: 0, opacity: 0 } : false}
+                  animate={{ pathLength: 1, opacity: 1 }}
+                  transition={lineTransition(0.62 + index * 0.1, 0.54)}
+                />
+                <motion.path
+                  className="beam-energy"
+                  d={`M169 ${y}C184 ${y} 176 78 194 78`}
+                  initial={shouldAnimate ? { pathLength: 0, opacity: 0 } : false}
+                  animate={{ pathLength: 1, opacity: 1 }}
+                  transition={lineTransition(0.72 + index * 0.1, 0.42)}
+                />
+              </g>
+            ))}
+            <path className="beam-output" d="M194 78H256" />
+            {["품명", "규격", "단위"].map((criterion, index) => {
+              const y = 30 + index * 48;
+              return (
+                <motion.g
+                  key={criterion}
+                  className="beam-criterion"
+                  initial={shouldAnimate ? { opacity: 0 } : false}
+                  animate={{ opacity: 1 }}
+                  transition={stageTransition(0.58 + index * 0.1)}
+                >
+                  <rect x="91" y={y - 14} width="78" height="28" rx="14" />
+                  <text x="130" y={y + 3.2} textAnchor="middle">{criterion}</text>
+                </motion.g>
+              );
+            })}
+          </svg>
+          <motion.strong initial={stageInitial} animate={stageAnimate} transition={stageTransition(0.9)}>
+            동일 조건 수렴
+          </motion.strong>
+        </div>
+
+        <motion.div
+          className="standardization-beam-stage is-result"
+          initial={shouldAnimate ? { opacity: 0, y: 8, scale: 0.97 } : false}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={stageTransition(1.02)}
+        >
+          <span>통합 가격 기준</span>
+          <strong>{activePriceItems.toLocaleString("ko-KR")}종</strong>
+          <small>협상에 활용할 표준 품목</small>
+          {shouldAnimate ? (
+            <motion.i
+              aria-hidden="true"
+              initial={{ opacity: 0, scale: 0.82 }}
+              animate={{ opacity: [0, 0.35, 0], scale: [0.82, 1.08, 1.16] }}
+              transition={{ delay: 1.12, duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+            />
+          ) : null}
+        </motion.div>
+      </div>
+
+      <div
+        className="standardization-flow-progress"
+        role="progressbar"
+        aria-label="표준 DB 연결률"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Number(standardizationPercent.toFixed(1))}
+      >
+        <span style={{ width: `${standardizationPercent}%` }} />
+      </div>
+      <p className="standardization-flow-note">
+        연결된 원본 품목 {linkedQuoteItems.toLocaleString("ko-KR")}개에서 동일한 품명·규격·단위를 묶어 {activePriceItems.toLocaleString("ko-KR")}종의 가격 기준을 구성했습니다.
+      </p>
+    </section>
+  );
+}
 
 export function StandardPricesPage() {
   const [searchInput, setSearchInput] = useState("");
@@ -276,6 +440,13 @@ export function StandardPricesPage() {
     retry: false,
   });
   const sourceCoverageData = sourceCoverage.data;
+  const priceCatalog = dashboard.data?.catalog;
+  const totalQuoteItems = priceCatalog?.eligible_item_count ?? 0;
+  const linkedQuoteItems = priceCatalog?.standardized_item_count ?? 0;
+  const activePriceItems = priceCatalog?.active_price_items ?? 0;
+  const standardizationPercent = priceCatalog
+    ? Number(priceCatalog.standardization_percent)
+    : 0;
   const hasSourceCoverage = Boolean(
     sourceCoverageData &&
       Number.isFinite(sourceCoverageData.scanned_files) &&
@@ -308,6 +479,36 @@ export function StandardPricesPage() {
           </strong>
         </div>
       </header>
+
+      {dashboard.isLoading ? (
+          <section
+            className="standard-price-readiness is-loading"
+            aria-label="표준 DB 구축 현황 불러오는 중"
+        >
+          <div className="standard-price-readiness-intro">
+            <Skeleton width="118px" height="10px" />
+            <Skeleton width="180px" height="24px" />
+            <Skeleton width="280px" height="11px" />
+          </div>
+          {Array.from({ length: 3 }, (_, index) => (
+            <div className="standard-price-readiness-metric" key={index}>
+              <Skeleton width="92px" height="10px" />
+              <Skeleton width="84px" height="24px" />
+            </div>
+          ))}
+        </section>
+      ) : priceCatalog ? (
+        <StandardizationFlow
+          totalQuoteItems={totalQuoteItems}
+          linkedQuoteItems={linkedQuoteItems}
+          activePriceItems={activePriceItems}
+          standardizationPercent={standardizationPercent}
+        />
+      ) : dashboard.isError ? (
+        <p className="standard-price-readiness-error" role="status">
+          가격 활용 현황을 불러오지 못했습니다. 표준 품목 목록은 계속 사용할 수 있습니다.
+        </p>
+      ) : null}
 
       {hasSourceCoverage && sourceCoverageData && (
         <details
@@ -545,7 +746,7 @@ function FamilyCatalog({
           <strong>품목 가격 기준</strong>
           <small>전 품목을 용도와 명칭 기준으로 묶고 상세 품목의 원본 근거를 보존합니다.</small>
         </div>
-        <span>{pending ? "묶는 중…" : `${data.length.toLocaleString("ko-KR")}개 품목 · ${totalItems.toLocaleString("ko-KR")}개 상세 품목`}</span>
+        <span>{pending ? "묶는 중…" : `${data.length.toLocaleString("ko-KR")}개 품목 분류 · ${totalItems.toLocaleString("ko-KR")}종 상세 품목`}</span>
       </header>
       {pending && <FamilyDetailSkeleton />}
       {error && <div className="inline-state is-error"><p>품목을 불러오지 못했습니다.</p><button type="button" onClick={retry}>다시 시도</button></div>}
@@ -578,10 +779,10 @@ function FamilyCatalog({
                   <td>
                     <button type="button" className="family-name-button" onClick={() => onSelect(family.code)}>
                       <strong>{family.display_name ?? displayFamilyName(family.name)}</strong>
-                      <small>{family.item_count.toLocaleString("ko-KR")}개 상세 품목 · 상세 보기</small>
+                      <small>{family.item_count.toLocaleString("ko-KR")}종 상세 품목 · 상세 보기</small>
                     </button>
                   </td>
-                  <td className="numeric">{family.item_count.toLocaleString("ko-KR")}개</td>
+                  <td className="numeric">{family.item_count.toLocaleString("ko-KR")}종</td>
                   <td className="numeric">{family.observation_count.toLocaleString("ko-KR")}건</td>
                   <td className="numeric">{family.year_count ? `${family.year_count}개년` : "날짜 확인 필요"}</td>
                   <td className="numeric">{formatWon(family.price?.minimum ?? null)}</td>
@@ -611,7 +812,7 @@ function FamilyDetail({
         <div>
           <p className="section-kicker">품목 가격 분석</p>
           <h2 id="family-detail-title">{family.display_name ?? displayFamilyName(family.name)}</h2>
-          <p>{family.item_count.toLocaleString("ko-KR")}개 상세 품목 · {family.observation_count.toLocaleString("ko-KR")}건 가격 근거 · {family.supplier_count.toLocaleString("ko-KR")}개 견적 제출사</p>
+          <p>{family.item_count.toLocaleString("ko-KR")}종 상세 품목 · {family.observation_count.toLocaleString("ko-KR")}건 가격 근거 · {family.supplier_count.toLocaleString("ko-KR")}곳 견적 제출사</p>
         </div>
         <span>{family.year_count ? `${family.year_count}개년 추이` : "견적일 확인 필요"}</span>
       </header>

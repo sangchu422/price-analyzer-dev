@@ -17,12 +17,12 @@ it("renders the procurement command center with honest data-source labels", asyn
       return jsonResponse({
       as_of: "2026-08-26",
       catalog: {
-        total_standard_items: 7684,
-        categorized_items: 7684,
+        total_standard_items: 7672,
+        categorized_items: 7672,
         family_classified_items: 7672,
         active_price_items: 7672,
         rebuild_required_items: 0,
-        no_evidence_items: 12,
+        no_evidence_items: 0,
         unmatched_included_items: 1087,
         cleansing_todo_items: 1022,
         latest_build_run_id: 13,
@@ -110,15 +110,19 @@ it("renders the procurement command center with honest data-source labels", asyn
   expect(loadingLogo).toBeInTheDocument();
 
   releaseFetch();
-  expect(await screen.findByText("표준화 완료", {}, { timeout: 3_000 })).toBeVisible();
+  expect(await screen.findByText("표준 DB 연결", {}, { timeout: 3_000 })).toBeVisible();
   expect(document.querySelector(".wia-vector-logo")).toBe(loadingLogo);
   expect(screen.getByRole("img", { name: "HYUNDAI WIA" })).toBeInTheDocument();
   expect(document.querySelector(".wia-hero-mark img")).not.toBeInTheDocument();
   expect(document.querySelectorAll(".wia-logo-piece")).toHaveLength(5);
+  expect(screen.getByText("견적을 받는 순간,")).toBeInTheDocument();
+  expect(screen.getByText("협상 목표가 보입니다.")).toBeInTheDocument();
   expect(document.querySelector(".performance-readhead")).toBeInTheDocument();
   expect(document.querySelector(".market-readhead")).toBeInTheDocument();
-  expect(screen.getAllByLabelText("23,436").length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: "모터 619개, 전체의 8.1%" })).toBeInTheDocument();
+  expect(screen.getAllByLabelText("23,436개").length).toBeGreaterThan(0);
+  expect(screen.queryByText("통합 표준 품목")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("7,672")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "모터 619종, 전체의 8.1%" })).toBeInTheDocument();
   expect(screen.getByText("표준 DB 단계별 현황")).toBeVisible();
   expect(screen.getByText("수집부터 활용까지")).toBeVisible();
   expect(screen.queryByText("품목군 분포")).not.toBeInTheDocument();

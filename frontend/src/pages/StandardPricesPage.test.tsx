@@ -46,10 +46,10 @@ it("groups exact standard items into an item family and opens its trend modal", 
 
   renderApp("/standard-prices");
   expect(await screen.findByRole("button", { name: /센서/ }, { timeout: 5_000 })).toBeVisible();
-  expect(screen.getByText("1개 품목 · 2개 상세 품목")).toBeVisible();
+  expect(screen.getByText("1개 품목 분류 · 2종 상세 품목")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: /센서/ }));
   const dialog = await screen.findByRole("dialog", { name: "센서" });
-  expect(within(dialog).getByText("2개 상세 품목 · 5건 가격 근거 · 2개 견적 제출사")).toBeVisible();
+  expect(within(dialog).getByText("2종 상세 품목 · 5건 가격 근거 · 2곳 견적 제출사")).toBeVisible();
   expect(within(dialog).getByText("PHOTO SENSOR")).toBeVisible();
   expect(within(dialog).getAllByText("OMRON").length).toBeGreaterThan(0);
   expect(within(dialog).getByText("SUPPLIER A")).toBeVisible();
@@ -157,6 +157,22 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
       }
       if (url.includes("/api/dashboard/overview")) {
         return jsonResponse({
+          catalog: {
+            total_standard_items: 7672,
+            categorized_items: 7672,
+            family_classified_items: 7672,
+            active_price_items: 7672,
+            rebuild_required_items: 0,
+            no_evidence_items: 0,
+            unmatched_included_items: 8233,
+            cleansing_todo_items: 1022,
+            latest_build_run_id: 9,
+            historical_quote_document_count: 483,
+            eligible_item_count: 31669,
+            standardized_item_count: 23436,
+            unstandardized_item_count: 8233,
+            standardization_percent: "74.0",
+          },
           cleansing_todo: { count: 1022, top_reasons: [] },
         });
       }
@@ -219,6 +235,21 @@ it("renders the standard DB as a grouped price table with source evidence", asyn
   expect(
     await screen.findByRole("heading", { name: "표준 DB" }, { timeout: 3000 }),
   ).toBeVisible();
+  const readiness = await screen.findByRole("region", {
+    name: "표준 DB 구축 현황",
+  });
+  expect(within(readiness).getByText("전체 견적 품목")).toBeInTheDocument();
+  expect(within(readiness).getByText("31,669개")).toBeInTheDocument();
+  expect(within(readiness).getByText("표준 DB 연결")).toBeInTheDocument();
+  expect(within(readiness).getByText("23,436개")).toBeInTheDocument();
+  expect(within(readiness).getByText("통합 가격 기준")).toBeInTheDocument();
+  expect(within(readiness).getByText("7,672종")).toBeInTheDocument();
+  expect(within(readiness).getByRole("progressbar", { name: "표준 DB 연결률" })).toHaveAttribute(
+    "aria-valuenow",
+    "74",
+  );
+  expect(within(readiness).getByText(/연결된 원본 품목 23,436개에서 동일한 품명·규격·단위를 묶어 7,672종의 가격 기준/)).toBeVisible();
+  expect(within(readiness).queryByText("근거 보완")).not.toBeInTheDocument();
   const sensorButton = screen.queryByRole("button", { name: /SENSOR/ });
   expect(sensorButton).not.toBeInTheDocument();
   expect(await screen.findByRole("dialog", { name: "SENSOR" })).toBeVisible();

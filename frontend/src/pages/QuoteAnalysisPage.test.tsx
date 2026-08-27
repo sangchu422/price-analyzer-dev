@@ -195,6 +195,27 @@ function successfulSubmission() {
   };
 }
 
+function familyAnalysisResult() {
+  return {
+    rule_version: "item-family-keyword-v1",
+    matched_count: 7,
+    pending_count: 2,
+    lines: analysis.lines.map((entry) => ({
+      ...entry,
+      family_code: "OTHER_GENERAL_COMPONENT",
+      family_name: "공통 설비·부품",
+      family_item_count: 7,
+      family_supplier_count: 3,
+    })),
+    target_lines: analysis.target_lines,
+    target_available_count: analysis.target_available_count,
+    target_unavailable_count: analysis.target_unavailable_count,
+    quote_total_amount: analysis.quote_total_amount,
+    target_total_amount: analysis.target_total_amount,
+    equipment_groups: analysis.equipment_groups,
+  };
+}
+
 it("uploads a new bid first and renders the complete assessment workspace", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   vi.stubGlobal(
@@ -206,7 +227,10 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
         return jsonResponse(successfulSubmission(), { status: 201 });
       }
       if (url.includes("/api/analysis/documents/91")) {
-        return jsonResponse(analysis);
+        return jsonResponse({
+          ...analysis,
+          family_analysis: familyAnalysisResult(),
+        });
       }
       if (url === "/api/market/lookup-batch") {
         return jsonResponse({
@@ -246,6 +270,14 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(
     await screen.findByRole("heading", { name: "신규견적.xlsx" }),
   ).toBeVisible();
+  const familyBasis = screen.getByRole("button", { name: /대품목 기준/ });
+  const equipmentTab = screen.getByRole("tab", { name: /설비별 목표금액/ });
+  expect(familyBasis).toHaveAttribute("aria-pressed", "true");
+  expect(equipmentTab).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByText("현재 결과").parentElement).toHaveTextContent(
+    "대품목 기준→설비별 목표금액",
+  );
+  await user.click(screen.getByRole("button", { name: /상세 품목 기준/ }));
   const equipmentRow = screen.getByRole("row", { name: /신규 설비/ });
   expect(equipmentRow).toBeVisible();
   expect(screen.getByText("전체 구매 목표금액")).toBeVisible();

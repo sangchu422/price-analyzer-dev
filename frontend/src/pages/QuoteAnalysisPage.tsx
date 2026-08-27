@@ -34,6 +34,9 @@ const assessmentLabels: Record<AnalysisAssessment, string> = {
   HIGH: "고가",
 };
 
+const DEFAULT_ANALYSIS_TAB = "EQUIPMENT" as const;
+const DEFAULT_ANALYSIS_BASIS = "FAMILY" as const;
+
 export function QuoteAnalysisPage({
   workflow,
 }: {
@@ -454,10 +457,10 @@ function AnalysisResults({
   reviewPercent: number;
   highPercent: number;
 }) {
-  const [activeTab, setActiveTab] = useState<"EQUIPMENT" | "THRESHOLD" | "TARGET">("EQUIPMENT");
+  const [activeTab, setActiveTab] = useState<"EQUIPMENT" | "THRESHOLD" | "TARGET">(DEFAULT_ANALYSIS_TAB);
   const family = analysis.family_analysis;
   const [analysisBasis, setAnalysisBasis] = useState<"FAMILY" | "EXACT">(
-    () => family ? "FAMILY" : "EXACT",
+    () => family ? DEFAULT_ANALYSIS_BASIS : "EXACT",
   );
   const displayedAnalysis = useMemo<QuoteAnalysisRun>(() => {
     if (analysisBasis !== "FAMILY" || !family) return analysis;

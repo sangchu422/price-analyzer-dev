@@ -17,7 +17,7 @@ export function AnimatedNumber({
   prefix = "",
   suffix = "",
   className,
-  duration = 1.15,
+  duration = 1.5,
   useGrouping = true,
 }: AnimatedNumberProps) {
   const reduceMotion = useReducedMotion();
