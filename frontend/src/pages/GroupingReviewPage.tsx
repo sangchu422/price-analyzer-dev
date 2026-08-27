@@ -458,6 +458,7 @@ function CandidateRow({
           <div>
             <strong>{candidate.canonical_name}</strong>
             <span>{candidate.canonical_spec ?? "사양 없음"} · {candidate.canonical_unit ?? "단위 없음"}</span>
+            {candidate.family_name ? <span className="candidate-family-chip">추천 품목류 · {candidate.family_name}</span> : null}
           </div>
           <b>{formatScore(candidate.final_score)}</b>
         </div>

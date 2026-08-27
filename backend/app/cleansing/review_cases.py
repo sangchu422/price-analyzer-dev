@@ -17,6 +17,7 @@ from app.cleansing.models import CleanDecision, CleanStatus
 from app.documents.models import SourceDocument, SourceVariant
 from app.parsing.projection import current_raw_item_ids
 from app.quotes.models import RawQuoteItem
+from app.standard_database.models import QuoteDocumentPurpose, QuoteDocumentRole
 
 
 DOCUMENT_LEVEL_REASON_CODES = frozenset(
@@ -44,6 +45,14 @@ def current_review_queue_query():
         .subquery()
     )
     current_raw = current_raw_item_ids()
+    latest_role = (
+        select(
+            QuoteDocumentRole.document_id,
+            func.max(QuoteDocumentRole.id).label("role_id"),
+        )
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery()
+    )
     return (
         select(RawQuoteItem, CleanDecision, SourceVariant, SourceDocument)
         .join(latest_ids, latest_ids.c.raw_item_id == RawQuoteItem.id)
@@ -51,7 +60,13 @@ def current_review_queue_query():
         .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
         .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
         .join(current_raw, current_raw.c.raw_item_id == RawQuoteItem.id)
+        .outerjoin(latest_role, latest_role.c.document_id == SourceDocument.id)
+        .outerjoin(QuoteDocumentRole, QuoteDocumentRole.id == latest_role.c.role_id)
         .where(CleanDecision.status == CleanStatus.REVIEW_REQUIRED)
+        .where(
+            (QuoteDocumentRole.id.is_(None))
+            | (QuoteDocumentRole.purpose == QuoteDocumentPurpose.HISTORICAL_REFERENCE)
+        )
     )
 
 

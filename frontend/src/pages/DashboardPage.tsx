@@ -8,7 +8,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { motion } from "motion/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -29,6 +29,7 @@ import { Skeleton } from "../components/Skeleton";
 import { WiaInteractiveMark } from "../components/WiaInteractiveMark";
 
 export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const [selectedIndicatorCode, setSelectedIndicatorCode] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ["dashboard-overview"],
     queryFn: ({ signal }) => getDashboardOverview(signal),
@@ -74,9 +75,14 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   const data = query.data;
-  const completion = data.catalog.total_standard_items === 0
-    ? 0
-    : data.catalog.active_price_items / data.catalog.total_standard_items * 100;
+  const historicalQuoteCount = data.catalog.historical_quote_document_count ?? 0;
+  const eligibleItemCount = data.catalog.eligible_item_count ?? data.catalog.total_standard_items;
+  const standardizedItemCount = data.catalog.standardized_item_count ?? data.catalog.active_price_items;
+  const unstandardizedItemCount = data.catalog.unstandardized_item_count ?? Math.max(eligibleItemCount - standardizedItemCount, 0);
+  const completion = data.catalog.standardization_percent === undefined
+    ? (eligibleItemCount === 0 ? 0 : standardizedItemCount / eligibleItemCount * 100)
+    : Number(data.catalog.standardization_percent);
+  const selectedIndicator = data.indicators.find((item) => item.code === selectedIndicatorCode) ?? null;
 
   return (
     <main className="dashboard-page">
@@ -86,8 +92,8 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
         <WiaInteractiveMark />
         <div className="dashboard-hero-status">
           <span>DATA PULSE</span>
-          <AnimatedNumber value={data.catalog.active_price_items} className="dashboard-pulse-number" />
-          <small>즉시 활용 가능한 표준 가격</small>
+          <AnimatedNumber value={standardizedItemCount} className="dashboard-pulse-number" />
+          <small>표준화 완료 품목</small>
           <time>{data.as_of} 기준</time>
         </div>
       </header>
@@ -105,7 +111,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             <div className="catalog-radar">
               <div className="catalog-radar-number">
                 <AnimatedNumber value={completion} decimals={1} suffix="%" className="catalog-completion-number" />
-                <span>가격 활용 가능</span>
+                <span>품목 표준화율</span>
               </div>
               <svg viewBox="0 0 220 220" aria-hidden="true">
                 <circle cx="110" cy="110" r="91" />
@@ -122,10 +128,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
               </svg>
             </div>
             <div className="catalog-funnel" aria-label="표준 DB 단계별 현황">
-              <FunnelLine label="전체 표준 품목" value={data.catalog.total_standard_items} max={data.catalog.total_standard_items} />
-              <FunnelLine label="품목류 분류" value={data.catalog.family_classified_items} max={data.catalog.total_standard_items} />
-              <FunnelLine label="가격 즉시 활용" value={data.catalog.active_price_items} max={data.catalog.total_standard_items} accent />
-              <FunnelLine label="근거 보완 필요" value={data.catalog.no_evidence_items + data.catalog.rebuild_required_items} max={data.catalog.total_standard_items} warning />
+              <FunnelLine label="과거 견적서" value={historicalQuoteCount} max={historicalQuoteCount} unit="건" />
+              <FunnelLine label="전체 견적 품목" value={eligibleItemCount} max={eligibleItemCount} unit="개" />
+              <FunnelLine label="표준화 완료" value={standardizedItemCount} max={eligibleItemCount} unit="개" accent />
+              <FunnelLine label="표준화 대기" value={unstandardizedItemCount} max={eligibleItemCount} unit="개" warning />
             </div>
             <button className="dashboard-text-action" type="button" onClick={() => onNavigate("/standard-prices")}>
               표준 DB 탐색 <ArrowRight aria-hidden="true" size={16} />
@@ -138,10 +144,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
                 <span>ITEM FAMILY DISTRIBUTION</span>
                 <h2 id="category-spectrum-title">품목류 분포</h2>
               </div>
-              <small>가격 근거가 많은 상위 12개 품목류입니다.</small>
+              <small>전체 {data.families.length.toLocaleString("ko-KR")}개 품목류를 모두 표시합니다.</small>
             </header>
             <div className="category-spectrum-list">
-              {(data.families ?? []).slice(0, 12).map((family, index) => (
+              {(data.families ?? []).map((family, index) => (
                 <motion.button
                   key={family.code}
                   type="button"
@@ -218,9 +224,36 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
               </header>
               <div className="market-signal-grid">
                 {data.indicators.map((indicator, index) => (
-                  <MarketSignalTile indicator={indicator} index={index} key={indicator.code} />
+                  <MarketSignalTile
+                    indicator={indicator}
+                    index={index}
+                    key={indicator.code}
+                    selected={selectedIndicatorCode === indicator.code}
+                    onSelect={() => setSelectedIndicatorCode((current) => current === indicator.code ? null : indicator.code)}
+                  />
                 ))}
               </div>
+              {selectedIndicator ? (
+                <div className="market-impact-panel" role="region" aria-label={`${selectedIndicator.name} 영향 품목류`}>
+                  <div>
+                    <strong>{selectedIndicator.name} 영향 예상</strong>
+                    <span>규칙 기반 참고 · 구매 목표가 계산에는 반영하지 않습니다.</span>
+                  </div>
+                  <div className="market-impact-list">
+                    {selectedIndicator.affected_families.map((impact) => (
+                      <button
+                        type="button"
+                        key={impact.family_code}
+                        onClick={() => onNavigate(`/standard-prices?family=${encodeURIComponent(impact.family_code)}`)}
+                      >
+                        <span>{impact.family_name}</span>
+                        <b>원가 압력 · {impact.strength === "HIGH" ? "영향 큼" : impact.strength === "MEDIUM" ? "영향 보통" : "영향 낮음"}</b>
+                        <small>{impact.rationale}</small>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <footer>
                 {Array.from(new Set(data.indicators.map((item) => item.source_label))).map((label) => (
                   <span key={label}>{label}</span>
@@ -256,10 +289,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
 
       <div className="dashboard-ticker" aria-label="핵심 운영 현황">
         <div>
-          <span>STANDARD ITEMS <b>{data.catalog.total_standard_items.toLocaleString("ko-KR")}</b></span>
-          <span>ACTIVE PRICE <b>{data.catalog.active_price_items.toLocaleString("ko-KR")}</b></span>
-          <span>UNCATEGORIZED SOURCE <b>{data.catalog.unmatched_included_items.toLocaleString("ko-KR")}</b></span>
-          <span>REVIEW TODO <b>{data.catalog.cleansing_todo_items.toLocaleString("ko-KR")}</b></span>
+          <span>HISTORICAL QUOTES <b>{historicalQuoteCount.toLocaleString("ko-KR")}건</b></span>
+          <span>STANDARDIZED <b>{standardizedItemCount.toLocaleString("ko-KR")}개</b></span>
+          <span>PENDING <b>{unstandardizedItemCount.toLocaleString("ko-KR")}개</b></span>
+          <span>REVIEW TODO <b>{data.catalog.cleansing_todo_items.toLocaleString("ko-KR")}개</b></span>
         </div>
       </div>
       <div className="dashboard-system-corner" aria-label="HYUNDAI WIA Procurement Intelligence">
@@ -270,17 +303,17 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
   );
 }
 
-function FunnelLine({ label, value, max, accent = false, warning = false }: { label: string; value: number; max: number; accent?: boolean; warning?: boolean }) {
+function FunnelLine({ label, value, max, unit = "", accent = false, warning = false }: { label: string; value: number; max: number; unit?: string; accent?: boolean; warning?: boolean }) {
   const width = max === 0 ? 0 : Math.max(1.2, value / max * 100);
   return (
     <div className={accent ? "is-accent" : warning ? "is-warning" : ""}>
-      <span>{label}</span><AnimatedNumber value={value} className="funnel-number" />
+      <span>{label}</span><AnimatedNumber value={value} suffix={unit} className="funnel-number" />
       <i><motion.b initial={{ width: 0 }} animate={{ width: `${width}%` }} transition={{ duration: 0.9, ease: "easeOut" }} /></i>
     </div>
   );
 }
 
-function MarketSignalTile({ indicator, index }: { indicator: DashboardOverview["indicators"][number]; index: number }) {
+function MarketSignalTile({ indicator, index, selected, onSelect }: { indicator: DashboardOverview["indicators"][number]; index: number; selected: boolean; onSelect: () => void }) {
   const first = Number(indicator.points[0]?.value ?? 0);
   const last = Number(indicator.points.at(-1)?.value ?? 0);
   const difference = last - first;
@@ -288,8 +321,11 @@ function MarketSignalTile({ indicator, index }: { indicator: DashboardOverview["
   const rising = difference >= 0;
   const gradientId = `market-fill-${indicator.code.toLowerCase()}`;
   return (
-    <motion.article
-      className={rising ? "market-signal is-up" : "market-signal is-down"}
+    <motion.button
+      type="button"
+      onClick={onSelect}
+      aria-expanded={selected}
+      className={`${rising ? "market-signal is-up" : "market-signal is-down"}${selected ? " is-selected" : ""}`}
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.055, 0.28), duration: 0.45 }}
@@ -327,7 +363,7 @@ function MarketSignalTile({ indicator, index }: { indicator: DashboardOverview["
           {rising ? "+" : ""}{difference.toFixed(1)} ({rising ? "+" : ""}{delta.toFixed(1)}%)
         </em>
       </div>
-    </motion.article>
+    </motion.button>
   );
 }
 

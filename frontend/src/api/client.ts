@@ -264,6 +264,8 @@ export interface CatalogCandidate {
   method: string;
   unit_compatible: boolean;
   model_tokens_compatible: boolean;
+  family_code: string;
+  family_name: string;
 }
 
 export interface CandidateResponse {
@@ -643,6 +645,8 @@ export interface TargetPriceLine {
   excluded_observation_count: number;
   reason: string;
   evidence: TargetPriceEvidence[];
+  calculation_basis?: Record<string, unknown> | null;
+  comparison_evidence?: Array<Record<string, unknown>>;
 }
 
 export interface QuoteAnalysisRun extends DocumentAnalysis {
@@ -697,6 +701,17 @@ export interface ItemFamilyMember {
   quote_date_start: string | null;
   quote_date_end: string | null;
   undated_observation_count: number;
+  observations?: Array<{
+    raw_item_id: number;
+    unit_price: string;
+    maker: string | null;
+    supplier: string | null;
+    quote_date: string | null;
+    source_variant_id: number;
+    source_logical_name: string;
+    source_sheet: string | null;
+    source_row: number | null;
+  }>;
 }
 
 export interface ItemFamilySummary {
@@ -718,6 +733,14 @@ export interface ItemFamilySummary {
 
 export interface ItemFamilyDetail extends ItemFamilySummary {
   members: ItemFamilyMember[];
+  indicator_impacts: Array<{
+    indicator_code: string;
+    direction: "COST_PRESSURE";
+    strength: "HIGH" | "MEDIUM" | "LOW";
+    cost_driver: string;
+    rationale: string;
+    basis: "RULE_BASED";
+  }>;
 }
 
 export interface ItemFamilyListResponse {
@@ -758,6 +781,11 @@ export interface DashboardOverview {
     unmatched_included_items: number;
     cleansing_todo_items: number;
     latest_build_run_id: number | null;
+    historical_quote_document_count: number;
+    eligible_item_count: number;
+    standardized_item_count: number;
+    unstandardized_item_count: number;
+    standardization_percent: string;
   };
   categories: Array<{
     code: string;
@@ -798,6 +826,15 @@ export interface DashboardOverview {
     source_label: string;
     source_url?: string;
     points: Array<{ period: string; value: number | string }>;
+    affected_families: Array<{
+      family_code: string;
+      family_name: string;
+      direction: "COST_PRESSURE";
+      strength: "HIGH" | "MEDIUM" | "LOW";
+      cost_driver: string;
+      rationale: string;
+      basis: "RULE_BASED";
+    }>;
   }>;
   alerts: Array<{
     id: number;

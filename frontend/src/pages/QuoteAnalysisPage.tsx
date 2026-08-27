@@ -685,6 +685,7 @@ function EquipmentResults({
   analysisBasis: "FAMILY" | "EXACT";
 }) {
   const [selectedEquipmentId, setSelectedEquipmentId] = useState<number | null>(null);
+  const [openEvidenceRawId, setOpenEvidenceRawId] = useState<number | null>(null);
   const equipmentModalRef = useRef<HTMLDivElement>(null);
   const equipmentReturnFocusRef = useRef<HTMLElement | null>(null);
   const [activationOpen, setActivationOpen] = useState(false);
@@ -716,12 +717,14 @@ function EquipmentResults({
 
   const closeEquipmentModal = () => {
     setSelectedEquipmentId(null);
+    setOpenEvidenceRawId(null);
     window.setTimeout(() => equipmentReturnFocusRef.current?.focus(), 0);
   };
 
   const openEquipmentModal = (group: EquipmentAnalysisGroup) => {
     equipmentReturnFocusRef.current = document.activeElement as HTMLElement | null;
     setSelectedEquipmentId(group.id);
+    setOpenEvidenceRawId(null);
   };
 
   useEffect(() => {
@@ -841,31 +844,95 @@ function EquipmentResults({
                 <div className="is-negotiation"><dt>목표 인하 금액</dt><dd>{formatMoney(selectedEquipment.negotiation_amount)}</dd></div>
                 <div><dt>분석 완료</dt><dd>{selectedEquipment.target_available_count} / {selectedEquipment.line_count}개</dd></div>
               </dl>
-              <div className="equipment-detail-grid">
-                <header><span>품목 / 사양</span><span>수량·단위</span><span>구매 금액</span><span>구매 목표금액</span><span>목표 인하 금액</span></header>
-                {selectedEquipment.lines.map((groupLine) => {
-                  const line = lineById.get(groupLine.raw_item_id);
-                  const target = targetById.get(groupLine.raw_item_id);
-                  return (
-                    <div key={groupLine.raw_item_id}>
-                      <span><strong>{line?.item_name ?? `품목 #${groupLine.raw_item_id}`}</strong><small>{line?.spec || "원문 규격 없음"}</small></span>
-                      <span>{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</span>
-                      <span>{formatMoney(groupLine.quote_amount)}</span>
-                      <span>{formatMoney(groupLine.target_amount)}</span>
-                      <span className="is-negotiation">{formatMoney(groupLine.negotiation_amount)}</span>
-                      {target?.status !== "AVAILABLE" ? <em>{target?.reason ?? "산정 근거 확인 필요"}</em> : null}
-                    </div>
-                  );
-                })}
-                {Number(selectedEquipment.unallocated_amount) > 0 ? (
-                  <footer>공통 전기비·경비 등 품목 외 금액 <strong>{formatMoney(selectedEquipment.unallocated_amount)}</strong>은 갑지 금액에 유지했습니다.</footer>
-                ) : null}
+              <div className="equipment-detail-table-scroll">
+                <table className="equipment-detail-table">
+                  <colgroup><col className="is-item" /><col className="is-unit" /><col className="is-money" span={3} /><col className="is-evidence" /></colgroup>
+                  <thead><tr><th>품목 / 사양</th><th>수량·단위</th><th>구매 금액</th><th>구매 목표금액</th><th>목표 인하 금액</th><th>산정 근거</th></tr></thead>
+                  <tbody>
+                    {selectedEquipment.lines.map((groupLine) => {
+                      const line = lineById.get(groupLine.raw_item_id);
+                      const target = targetById.get(groupLine.raw_item_id);
+                      const evidenceCount = analysisBasis === "FAMILY"
+                        ? target?.comparison_evidence?.length ?? 0
+                        : target?.evidence.length ?? 0;
+                      const isOpen = openEvidenceRawId === groupLine.raw_item_id;
+                      return (
+                        <Fragment key={groupLine.raw_item_id}>
+                          <tr>
+                            <td><strong>{line?.item_name ?? `품목 #${groupLine.raw_item_id}`}</strong><small>{line?.spec || "원문 규격 없음"}</small></td>
+                            <td>{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</td>
+                            <td className="numeric">{formatMoney(groupLine.quote_amount)}</td>
+                            <td className="numeric">{formatMoney(groupLine.target_amount)}</td>
+                            <td className="numeric is-negotiation">{formatMoney(groupLine.negotiation_amount)}</td>
+                            <td>
+                              <button type="button" className="equipment-evidence-toggle" aria-expanded={isOpen} onClick={() => setOpenEvidenceRawId(isOpen ? null : groupLine.raw_item_id)}>
+                                {target?.status === "AVAILABLE" ? `근거 ${evidenceCount}건` : "확인 필요"}
+                              </button>
+                            </td>
+                          </tr>
+                          {isOpen ? <tr className="equipment-evidence-row"><td colSpan={6}><EquipmentEvidence target={target} analysisBasis={analysisBasis} /></td></tr> : null}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                  {Number(selectedEquipment.unallocated_amount) > 0 ? (
+                    <tfoot><tr><td colSpan={6}>공통 전기비·경비 등 품목 외 금액 <strong>{formatMoney(selectedEquipment.unallocated_amount)}</strong>은 갑지 금액에 유지했습니다.</td></tr></tfoot>
+                  ) : null}
+                </table>
               </div>
             </div>
           </div>
         </div>
       ) : null}
     </section>
+  );
+}
+
+function EquipmentEvidence({ target, analysisBasis }: { target: QuoteAnalysisRun["target_lines"][number] | undefined; analysisBasis: "FAMILY" | "EXACT" }) {
+  if (!target || target.status !== "AVAILABLE") {
+    return <p className="equipment-evidence-empty">{target?.reason ?? "산정 가능한 가격 근거가 없습니다."}</p>;
+  }
+  if (analysisBasis === "FAMILY") {
+    const basis = target.calculation_basis ?? {};
+    const comparisons = target.comparison_evidence ?? [];
+    return (
+      <div className="equipment-evidence-panel">
+        <header>
+          <div><span>품목류 기준</span><strong>{String(basis.family_name ?? "품목류")}</strong></div>
+          <p>{String(basis.selection_rule ?? target.reason)} · 동일 단위 {String(basis.unit ?? "—")} · 비교 가격대 {formatMoney(String(basis.price_band_low ?? ""))} ~ {formatMoney(String(basis.price_band_high ?? ""))}</p>
+        </header>
+        <div className="equipment-comparison-list">
+          {comparisons.map((entry, index) => {
+            const observations = Array.isArray(entry.observations) ? entry.observations as Array<Record<string, unknown>> : [];
+            return (
+              <article className={entry.selected ? "is-selected" : ""} key={String(entry.standard_item_id ?? index)}>
+                <div><strong>{String(entry.name ?? "상세 품목")}</strong><span>{String(entry.spec ?? "규격 없음")}</span></div>
+                <b>{formatMoney(String(entry.median_price ?? ""))}</b>
+                <small>{Number(entry.observation_count ?? 0).toLocaleString("ko-KR")}건 · {String(entry.quote_date_start ?? "날짜 미확인")}~{String(entry.quote_date_end ?? "")}</small>
+                {observations.slice(0, 3).map((observation, observationIndex) => (
+                  <a key={`${String(entry.standard_item_id)}-${observationIndex}`} href={`/api/documents/variants/${String(observation.source_variant_id)}/file`} target="_blank" rel="noreferrer">
+                    {String(observation.source_logical_name ?? "원본 견적서")} · {formatMoney(String(observation.unit_price ?? ""))}
+                  </a>
+                ))}
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="equipment-evidence-panel">
+      <header><div><span>상세 품목 기준</span><strong>{target.reason}</strong></div><p>과거 원본 단가와 물가 보정 결과를 직접 확인할 수 있습니다.</p></header>
+      <div className="equipment-exact-evidence">
+        {target.evidence.map((evidence) => (
+          <a key={evidence.raw_item_id} href={`/api/documents/variants/${evidence.source_variant_id}/file${evidence.source_page ? `#page=${evidence.source_page}` : ""}`} target="_blank" rel="noreferrer">
+            <strong>{conciseSourceName(evidence.source_logical_name)}</strong>
+            <span>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</span>
+          </a>
+        ))}
+      </div>
+    </div>
   );
 }
 

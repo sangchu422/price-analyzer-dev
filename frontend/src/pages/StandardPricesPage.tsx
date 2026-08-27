@@ -621,6 +621,23 @@ function FamilyDetail({
         <div><dt>평균</dt><dd>{formatWon(family.price?.average ?? null)}</dd></div>
         <div><dt>최고</dt><dd>{formatWon(family.price?.maximum ?? null)}</dd></div>
       </dl>
+      <section className="family-impact-section" aria-labelledby="family-impact-title">
+        <div className="section-title">
+          <p className="section-kicker">구매 참고 지표</p>
+          <h3 id="family-impact-title">이 품목류에 영향을 줄 수 있는 지표</h3>
+        </div>
+        <p className="family-impact-note">규칙 기반 참고 정보이며 구매 목표가 계산에는 반영하지 않습니다.</p>
+        <div className="family-impact-grid">
+          {(family.indicator_impacts ?? []).map((impact) => (
+            <article key={impact.indicator_code}>
+              <span>{indicatorLabel(impact.indicator_code)}</span>
+              <strong>{impact.cost_driver}</strong>
+              <b>{impact.strength === "HIGH" ? "영향 큼" : impact.strength === "MEDIUM" ? "영향 보통" : "영향 낮음"}</b>
+              <p>{impact.rationale}</p>
+            </article>
+          ))}
+        </div>
+      </section>
       <section className="family-trend-section" aria-labelledby="family-trend-title">
         <div className="section-title">
           <p className="section-kicker">연도별 가격 변화</p>
@@ -675,6 +692,16 @@ function FamilyDetail({
       </section>
     </article>
   );
+}
+
+function indicatorLabel(code: string) {
+  return ({
+    USD_KRW: "원/달러 환율",
+    COPPER: "전기동",
+    STEEL: "철강",
+    WAGE: "제조 임율",
+    SEMICON: "반도체 수급",
+  } as Record<string, string>)[code] ?? code;
 }
 
 function FamilyDetailSkeleton() {

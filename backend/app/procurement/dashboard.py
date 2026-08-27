@@ -31,6 +31,7 @@ from app.procurement.models import (
     ProcurementPriceAlert,
 )
 from app.parsing.projection import current_raw_item_ids
+from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     QuoteDocumentPurpose,
     QuoteDocumentRole,
@@ -49,6 +50,34 @@ _INDICATORS = (
     ("WAGE", "제조 임율", "임율", "index", (100, 100, 101, 101, 102, 102, 103, 103, 104, 104, 105, 105)),
     ("SEMICON", "반도체 수급", "시황", "index", (100, 98, 96, 95, 97, 99, 101, 103, 102, 104, 105, 106)),
 )
+
+_INDICATOR_IMPACT_RULES: dict[str, tuple[set[str], str, str]] = {
+    "USD_KRW": (
+        {"ROBOT", "REDUCER", "MOTOR", "VISION_CAMERA", "SENSOR", "MEASUREMENT", "PLC_HMI", "INVERTER_DRIVE", "POWER", "CONTROLLER", "IT_EQUIPMENT", "NETWORK_SOFTWARE"},
+        "수입 부품과 외화 결제 비중",
+        "환율 상승 시 수입 부품의 원화 구매 부담이 커질 수 있습니다.",
+    ),
+    "COPPER": (
+        {"CABLE_WIRE", "CONNECTOR_TERMINAL", "MOTOR", "POWER", "CONTROL_PANEL", "RELAY_SWITCH", "BREAKER"},
+        "동·도체 원재료",
+        "전기동 가격은 전선·권선·단자류의 재료비에 직접 영향을 줄 수 있습니다.",
+    ),
+    "STEEL": (
+        {"CONTROL_PANEL", "CONVEYOR", "TRANSFER_LIFT", "PALLET_CARRIER", "ROLLER_CHAIN", "JIG_FIXTURE", "MOLD_TOOL", "FRAME_BASE", "COVER_GUARD", "PLATE_BRACKET", "SHAFT_COUPLING", "FABRICATION", "PIPE_DUCT", "TANK_COOLING"},
+        "강재·판재 원재료",
+        "강판과 구조재 비중이 높은 제작품은 소재 가격 변동의 영향을 받을 수 있습니다.",
+    ),
+    "WAGE": (
+        {"LABOR_INSTALL", "DESIGN_PROGRAM", "JIG_FIXTURE", "MOLD_TOOL", "FRAME_BASE", "COVER_GUARD", "PLATE_BRACKET", "FABRICATION", "PIPE_DUCT", "CONVEYOR", "TRANSFER_LIFT"},
+        "가공·조립·설치 노무비",
+        "제작과 설치 공수가 큰 품목은 제조 임율 상승의 영향을 받을 수 있습니다.",
+    ),
+    "SEMICON": (
+        {"ROBOT", "VISION_CAMERA", "SENSOR", "MEASUREMENT", "PLC_HMI", "INVERTER_DRIVE", "POWER", "CONTROLLER", "IT_EQUIPMENT", "NETWORK_SOFTWARE"},
+        "전자부품 공급 부담",
+        "반도체 수급 부담이 커지면 제어·센서·컴퓨팅 부품의 조달 조건이 악화될 수 있습니다.",
+    ),
+}
 
 
 def dashboard_overview(session: Session, *, today: date | None = None) -> dict[str, object]:
@@ -113,6 +142,7 @@ def dashboard_overview(session: Session, *, today: date | None = None) -> dict[s
     ]
     monthly = _monthly_performance(session, today)
     alerts = _recent_alerts(session)
+    standardization = _standardization_metrics(session)
     return {
         "as_of": today.isoformat(),
         "catalog": {
@@ -127,13 +157,100 @@ def dashboard_overview(session: Session, *, today: date | None = None) -> dict[s
             "unmatched_included_items": unmatched,
             "cleansing_todo_items": cleaning_todo,
             "latest_build_run_id": latest_build_id,
+            **standardization,
         },
         "categories": [],
         "families": families,
         "cleansing_todo": {"count": cleaning_todo, "top_reasons": reason_counts},
         "monthly_performance": monthly,
-        "indicators": _indicator_payloads(session),
+        "indicators": _indicator_payloads(session, family_projection),
         "alerts": alerts,
+    }
+
+
+def family_indicator_impacts(family_code: str) -> list[dict[str, str]]:
+    impacts: list[dict[str, str]] = []
+    for indicator_code, (high_codes, cost_driver, rationale) in _INDICATOR_IMPACT_RULES.items():
+        if family_code in high_codes:
+            strength = "HIGH"
+        elif family_code.startswith("OTHER_"):
+            strength = "LOW"
+        else:
+            continue
+        impacts.append(
+            {
+                "indicator_code": indicator_code,
+                "direction": "COST_PRESSURE",
+                "strength": strength,
+                "cost_driver": cost_driver,
+                "rationale": rationale if strength == "HIGH" else "직접 연관은 낮지만 공통 구매비와 공급 조건을 통해 간접 영향을 받을 수 있습니다.",
+                "basis": "RULE_BASED",
+            }
+        )
+    if not impacts:
+        impacts.append(
+            {
+                "indicator_code": "WAGE",
+                "direction": "COST_PRESSURE",
+                "strength": "LOW",
+                "cost_driver": "공통 제조·취급 비용",
+                "rationale": "직접 연관은 낮지만 공통 제조비와 취급비를 통해 간접 영향을 받을 수 있습니다.",
+                "basis": "RULE_BASED",
+            }
+        )
+    return impacts
+
+
+def _standardization_metrics(session: Session) -> dict[str, object]:
+    latest_role = (
+        select(QuoteDocumentRole.document_id, func.max(QuoteDocumentRole.id).label("role_id"))
+        .group_by(QuoteDocumentRole.document_id)
+        .subquery("dashboard_latest_document_role")
+    )
+    latest_clean = _latest_ids(CleanDecision, "clean_id")
+    latest_membership = _latest_ids(ItemMembershipDecision, "membership_id")
+    current_raw = current_raw_item_ids()
+    base = (
+        select(
+            CleanDecision.status,
+            ItemMembershipDecision.status.label("membership_status"),
+        )
+        .select_from(current_raw)
+        .join(RawQuoteItem, RawQuoteItem.id == current_raw.c.raw_item_id)
+        .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
+        .join(latest_role, latest_role.c.document_id == SourceVariant.document_id)
+        .join(QuoteDocumentRole, QuoteDocumentRole.id == latest_role.c.role_id)
+        .join(latest_clean, latest_clean.c.raw_item_id == RawQuoteItem.id)
+        .join(CleanDecision, CleanDecision.id == latest_clean.c.clean_id)
+        .outerjoin(latest_membership, latest_membership.c.raw_item_id == RawQuoteItem.id)
+        .outerjoin(ItemMembershipDecision, ItemMembershipDecision.id == latest_membership.c.membership_id)
+        .where(QuoteDocumentRole.purpose == QuoteDocumentPurpose.HISTORICAL_REFERENCE)
+        .subquery("dashboard_standardization_rows")
+    )
+    eligible = session.scalar(
+        select(func.count()).select_from(base).where(base.c.status.in_([CleanStatus.INCLUDED, CleanStatus.REVIEW_REQUIRED]))
+    ) or 0
+    standardized = session.scalar(
+        select(func.count()).select_from(base).where(
+            base.c.status == CleanStatus.INCLUDED,
+            base.c.membership_status == MembershipStatus.MATCHED,
+        )
+    ) or 0
+    document_count = session.scalar(
+        select(func.count()).select_from(latest_role)
+        .join(QuoteDocumentRole, QuoteDocumentRole.id == latest_role.c.role_id)
+        .where(QuoteDocumentRole.purpose == QuoteDocumentPurpose.HISTORICAL_REFERENCE)
+    ) or 0
+    pending = max(eligible - standardized, 0)
+    percent = Decimal("0") if eligible == 0 else (
+        Decimal(standardized) * Decimal("100") / Decimal(eligible)
+    ).quantize(Decimal("0.1"))
+    return {
+        "historical_quote_document_count": document_count,
+        "eligible_item_count": eligible,
+        "standardized_item_count": standardized,
+        "unstandardized_item_count": pending,
+        "standardization_percent": str(percent),
     }
 
 
@@ -274,7 +391,10 @@ def _monthly_performance(session: Session, today: date) -> dict[str, object]:
     }
 
 
-def _indicator_payloads(session: Session) -> list[dict[str, object]]:
+def _indicator_payloads(
+    session: Session,
+    families: list[dict[str, object]],
+) -> list[dict[str, object]]:
     payloads = [
         {
             "code": code,
@@ -290,6 +410,30 @@ def _indicator_payloads(session: Session) -> list[dict[str, object]]:
         }
         for code, name, group, unit, values in _INDICATORS
     ]
+    family_lookup = {str(family["code"]): family for family in families}
+    for payload in payloads:
+        affected = []
+        for family_code, family in family_lookup.items():
+            impact = next(
+                (
+                    item
+                    for item in family_indicator_impacts(family_code)
+                    if item["indicator_code"] == payload["code"]
+                ),
+                None,
+            )
+            if impact is not None:
+                affected.append(
+                    {
+                        "family_code": family_code,
+                        "family_name": family["name"],
+                        **impact,
+                    }
+                )
+        payload["affected_families"] = sorted(
+            affected,
+            key=lambda item: (item["strength"] != "HIGH", item["family_name"]),
+        )
     cpi_run, cpi_points = latest_cpi_series(session)
     if cpi_run is not None and cpi_points:
         payloads.append(
@@ -305,6 +449,7 @@ def _indicator_payloads(session: Session) -> list[dict[str, object]]:
                     {"period": period, "value": value}
                     for period, value in sorted(cpi_points.items())[-8:]
                 ],
+                "affected_families": [],
             }
         )
     return payloads

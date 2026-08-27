@@ -49,6 +49,7 @@ from app.db.session import get_session
 from app.documents.models import SourceDocument, SourceVariant
 from app.metadata_audit.service import AUDIT_RULE_VERSION
 from app.procurement.categories import current_category_subquery
+from app.procurement.families import classify_item_family
 from app.procurement.models import ItemCategory
 from app.quotes.models import RawQuoteItem
 from app.standard_database.read_service import (
@@ -439,6 +440,8 @@ class CandidateEvidenceResponse(BaseModel):
     method: str
     unit_compatible: bool
     model_tokens_compatible: bool
+    family_code: str
+    family_name: str
 
 
 class CandidateResponse(BaseModel):
@@ -1177,6 +1180,16 @@ def get_candidates(
                 "model_tokens_compatible": (
                     candidate.model_tokens_compatible
                 ),
+                "family_code": classify_item_family(
+                    candidate.canonical_name,
+                    candidate.canonical_spec,
+                    None,
+                ).code,
+                "family_name": classify_item_family(
+                    candidate.canonical_name,
+                    candidate.canonical_spec,
+                    None,
+                ).name,
             }
             for candidate in result.candidates
         ],

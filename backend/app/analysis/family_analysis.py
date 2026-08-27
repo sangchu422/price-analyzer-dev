@@ -55,19 +55,27 @@ def family_analysis_payload(
 
         can_analyze = source_line.match_status not in {"EXCLUDED", "REVIEW_REQUIRED"}
         quote_unit_price = source_line.quote_unit_price
-        comparable_prices = _comparable_member_prices(
+        comparable_members = _comparable_members(
             family,
             unit=source_line.unit,
             quote_unit_price=quote_unit_price,
         )
-        if can_analyze and family is not None and comparable_prices:
-            sorted_prices = sorted(comparable_prices)
+        if can_analyze and family is not None and comparable_members:
+            sorted_members = sorted(
+                comparable_members,
+                key=lambda member: (member["median_price"], member["standard_item_id"]),
+            )
+            sorted_prices = [member["median_price"] for member in sorted_members]
             median_price = _median(sorted_prices)
             minimum_price = min(sorted_prices)
             maximum_price = max(sorted_prices)
             average_price = sum(sorted_prices, Decimal("0")) / Decimal(len(sorted_prices))
             lower_prices = [price for price in sorted_prices if price <= quote_unit_price]
             target_unit_price = min(lower_prices) if lower_prices else quote_unit_price
+            selected_member = next(
+                (member for member in sorted_members if member["median_price"] == target_unit_price),
+                None,
+            )
             variance_amount = quote_unit_price - median_price
             variance_percent = (
                 variance_amount / median_price * Decimal("100")
@@ -133,6 +141,24 @@ def family_analysis_payload(
                     else f"{family['name']} 비교군보다 현재 단가가 낮아 현 견적 유지"
                 ),
                 "evidence": [],
+                "calculation_basis": {
+                    "kind": "ITEM_FAMILY",
+                    "family_code": family["code"],
+                    "family_name": family["name"],
+                    "unit": source_line.unit,
+                    "price_band_low": quote_unit_price * COMPARABLE_LOW,
+                    "price_band_high": quote_unit_price * COMPARABLE_HIGH,
+                    "candidate_item_count": len(sorted_members),
+                    "selection_rule": "비교군 상세품목별 중앙값 중 현재 단가 이하 최저값",
+                },
+                "comparison_evidence": [
+                    {
+                        **member,
+                        "selected": selected_member is not None
+                        and member["standard_item_id"] == selected_member["standard_item_id"],
+                    }
+                    for member in sorted_members
+                ],
             }
             matched_count += 1
             available_count += 1
@@ -170,18 +196,18 @@ def family_analysis_payload(
     }
 
 
-def _comparable_member_prices(
+def _comparable_members(
     family: dict[str, object] | None,
     *,
     unit: str | None,
     quote_unit_price: Decimal | None,
-) -> list[Decimal]:
+) -> list[dict[str, object]]:
     if family is None or not unit or quote_unit_price is None or quote_unit_price <= 0:
         return []
     normalized_unit = normalize_search_text(unit)
     low = quote_unit_price * COMPARABLE_LOW
     high = quote_unit_price * COMPARABLE_HIGH
-    prices: list[Decimal] = []
+    matches: list[dict[str, object]] = []
     for member in family.get("members", []):
         if normalize_search_text(member.get("unit")) != normalized_unit:
             continue
@@ -190,8 +216,20 @@ def _comparable_member_prices(
             continue
         median_price = Decimal(str(price["median"]))
         if low <= median_price <= high:
-            prices.append(median_price)
-    return prices
+            matches.append({
+                "standard_item_id": member["standard_item_id"],
+                "name": member["name"],
+                "spec": member.get("spec"),
+                "unit": member.get("unit"),
+                "median_price": median_price,
+                "observation_count": member.get("observation_count", 0),
+                "maker_summary": member.get("maker_summary", []),
+                "supplier_summary": member.get("supplier_summary", []),
+                "quote_date_start": member.get("quote_date_start"),
+                "quote_date_end": member.get("quote_date_end"),
+                "observations": member.get("observations", []),
+            })
+    return matches
 
 
 def _median(values: list[Decimal]) -> Decimal:
@@ -228,6 +266,8 @@ def _unavailable_target(raw_item_id: int, reason: str, *, status: str = "MARKET_
         "excluded_observation_count": 0,
         "reason": reason,
         "evidence": [],
+        "calculation_basis": None,
+        "comparison_evidence": [],
     }
 
 

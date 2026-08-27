@@ -158,6 +158,17 @@ def test_family_analysis_uses_family_minimum_and_sheet_totals(monkeypatch) -> No
 
     assert payload["matched_count"] == 1
     assert payload["target_lines"][0]["target_unit_price"] == Decimal("80")
+    assert payload["target_lines"][0]["calculation_basis"] == {
+        "kind": "ITEM_FAMILY",
+        "family_code": "OTHER_GENERAL_COMPONENT",
+        "family_name": "공통 설비·부품류",
+        "unit": "EA",
+        "price_band_low": Decimal("70.0"),
+        "price_band_high": Decimal("130.0"),
+        "candidate_item_count": 1,
+        "selection_rule": "비교군 상세품목별 중앙값 중 현재 단가 이하 최저값",
+    }
+    assert payload["target_lines"][0]["comparison_evidence"][0]["selected"] is True
     assert payload["equipment_groups"][0]["name"] == "설비1"
     assert payload["equipment_groups"][0]["quote_amount"] == Decimal("100")
     assert payload["equipment_groups"][0]["target_amount"] == Decimal("80")

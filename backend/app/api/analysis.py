@@ -248,6 +248,8 @@ class TargetLineResponse(BaseModel):
     excluded_observation_count: int
     reason: str
     evidence: list[TargetEvidenceResponse]
+    calculation_basis: dict[str, Any] | None = None
+    comparison_evidence: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class EquipmentLineResponse(BaseModel):

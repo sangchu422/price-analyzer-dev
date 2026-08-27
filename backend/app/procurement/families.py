@@ -22,7 +22,9 @@ from app.catalog.models import (
     StandardPriceVersion,
 )
 from app.cleansing.models import CleanDecision
+from app.documents.models import SourceDocument, SourceVariant
 from app.matching.normalization import normalize_search_text
+from app.quotes.models import RawQuoteItem
 from app.standard_database.models import (
     StandardBuildStatus,
     StandardDatabaseBuildProjection,
@@ -200,6 +202,7 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
             "suppliers": set(),
             "dates": [],
             "undated_observation_count": 0,
+            "observations": [],
         }
 
     observations = session.execute(
@@ -210,10 +213,17 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
             CleanDecision.maker_norm,
             DocumentMetadataVersion.quote_date,
             DocumentMetadataVersion.supplier_name,
+            RawQuoteItem.source_sheet,
+            RawQuoteItem.source_row,
+            SourceVariant.id.label("source_variant_id"),
+            SourceDocument.logical_name,
         )
         .join(StandardPriceObservation, StandardPriceObservation.standard_price_version_id == StandardDatabaseBuildProjection.standard_price_version_id)
         .join(CleanDecision, CleanDecision.id == StandardPriceObservation.clean_decision_id)
         .outerjoin(DocumentMetadataVersion, DocumentMetadataVersion.id == StandardPriceObservation.metadata_version_id)
+        .join(RawQuoteItem, RawQuoteItem.id == StandardPriceObservation.raw_item_id)
+        .join(SourceVariant, SourceVariant.id == RawQuoteItem.source_variant_id)
+        .join(SourceDocument, SourceDocument.id == SourceVariant.document_id)
         .where(
             StandardDatabaseBuildProjection.build_run_id == run_id,
             StandardDatabaseBuildProjection.operational_status == StandardOperationalStatus.ACTIVE,
@@ -239,6 +249,17 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
             family["dates"].append(row.quote_date)
             family["years"][row.quote_date.year].append(row.unit_price)
             context["dates"].append(row.quote_date)
+        context["observations"].append({
+            "raw_item_id": row.raw_item_id,
+            "unit_price": str(row.unit_price),
+            "maker": row.maker_norm,
+            "supplier": row.supplier_name,
+            "quote_date": None if row.quote_date is None else row.quote_date.isoformat(),
+            "source_variant_id": row.source_variant_id,
+            "source_logical_name": row.logical_name,
+            "source_sheet": row.source_sheet,
+            "source_row": row.source_row,
+        })
 
     output: list[dict[str, object]] = []
     for family in families.values():
@@ -253,6 +274,7 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
                 "quote_date_start": min(member_dates).isoformat() if member_dates else None,
                 "quote_date_end": max(member_dates).isoformat() if member_dates else None,
                 "undated_observation_count": context["undated_observation_count"],
+                "observations": context["observations"],
             })
         members.sort(key=lambda row: (normalize_search_text(row["name"]), normalize_search_text(row["spec"])))
         dates: list[date] = family["dates"]

@@ -4,7 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.procurement.dashboard import dashboard_overview, price_trend
+from app.procurement.dashboard import (
+    dashboard_overview,
+    family_indicator_impacts,
+    price_trend,
+)
 from app.procurement.families import get_item_family, list_item_families
 
 
@@ -54,6 +58,10 @@ def get_item_family_detail(
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
     try:
-        return get_item_family(session, family_code)
+        family = get_item_family(session, family_code)
+        return {
+            **family,
+            "indicator_impacts": family_indicator_impacts(family_code),
+        }
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

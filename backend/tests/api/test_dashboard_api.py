@@ -181,3 +181,58 @@ def test_dashboard_todo_matches_document_grouped_review_queue(
         {"reason_code": "PARSER_SOURCE_REVIEW_REQUIRED", "count": 1},
         {"reason_code": "AMOUNT_MISMATCH", "count": 1},
     ]
+
+
+def test_dashboard_and_review_queue_exclude_unapproved_incoming_quotes(
+    client: TestClient,
+    api_session: Session,
+) -> None:
+    for index, purpose in enumerate(
+        (QuoteDocumentPurpose.HISTORICAL_REFERENCE, QuoteDocumentPurpose.INCOMING_BID),
+        start=1,
+    ):
+        document = SourceDocument(logical_name=f"quote-{index}.xlsx")
+        api_session.add(document)
+        api_session.flush()
+        variant = SourceVariant(
+            document=document,
+            path=f"quote-{index}.xlsx",
+            sha256=str(index) * 64,
+            extension=".xlsx",
+            security_state="UNLOCKED",
+            selected_for_parsing_at_ingest=True,
+        )
+        raw = RawQuoteItem(
+            source_variant=variant,
+            source_sheet="견적",
+            source_row=1,
+            item_name_raw=f"ITEM {index}",
+            parser_name="quote-reader",
+            parser_version="reader-v2",
+        )
+        api_session.add_all(
+            [
+                QuoteDocumentRole(
+                    document_id=document.id,
+                    purpose=purpose,
+                    supersedes_role_id=None,
+                    decided_by="buyer",
+                    reason_detail="역할 지정",
+                ),
+                CleanDecision(
+                    raw_item=raw,
+                    status=CleanStatus.REVIEW_REQUIRED,
+                    reason_code="AMOUNT_MISMATCH",
+                    item_name_norm=f"ITEM {index}",
+                    rule_version="clean-v2",
+                ),
+            ]
+        )
+    api_session.commit()
+
+    dashboard = client.get("/api/dashboard/overview").json()
+    queue = client.get("/api/cleansing/review-queue", params={"limit": 10}).json()
+
+    assert dashboard["catalog"]["historical_quote_document_count"] == 1
+    assert dashboard["cleansing_todo"]["count"] == 1
+    assert queue["remaining"] == 1
