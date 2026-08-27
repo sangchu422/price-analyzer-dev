@@ -830,6 +830,7 @@ export interface DashboardOverview {
     source_status: "LIVE_CACHE" | "STALE" | "UNAVAILABLE" | "OFFICIAL_CACHE";
     source_label: string;
     source_url?: string;
+    source_frequency?: "DAILY" | "MONTHLY" | "ANNUAL";
     latest_period?: string | null;
     synced_at?: string | null;
     error_detail?: string | null;

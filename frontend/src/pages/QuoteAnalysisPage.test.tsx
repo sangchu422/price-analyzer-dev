@@ -291,7 +291,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(within(servo).getByText("판정 대기")).toBeVisible();
   expect(within(servo).queryByText("0원")).not.toBeInTheDocument();
 
-  await user.click(screen.getByRole("tab", { name: /설비별 구매 목표/ }));
+  await user.click(screen.getByRole("tab", { name: /설비별 목표금액/ }));
   expect(screen.getByText("표준 DB 미반영 · 이력관리에서 선택")).toBeVisible();
   expect(screen.queryByLabelText("반영 담당자")).not.toBeInTheDocument();
 
@@ -869,10 +869,11 @@ it("keeps submitter and thresholds after navigating away and back", async () => 
   await user.clear(screen.getByLabelText("적정 범위(±%)"));
   await user.type(screen.getByLabelText("적정 범위(±%)"), "15");
 
-  await user.click(screen.getByRole("link", { name: "표준 DB" }));
-  await waitFor(() => expect(window.location.pathname).toBe("/standard-prices"));
+  await user.click(screen.getByRole("link", { name: "설정" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
 
-  await user.click(screen.getByRole("link", { name: "신규 견적 분석" }));
+  await user.hover(screen.getByRole("button", { name: "신규 견적 분석 메뉴" }));
+  await user.click(await screen.findByRole("menuitem", { name: /새 견적 분석/ }));
   await waitFor(() => expect(window.location.pathname).toBe("/analysis"));
 
   expect(screen.getByLabelText("접수자")).toHaveValue("설비구매팀");

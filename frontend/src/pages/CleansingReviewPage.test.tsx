@@ -222,10 +222,14 @@ describe("CleansingReviewPage", () => {
     expect(
       screen.getByText("과거 유사 품목 4건의 중앙 단가 400,000원보다 +150% 차이가 납니다."),
     ).toBeVisible();
-    expect(screen.getByText("차이 +150%")).toBeVisible();
+    expect(screen.getByText("차액 +600,000원 (+150%)")).toBeVisible();
+    expect(screen.getByText("현재 단가는 과거 4건의 중앙값보다 150% 높습니다.")).toBeVisible();
+    expect(screen.getByLabelText("유사 품목 가격 범위: 최저 300,000원, 중앙값 400,000원, 최고 1,000,000원")).toBeVisible();
+    expect(screen.getByRole("button", { name: "400,000원, 2건" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "현재 단가 포함, 1,000,000원, 1건" })).toBeVisible();
     await userEvent.click(screen.getAllByText("과거 비교 근거")[0]);
-    expect(screen.getByText("300,000원")).toBeVisible();
-    expect(screen.getAllByText("400,000원")).toHaveLength(2);
+    expect(screen.getAllByText("300,000원").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("400,000원").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("1,000,000원").length).toBeGreaterThan(0);
     expect(screen.queryByText(/outlier-mad-v1/)).not.toBeInTheDocument();
   });

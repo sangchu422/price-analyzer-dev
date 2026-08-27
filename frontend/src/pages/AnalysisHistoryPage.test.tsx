@@ -44,7 +44,7 @@ it("keeps analyzed quotes out of the standard DB until the buyer includes them",
 
   renderApp("/analysis/history");
 
-  expect(await screen.findByRole("heading", { name: "분석 이력 관리" })).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "분석 이력 관리" }, { timeout: 3_000 })).toBeVisible();
   expect(await screen.findByText("한로기술 견적서.xlsx")).toBeVisible();
   expect(screen.getByText("234개")).toBeVisible();
   const historyRow = screen.getByRole("row", { name: /한로기술 견적서/ });

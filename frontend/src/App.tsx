@@ -60,6 +60,21 @@ export function App() {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   };
 
+  const changeTheme = (nextTheme: AppTheme) => {
+    const documentWithTransitions = document as Document & {
+      startViewTransition?: (update: () => void) => { finished: Promise<void> };
+    };
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!documentWithTransitions.startViewTransition || reduceMotion) {
+      setTheme(nextTheme);
+      return;
+    }
+    documentWithTransitions.startViewTransition(() => {
+      applyTheme(nextTheme);
+      setTheme(nextTheme);
+    });
+  };
+
   let page: React.ReactNode;
   switch (path) {
     case "/":
@@ -101,7 +116,7 @@ export function App() {
         currentPath={path}
         onNavigate={navigate}
         theme={theme}
-        onThemeChange={setTheme}
+        onThemeChange={changeTheme}
       />
       <Suspense fallback={<main className="workspace-state" role="status">화면을 준비하고 있습니다.</main>}>
         <div className="route-stage" key={path}>

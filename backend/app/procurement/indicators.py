@@ -7,9 +7,10 @@ import io
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from statistics import mean
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import inspect, select
@@ -31,6 +32,10 @@ class IndicatorDefinition:
     source_label: str
     source_url: str
     fred_series: str | None = None
+    yahoo_symbol: str | None = None
+    value_multiplier: Decimal = Decimal("1")
+    frequency: str = "MONTHLY"
+    point_limit: int = 12
 
 
 @dataclass(frozen=True)
@@ -43,14 +48,18 @@ DEFINITIONS = (
     IndicatorDefinition(
         "USD_KRW", "원/달러", "환율", "원/$",
         "미 연준 H.10 · FRED", "https://fred.stlouisfed.org/series/DEXKOUS", "DEXKOUS",
+        frequency="DAILY", point_limit=30,
     ),
     IndicatorDefinition(
         "COPPER", "전기동", "원자재", "USD/톤",
-        "IMF 원자재 가격 · FRED", "https://fred.stlouisfed.org/series/PCOPPUSDM", "PCOPPUSDM",
+        "COMEX 전기동 선물 · Yahoo Finance", "https://finance.yahoo.com/quote/HG%3DF/",
+        yahoo_symbol="HG=F", value_multiplier=Decimal("2204.62262185"),
+        frequency="DAILY", point_limit=30,
     ),
     IndicatorDefinition(
-        "STEEL", "냉연강판", "원자재", "지수",
-        "미 노동통계국 생산자물가 · FRED", "https://fred.stlouisfed.org/series/PCU3312213312211", "PCU3312213312211",
+        "STEEL", "열연코일 선물", "원자재", "USD/short ton",
+        "미 중서부 열연코일 선물 · Yahoo Finance", "https://finance.yahoo.com/quote/HRC%3DF/",
+        yahoo_symbol="HRC=F", frequency="DAILY", point_limit=30,
     ),
     IndicatorDefinition(
         "WAGE", "제조 임율", "임율", "원/시간",
@@ -58,8 +67,14 @@ DEFINITIONS = (
         "https://kosis.kr/statHtml/statHtml.do?orgId=118&tblId=DT_118N_MON054",
     ),
     IndicatorDefinition(
-        "SEMICON", "반도체 수입가격지수", "시황", "지수",
-        "미 노동통계국 수입물가 · FRED", "https://fred.stlouisfed.org/series/IR21320", "IR21320",
+        "SEMICON", "반도체 시황지수", "시황", "지수",
+        "PHLX 반도체지수 · Yahoo Finance", "https://finance.yahoo.com/quote/%5ESOX/",
+        yahoo_symbol="^SOX", frequency="DAILY", point_limit=30,
+    ),
+    IndicatorDefinition(
+        "CPI_ALL", "소비자물가 총지수", "시황", "2020=100",
+        "국가통계포털 소비자물가지수 · KOSIS",
+        "https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_1J22003",
     ),
 )
 
@@ -74,6 +89,10 @@ def sync_procurement_indicators(
     def fetch(definition: IndicatorDefinition) -> IndicatorSnapshot:
         if definition.code == "WAGE":
             return _fetch_wage(definition, settings)
+        if definition.code == "CPI_ALL":
+            return _fetch_monthly_cpi(definition, settings)
+        if definition.yahoo_symbol is not None:
+            return _fetch_yahoo_market(definition, settings)
         return _fetch_fred(definition, settings)
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -101,7 +120,7 @@ def sync_procurement_indicators(
         if snapshot is not None:
             session.add_all(
                 ProcurementIndicatorPoint(sync_run_id=run.id, period=period, value=value)
-                for period, value in snapshot.points[-12:]
+                for period, value in snapshot.points[-definition.point_limit:]
             )
         runs.append(run)
     session.flush()
@@ -158,6 +177,7 @@ def indicator_cache_payloads(session: Session, *, now: datetime | None = None) -
                 ),
                 "source_label": definition.source_label,
                 "source_url": definition.source_url,
+                "source_frequency": definition.frequency,
                 "latest_period": None if not points else points[-1].period,
                 "synced_at": None if latest_success is None else latest_success.synced_at.isoformat(),
                 "error_detail": None if latest_attempt is None else latest_attempt.error_detail,
@@ -176,6 +196,7 @@ def _unavailable_payload(definition: IndicatorDefinition) -> dict[str, object]:
         "source_status": "UNAVAILABLE",
         "source_label": definition.source_label,
         "source_url": definition.source_url,
+        "source_frequency": definition.frequency,
         "latest_period": None,
         "synced_at": None,
         "error_detail": "지표 저장소 마이그레이션이 필요합니다.",
@@ -200,6 +221,7 @@ def _fetch_fred(definition: IndicatorDefinition, settings: Settings) -> Indicato
     )
     response.raise_for_status()
     rows = csv.DictReader(io.StringIO(response.text))
+    daily: dict[str, Decimal] = {}
     monthly: dict[str, list[Decimal]] = defaultdict(list)
     for row in rows:
         date_text = str(row.get("DATE") or row.get("observation_date") or "")
@@ -211,13 +233,63 @@ def _fetch_fred(definition: IndicatorDefinition, settings: Settings) -> Indicato
         except InvalidOperation:
             continue
         if value.is_finite():
-            monthly[date_text[:7]].append(value)
-    points = tuple(
-        (period, Decimal(str(mean(values))).quantize(Decimal("0.000001")))
-        for period, values in sorted(monthly.items())[-12:]
-    )
+            if definition.frequency == "DAILY" and len(date_text) >= 10:
+                daily[date_text[:10]] = value
+            else:
+                monthly[date_text[:7]].append(value)
+    if definition.frequency == "DAILY":
+        points = tuple(
+            (period, value.quantize(Decimal("0.000001")))
+            for period, value in sorted(daily.items())[-definition.point_limit:]
+        )
+    else:
+        points = tuple(
+            (period, Decimal(str(mean(values))).quantize(Decimal("0.000001")))
+            for period, values in sorted(monthly.items())[-definition.point_limit:]
+        )
     if not points:
         raise ValueError("공개 시계열에 유효한 값이 없습니다.")
+    return IndicatorSnapshot(definition, points)
+
+
+def _fetch_yahoo_market(definition: IndicatorDefinition, settings: Settings) -> IndicatorSnapshot:
+    """Read recent daily closes from Yahoo's public chart endpoint.
+
+    Market series are kept as negotiation signals only. A failed request does
+    not overwrite the last successful cache, so a provider outage cannot turn
+    into a fabricated current price.
+    """
+
+    assert definition.yahoo_symbol is not None
+    response = httpx.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(definition.yahoo_symbol, safe='')}",
+        params={"range": "3mo", "interval": "1d", "events": "history"},
+        timeout=min(settings.kosis_request_timeout_seconds, 15.0),
+        headers={"User-Agent": "Mozilla/5.0 price-analyzer/procurement-indicators"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    results = payload.get("chart", {}).get("result") if isinstance(payload, dict) else None
+    if not results:
+        raise ValueError("일별 시장지표 응답에 유효한 결과가 없습니다.")
+    result = results[0]
+    timestamps = result.get("timestamp") or []
+    quotes = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+    closes = quotes.get("close") or []
+    daily: dict[str, Decimal] = {}
+    for timestamp, raw in zip(timestamps, closes, strict=False):
+        if raw is None:
+            continue
+        try:
+            value = Decimal(str(raw)) * definition.value_multiplier
+            period = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date().isoformat()
+        except (InvalidOperation, TypeError, ValueError, OSError, OverflowError):
+            continue
+        if value.is_finite() and value > 0:
+            daily[period] = value.quantize(Decimal("0.000001"))
+    points = tuple(sorted(daily.items())[-definition.point_limit:])
+    if not points:
+        raise ValueError("일별 시장지표에 유효한 종가가 없습니다.")
     return IndicatorSnapshot(definition, points)
 
 
@@ -272,4 +344,44 @@ def _fetch_wage(definition: IndicatorDefinition, settings: Settings) -> Indicato
     )[-12:]
     if not points:
         raise ValueError("KOSIS 제조업 임금·근로시간 자료가 없습니다.")
+    return IndicatorSnapshot(definition, points)
+
+
+def _fetch_monthly_cpi(definition: IndicatorDefinition, settings: Settings) -> IndicatorSnapshot:
+    endpoint = f"{settings.kosis_proxy_base_url.rstrip('/')}/v1/kosis/data"
+    response = httpx.get(
+        endpoint,
+        params={
+            "method": "getList",
+            "format": "json",
+            "jsonVD": "Y",
+            "orgId": "101",
+            "tblId": "DT_1J22003",
+            "itmId": "T",
+            "prdSe": "M",
+            "startPrdDe": f"{datetime.now().year - 1}01",
+            "endPrdDe": f"{datetime.now():%Y%m}",
+            "objL1": "T10",
+        },
+        timeout=min(settings.kosis_request_timeout_seconds, 15.0),
+        headers={"User-Agent": "price-analyzer/cpi-dashboard-sync"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("KOSIS 소비자물가 응답 형식이 올바르지 않습니다.")
+    monthly: dict[str, Decimal] = {}
+    for row in payload:
+        if not isinstance(row, dict) or str(row.get("ITM_ID")) != "T":
+            continue
+        period = str(row.get("PRD_DE", ""))
+        try:
+            value = Decimal(str(row.get("DT")))
+        except InvalidOperation:
+            continue
+        if len(period) == 6 and value.is_finite() and value > 0:
+            monthly[period] = value.quantize(Decimal("0.000001"))
+    points = tuple(sorted(monthly.items())[-definition.point_limit:])
+    if not points:
+        raise ValueError("KOSIS 월별 소비자물가 총지수 자료가 없습니다.")
     return IndicatorSnapshot(definition, points)

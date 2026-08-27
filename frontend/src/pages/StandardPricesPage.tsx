@@ -701,6 +701,7 @@ function indicatorLabel(code: string) {
     STEEL: "철강",
     WAGE: "제조 임율",
     SEMICON: "반도체 수급",
+    CPI_ALL: "소비자물가",
   } as Record<string, string>)[code] ?? code;
 }
 

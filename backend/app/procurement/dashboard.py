@@ -10,7 +10,6 @@ from statistics import median
 from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
-from app.analysis.target_price import latest_cpi_series
 from app.catalog.models import (
     DocumentMetadataVersion,
     ItemMembershipDecision,
@@ -202,6 +201,16 @@ def family_indicator_impacts(family_code: str) -> list[dict[str, str]]:
                 "basis": "RULE_BASED",
             }
         )
+    impacts.append(
+        {
+            "indicator_code": "CPI_ALL",
+            "direction": "COST_PRESSURE",
+            "strength": "LOW",
+            "cost_driver": "전반적인 물가 수준",
+            "rationale": "소비자물가는 특정 품목의 직접 원가가 아니라 전반적인 가격 환경과 협상 기준을 확인하는 보조 지표입니다.",
+            "basis": "RULE_BASED",
+        }
+    )
     return impacts
 
 
@@ -404,27 +413,6 @@ def _indicator_payloads(
         payload["affected_families"] = sorted(
             affected,
             key=lambda item: (item["strength"] != "HIGH", item["family_name"]),
-        )
-    cpi_run, cpi_points = latest_cpi_series(session)
-    if cpi_run is not None and cpi_points:
-        payloads.append(
-            {
-                "code": "CPI_ALL",
-                "name": "소비자물가 총지수 등락률",
-                "group": "시황",
-                "unit": "%",
-                "source_status": "OFFICIAL_CACHE",
-                "source_label": "KOSIS 확정 연간 자료",
-                "source_url": cpi_run.source_url,
-                "latest_period": cpi_run.latest_period,
-                "synced_at": cpi_run.fetched_at.isoformat(),
-                "error_detail": None,
-                "points": [
-                    {"period": period, "value": value}
-                    for period, value in sorted(cpi_points.items())[-8:]
-                ],
-                "affected_families": [],
-            }
         )
     return payloads
 

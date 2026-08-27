@@ -323,11 +323,28 @@ function PriceDistribution({ item }: { item: ReviewQueueItem }) {
     .map((row) => Number(row.unit_price))
     .filter(Number.isFinite);
   const median = Number(evidence?.median_unit_price);
-  if (!values.length || !Number.isFinite(median)) return null;
-  const minimum = Math.min(...values, median);
-  const maximum = Math.max(...values, median);
+  const current = Number(evidence?.current_unit_price);
+  if (!values.length || !Number.isFinite(median) || !Number.isFinite(current)) return null;
+  const minimum = Math.min(...values, median, current);
+  const maximum = Math.max(...values, median, current);
   const span = Math.max(1, maximum - minimum);
   const position = (value: number) => `${((value - minimum) / span) * 100}%`;
+  const grouped = [...observations.reduce((groups, row) => {
+    const value = Number(row.unit_price);
+    if (!Number.isFinite(value)) return groups;
+    const key = String(value);
+    const existing = groups.get(key) ?? { value, count: 0, current: false };
+    existing.count += 1;
+    existing.current ||= row.raw_item_id === item.raw_item_id;
+    groups.set(key, existing);
+    return groups;
+  }, new Map<string, { value: number; count: number; current: boolean }>()).values()]
+    .sort((left, right) => left.value - right.value);
+  const variance = Number(evidence?.variance_percent);
+  const difference = current - median;
+  const interpretation = !Number.isFinite(variance) || variance === 0
+    ? "현재 단가는 과거 비교 중앙값과 같습니다."
+    : `현재 단가는 과거 ${observations.length.toLocaleString("ko-KR")}건의 중앙값보다 ${Math.abs(variance).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}% ${variance > 0 ? "높습니다" : "낮습니다"}.`;
 
   return (
     <section className="price-distribution" aria-labelledby="distribution-title">
@@ -338,23 +355,40 @@ function PriceDistribution({ item }: { item: ReviewQueueItem }) {
       <div className="distribution-summary">
         <span>현재 {formatWon(evidence?.current_unit_price)}</span>
         <strong>중앙값 {formatWon(evidence?.median_unit_price)}</strong>
-        <span className="variance-callout">차이 {formatPercent(evidence?.variance_percent)}</span>
+        <span className="variance-callout">
+          차액 {difference > 0 ? "+" : ""}{formatWon(String(difference))} ({formatPercent(evidence?.variance_percent)})
+        </span>
       </div>
-      <div className="distribution-track" aria-hidden="true">
+      <p className="distribution-interpretation">{interpretation}</p>
+      <div className="distribution-plot" aria-label={`유사 품목 가격 범위: 최저 ${formatWon(String(minimum))}, 중앙값 ${formatWon(String(median))}, 최고 ${formatWon(String(maximum))}`}>
+        <div className="distribution-axis-labels" aria-hidden="true">
+          <span><small>최저</small><strong>{formatWon(String(minimum))}</strong></span>
+          <span><small>중앙값</small><strong>{formatWon(String(median))}</strong></span>
+          <span><small>최고</small><strong>{formatWon(String(maximum))}</strong></span>
+        </div>
+        <div className="distribution-track">
         <span
           className="distribution-median"
           style={{ "--point-position": position(median) } as CSSProperties}
+          aria-hidden="true"
         />
-        {observations.map((row, index) => {
-          const value = Number(row.unit_price);
-          return (
-            <span
-              className={`distribution-point ${row.raw_item_id === item.raw_item_id ? "is-current" : ""}`}
-              style={{ "--point-position": position(value) } as CSSProperties}
-              key={`${row.raw_item_id}-${index}`}
-            />
-          );
-        })}
+        {grouped.map((group) => (
+          <button
+            type="button"
+            className={`distribution-point ${group.current ? "is-current" : ""}`}
+            style={{ "--point-position": position(group.value) } as CSSProperties}
+            key={group.value}
+            aria-label={`${group.current ? "현재 단가 포함, " : ""}${formatWon(String(group.value))}, ${group.count}건`}
+          >
+            <span>{group.count > 1 ? `${group.count}건` : formatWon(String(group.value))}</span>
+          </button>
+        ))}
+        <span
+          className="distribution-current-guide"
+          style={{ "--point-position": position(current) } as CSSProperties}
+          aria-hidden="true"
+        >현재</span>
+        </div>
       </div>
       <details className="distribution-evidence-disclosure">
         <summary>

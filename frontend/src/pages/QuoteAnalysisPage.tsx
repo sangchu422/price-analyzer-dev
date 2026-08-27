@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { safeNextCursor, uniqueByRawItemId } from "../api/pagination";
@@ -270,8 +270,8 @@ export function QuoteAnalysisPage({
           <h1>신규 견적 분석</h1>
         </div>
         <p>
-          대품목 또는 상세 품목 기준으로 표준 DB와 비교합니다. 신뢰할 비교군이
-          없는 품목은 가격을 만들지 않고 판정대기로 남깁니다.
+          먼저 비교할 과거 가격의 범위를 선택한 뒤, 설비 합계·가격 판정·품목별
+          목표가 중 필요한 결과를 확인합니다. 근거가 없으면 가격을 임의로 만들지 않습니다.
         </p>
       </header>
 
@@ -502,7 +502,7 @@ function AnalysisResults({
       </header>
 
       <section className="analysis-control-tier analysis-calculation-tier" aria-labelledby="calculation-basis-title">
-        <header><span>CALCULATION BASIS</span><strong id="calculation-basis-title">계산 기준</strong><small>비교할 가격군을 선택합니다.</small></header>
+        <header><span>STEP 1 · PRICE EVIDENCE</span><strong id="calculation-basis-title">가격 근거 선택</strong><small>목표가와 가격 판정에 사용할 과거 가격 범위입니다. 기준을 바꾸면 아래 결과도 함께 바뀝니다.</small></header>
       <div className="analysis-basis-switch" role="group" aria-label="가격 분석 기준">
         <button
           type="button"
@@ -512,17 +512,17 @@ function AnalysisResults({
           onClick={() => setAnalysisBasis("FAMILY")}
         >
           <span>대품목 기준</span>
-          <small>{family ? `${family.matched_count}개 품목 분석` : "대품목 결과 준비 중"}</small>
+          <small>{family ? `넓게 비교 · ${family.matched_count}개 품목 분석` : "넓은 비교 결과 준비 중"}</small>
         </button>
         <button type="button" className={analysisBasis === "EXACT" ? "is-active" : ""} aria-pressed={analysisBasis === "EXACT"} onClick={() => setAnalysisBasis("EXACT")}>
           <span>상세 품목 기준</span>
-          <small>품명·사양·단위가 같은 근거</small>
+          <small>정확히 비교 · 품명·사양·단위가 같은 근거</small>
         </button>
       </div>
       </section>
 
       <section className="analysis-control-tier analysis-function-tier" aria-labelledby="analysis-view-title">
-        <header><span>ANALYSIS VIEW</span><strong id="analysis-view-title">분석 보기</strong><small>업무 목적에 맞는 결과를 선택합니다.</small></header>
+        <header><span>STEP 2 · RESULT VIEW</span><strong id="analysis-view-title">확인할 결과 선택</strong><small>위에서 고른 가격 근거는 유지하고, 결과를 목적별로 나눠 봅니다.</small></header>
       <div className="analysis-mode-tabs" role="tablist" aria-label="견적 분석 방식">
         <button
           type="button"
@@ -531,8 +531,8 @@ function AnalysisResults({
           className={activeTab === "EQUIPMENT" ? "is-active" : ""}
           onClick={() => setActiveTab("EQUIPMENT")}
         >
-          설비별 구매 목표
-          <small>갑지 설비명으로 합산하고 품목을 펼쳐 확인</small>
+          설비별 목표금액
+          <small>설비별 견적가·구매 목표금액·목표 인하금액 합계</small>
         </button>
         <button
           type="button"
@@ -542,7 +542,7 @@ function AnalysisResults({
           onClick={() => setActiveTab("THRESHOLD")}
         >
           가격 적정성
-          <small>{analysisBasis === "FAMILY" ? "동일 단위·유사 가격대 대품목 비교" : "상세 품명·사양의 기준가와 비교"}</small>
+          <small>{analysisBasis === "FAMILY" ? "같은 대품목의 중앙 가격과 비교해 고가·적정·저가 판정" : "같은 상세 품목의 중앙 가격과 비교해 고가·적정·저가 판정"}</small>
         </button>
         <button
           type="button"
@@ -551,11 +551,18 @@ function AnalysisResults({
           className={activeTab === "TARGET" ? "is-active" : ""}
           onClick={() => setActiveTab("TARGET")}
         >
-          구매 목표가
-          <small>{analysisBasis === "FAMILY" ? "유사 가격대의 낮은 중앙값으로 협상선 제시" : "검증된 과거 최저가를 현재 가치로 환산"}</small>
+          품목별 구매 목표가
+          <small>{analysisBasis === "FAMILY" ? "같은 단위·가격대의 상세 품목별 중앙값 중 가장 낮은 값" : "같은 상세 품목의 과거 최저가를 물가 보정해 목표로 제시"}</small>
         </button>
       </div>
       </section>
+
+      <p className="analysis-current-view" aria-live="polite">
+        <span>현재 결과</span>
+        <strong>{analysisBasis === "FAMILY" ? "대품목 기준" : "상세 품목 기준"}</strong>
+        <b>→</b>
+        <strong>{activeTab === "EQUIPMENT" ? "설비별 목표금액" : activeTab === "THRESHOLD" ? "가격 적정성" : "품목별 구매 목표가"}</strong>
+      </p>
 
       {activeTab === "EQUIPMENT" ? (
         <EquipmentResults analysis={displayedAnalysis} analysisBasis={analysisBasis} />
@@ -685,9 +692,11 @@ function EquipmentResults({
   analysisBasis: "FAMILY" | "EXACT";
 }) {
   const [selectedEquipmentId, setSelectedEquipmentId] = useState<number | null>(null);
+  const [equipmentModalPhase, setEquipmentModalPhase] = useState<"closed" | "open" | "closing">("closed");
   const [openEvidenceRawId, setOpenEvidenceRawId] = useState<number | null>(null);
   const equipmentModalRef = useRef<HTMLDivElement>(null);
   const equipmentReturnFocusRef = useRef<HTMLElement | null>(null);
+  const equipmentCloseTimerRef = useRef<number | null>(null);
   const lineById = useMemo(
     () => new Map(analysis.lines.map((line) => [line.raw_item_id, line])),
     [analysis.lines],
@@ -707,27 +716,48 @@ function EquipmentResults({
     { quote: 0, target: 0, negotiation: 0 },
   );
 
-  const closeEquipmentModal = () => {
-    setSelectedEquipmentId(null);
+  const closeEquipmentModal = useCallback(() => {
+    if (selectedEquipmentId === null || equipmentModalPhase === "closing") return;
+    setEquipmentModalPhase("closing");
     setOpenEvidenceRawId(null);
-    window.setTimeout(() => equipmentReturnFocusRef.current?.focus(), 0);
-  };
+    equipmentCloseTimerRef.current = window.setTimeout(() => {
+      setSelectedEquipmentId(null);
+      setEquipmentModalPhase("closed");
+      equipmentReturnFocusRef.current?.focus();
+      equipmentCloseTimerRef.current = null;
+    }, 150);
+  }, [equipmentModalPhase, selectedEquipmentId]);
 
   const openEquipmentModal = (group: EquipmentAnalysisGroup) => {
+    if (equipmentCloseTimerRef.current !== null) {
+      window.clearTimeout(equipmentCloseTimerRef.current);
+      equipmentCloseTimerRef.current = null;
+    }
     equipmentReturnFocusRef.current = document.activeElement as HTMLElement | null;
     setSelectedEquipmentId(group.id);
+    setEquipmentModalPhase("closed");
     setOpenEvidenceRawId(null);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => setEquipmentModalPhase("open"));
+    });
   };
+
+  useEffect(() => () => {
+    if (equipmentCloseTimerRef.current !== null) {
+      window.clearTimeout(equipmentCloseTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (selectedEquipmentId === null) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    equipmentModalRef.current?.focus();
+    if (equipmentModalPhase === "open") {
+      window.requestAnimationFrame(() => equipmentModalRef.current?.focus());
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setSelectedEquipmentId(null);
-        window.setTimeout(() => equipmentReturnFocusRef.current?.focus(), 0);
+        closeEquipmentModal();
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -735,7 +765,7 @@ function EquipmentResults({
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [selectedEquipmentId]);
+  }, [closeEquipmentModal, selectedEquipmentId, equipmentModalPhase]);
 
   return (
     <section className="equipment-results" role="tabpanel">
@@ -749,7 +779,7 @@ function EquipmentResults({
       </div>
 
       <div className="result-toolbar equipment-toolbar">
-        <div><h3>설비별 구매 목표</h3><span>상세 시트 기준 {equipmentGroups.length}개 설비</span></div>
+        <div><h3>설비별 목표금액</h3><span>상세 시트 기준 {equipmentGroups.length}개 설비</span></div>
         <small>시트별 품목 금액을 직접 합산하고 갑지 설비명으로 표시합니다.</small>
       </div>
       <div className="analysis-table-scroll equipment-table-scroll">
@@ -774,10 +804,10 @@ function EquipmentResults({
         </table>
       </div>
       {selectedEquipment ? (
-        <div className="equipment-detail-overlay is-open" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEquipmentModal(); }}>
-          <div ref={equipmentModalRef} className="equipment-detail-modal t-modal is-open" role="dialog" aria-modal="true" aria-labelledby="equipment-detail-title" tabIndex={-1}>
+        <div className={`equipment-detail-overlay ${equipmentModalPhase === "open" ? "is-open" : "is-closing"}`} onMouseDown={(event) => { if (event.target === event.currentTarget) closeEquipmentModal(); }}>
+          <div ref={equipmentModalRef} className={`equipment-detail-modal t-modal ${equipmentModalPhase === "open" ? "is-open" : "is-closing"}`} role="dialog" aria-modal="true" aria-labelledby="equipment-detail-title" tabIndex={-1}>
             <header className="equipment-detail-modal-bar">
-              <div><span>설비별 구매 목표</span><strong id="equipment-detail-title">{selectedEquipment.name}</strong><small>{selectedEquipment.line_count}개 품목 · {selectedEquipment.source_kind === "COVER_SHEET" ? "갑지 설비명" : "시트명"}</small></div>
+              <div><span>설비별 목표금액</span><strong id="equipment-detail-title">{selectedEquipment.name}</strong><small>{selectedEquipment.line_count}개 품목 · {selectedEquipment.source_kind === "COVER_SHEET" ? "갑지 설비명" : "시트명"}</small></div>
               <button type="button" onClick={closeEquipmentModal} aria-label="설비 상세 닫기">닫기</button>
             </header>
             <div className="equipment-detail-modal-scroll">

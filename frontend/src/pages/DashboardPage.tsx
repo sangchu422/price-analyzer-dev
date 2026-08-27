@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
+  ChevronLeft,
+  ChevronRight,
   Database,
   Gauge,
   ShieldAlert,
@@ -27,15 +29,33 @@ import { reasonLabel } from "../components/reasonLabels";
 import { Skeleton } from "../components/Skeleton";
 import { WiaInteractiveMark } from "../components/WiaInteractiveMark";
 
+const DASHBOARD_SNAPSHOT_KEY = "price-analyzer-dashboard-snapshot-v1";
+const FAMILY_PAGE_SIZE = 6;
+const FAMILY_ROTATION_MS = 5_200;
+
+function loadDashboardSnapshot(): DashboardOverview | undefined {
+  try {
+    const stored = window.localStorage.getItem(DASHBOARD_SNAPSHOT_KEY);
+    if (!stored) return undefined;
+    const parsed = JSON.parse(stored) as DashboardOverview;
+    return parsed?.catalog && Array.isArray(parsed.families) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [selectedIndicatorCode, setSelectedIndicatorCode] = useState<string | null>(null);
   const [familiesExpanded, setFamiliesExpanded] = useState(false);
+  const [familyPage, setFamilyPage] = useState(0);
+  const [familyCarouselPaused, setFamilyCarouselPaused] = useState(false);
   const [performanceYear, setPerformanceYear] = useState(2026);
   const indicatorSyncAttempted = useRef(false);
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ["dashboard-overview"],
     queryFn: ({ signal }) => getDashboardOverview(signal),
+    placeholderData: loadDashboardSnapshot(),
     refetchInterval: 60_000,
   });
 
@@ -45,6 +65,15 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
       document.title = "통합 견적 분석 시스템";
     };
   }, []);
+
+  useEffect(() => {
+    if (!query.data || query.isPlaceholderData) return;
+    try {
+      window.localStorage.setItem(DASHBOARD_SNAPSHOT_KEY, JSON.stringify(query.data));
+    } catch {
+      // The live query still works when browser storage is unavailable.
+    }
+  }, [query.data, query.isPlaceholderData]);
 
   useEffect(() => {
     if (
@@ -60,6 +89,16 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
     return () => controller.abort();
   }, [query.data, queryClient]);
 
+  const familyPageCount = Math.max(1, Math.ceil((query.data?.families.length ?? 0) / FAMILY_PAGE_SIZE));
+
+  useEffect(() => {
+    if (familiesExpanded || familyCarouselPaused || familyPageCount <= 1) return;
+    const rotation = window.setInterval(() => {
+      setFamilyPage((current) => (current + 1) % familyPageCount);
+    }, FAMILY_ROTATION_MS);
+    return () => window.clearInterval(rotation);
+  }, [familiesExpanded, familyCarouselPaused, familyPageCount]);
+
   if (query.isLoading) {
     return (
       <main className="dashboard-page dashboard-skeleton" role="status" aria-busy="true">
@@ -68,16 +107,32 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
           <h1 className="sr-only">HYUNDAI WIA 구매 종합현황</h1>
           <WiaInteractiveMark />
           <div className="dashboard-hero-status">
-            <span>DATA PULSE</span>
+            <span>DATA CONNECTING</span>
             <Skeleton width="116px" height="42px" />
-            <Skeleton width="94px" height="10px" />
+            <small>구매 데이터를 집계하고 있습니다.</small>
           </div>
         </header>
         <section className="dashboard-skeleton-grid">
-          <Skeleton as="div" className="dashboard-skeleton-panel is-primary" />
-          <Skeleton as="div" className="dashboard-skeleton-panel" />
-          <Skeleton as="div" className="dashboard-skeleton-panel is-wide" />
-          <Skeleton as="div" className="dashboard-skeleton-panel" />
+          <div className="dashboard-left-rail">
+            <article className="dashboard-skeleton-panel is-primary">
+              <header><span>STANDARD DB / LIVE</span><strong>표준 DB 구축 현황</strong></header>
+              <div className="dashboard-skeleton-catalog"><Skeleton className="dashboard-skeleton-ring" /><div><Skeleton /><Skeleton /><Skeleton /><Skeleton /></div></div>
+            </article>
+            <article className="dashboard-skeleton-panel is-wide">
+              <header><span>ITEM DISTRIBUTION</span><strong>품목</strong></header>
+              <div className="dashboard-skeleton-list">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} />)}</div>
+            </article>
+          </div>
+          <aside className="dashboard-right-rail">
+            <article className="dashboard-skeleton-panel">
+              <header><span>ACTUAL / FORECAST</span><strong>월별 품의 현황</strong></header>
+              <div className="dashboard-skeleton-bars" aria-hidden="true">{[48, 66, 78, 58, 72, 88, 82, 54, 39, 45, 52, 60].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div>
+            </article>
+            <article className="dashboard-skeleton-panel is-market">
+              <header><span>MARKET SIGNAL</span><strong>구매 참고 지표</strong></header>
+              <div className="dashboard-skeleton-list is-compact">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} />)}</div>
+            </article>
+          </aside>
         </section>
       </main>
     );
@@ -100,7 +155,9 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
     ? (eligibleItemCount === 0 ? 0 : standardizedItemCount / eligibleItemCount * 100)
     : Number(data.catalog.standardization_percent);
   const selectedIndicator = data.indicators.find((item) => item.code === selectedIndicatorCode) ?? null;
-  const visibleFamilies = familiesExpanded ? data.families : data.families.slice(0, 12);
+  const resolvedFamilyPage = familyPage % familyPageCount;
+  const familyPageStart = resolvedFamilyPage * FAMILY_PAGE_SIZE;
+  const visibleFamilyPage = data.families.slice(familyPageStart, familyPageStart + FAMILY_PAGE_SIZE);
   const monthlyPerformance = data.monthly_performance as DashboardOverview["monthly_performance"] & {
     year?: number;
     series?: Array<{ month: number; label: string; count: number; kind: "ACTUAL" | "FORECAST" }>;
@@ -121,7 +178,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
         <h1 className="sr-only">HYUNDAI WIA 구매 종합현황</h1>
         <WiaInteractiveMark />
         <div className="dashboard-hero-status">
-          <span>DATA PULSE</span>
+          <span>{query.isFetching ? "DATA REFRESHING" : "DATA PULSE"}</span>
           <AnimatedNumber value={standardizedItemCount} className="dashboard-pulse-number" />
           <small>표준화 완료 품목</small>
           <time>{data.as_of} 기준</time>
@@ -158,10 +215,14 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
               </svg>
             </div>
             <div className="catalog-funnel" aria-label="표준 DB 단계별 현황">
-              <FunnelLine label="과거 견적서" value={historicalQuoteCount} max={historicalQuoteCount} unit="건" />
-              <FunnelLine label="전체 견적 품목" value={eligibleItemCount} max={eligibleItemCount} unit="개" />
-              <FunnelLine label="표준화 완료" value={standardizedItemCount} max={eligibleItemCount} unit="개" accent />
-              <FunnelLine label="표준화 대기" value={unstandardizedItemCount} max={eligibleItemCount} unit="개" warning />
+              <div className="catalog-funnel-heading">
+                <strong>표준 DB 단계별 현황</strong>
+                <span>수집부터 활용까지</span>
+              </div>
+              <FunnelLine label="과거 견적서" value={historicalQuoteCount} max={historicalQuoteCount} unit="건" meta="수집 원본" delay={0} />
+              <FunnelLine label="전체 견적 품목" value={eligibleItemCount} max={eligibleItemCount} unit="개" meta="분석 대상" delay={0.08} />
+              <FunnelLine label="표준화 완료" value={standardizedItemCount} max={eligibleItemCount} unit="개" meta={`${completion.toFixed(1)}%`} accent delay={0.16} />
+              <FunnelLine label="표준화 대기" value={unstandardizedItemCount} max={eligibleItemCount} unit="개" meta={`${Math.max(0, 100 - completion).toFixed(1)}%`} warning delay={0.24} />
             </div>
             <button className="dashboard-text-action" type="button" onClick={() => onNavigate("/standard-prices")}>
               표준 DB 탐색 <ArrowRight aria-hidden="true" size={16} />
@@ -176,27 +237,90 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
               </div>
               <small>표준 DB를 구매 관점의 {data.families.length.toLocaleString("ko-KR")}개 품목으로 묶었습니다.</small>
             </header>
-            <motion.div className="category-spectrum-list" layout>
-              <AnimatePresence initial={false}>
-              {visibleFamilies.map((family, index) => (
-                <motion.button
-                  key={family.code}
-                  type="button"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  layout
-                  transition={{ delay: Math.min(index * 0.035, 0.3) }}
-                  onClick={() => onNavigate(`/standard-prices?family=${encodeURIComponent(family.code)}`)}
-                >
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  <strong>{family.display_name ?? displayFamilyName(family.name)}</strong>
-                  <AnimatedNumber value={family.item_count} className="category-count" />
-                  <i style={{ "--share": `${Math.max(Number(family.share_percent), 2)}%` } as React.CSSProperties} />
-                </motion.button>
-              ))}
-              </AnimatePresence>
-            </motion.div>
+            {familiesExpanded ? (
+              <motion.div className="category-spectrum-list" layout>
+                {data.families.map((family, index) => (
+                  <motion.button
+                    key={family.code}
+                    type="button"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    layout
+                    transition={{ delay: Math.min(index * 0.025, 0.28) }}
+                    onClick={() => onNavigate(`/standard-prices?family=${encodeURIComponent(family.code)}`)}
+                  >
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <strong>{family.display_name ?? displayFamilyName(family.name)}</strong>
+                    <AnimatedNumber value={family.item_count} suffix="개" className="category-count" />
+                    <i style={{ "--share": `${Math.max(Number(family.share_percent), 1)}%` } as React.CSSProperties} />
+                  </motion.button>
+                ))}
+              </motion.div>
+            ) : (
+              <div
+                className="family-share-carousel"
+                onMouseEnter={() => setFamilyCarouselPaused(true)}
+                onMouseLeave={() => setFamilyCarouselPaused(false)}
+                onFocusCapture={() => setFamilyCarouselPaused(true)}
+                onBlurCapture={() => setFamilyCarouselPaused(false)}
+              >
+                <div className="family-share-viewport" aria-live="polite">
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      className="family-share-page"
+                      key={resolvedFamilyPage}
+                      initial={{ opacity: 0, x: 34, filter: "blur(3px)" }}
+                      animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+                      exit={{ opacity: 0, x: -28, filter: "blur(2px)" }}
+                      transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
+                    >
+                      {visibleFamilyPage.map((family, index) => {
+                        const share = Math.max(0, Number(family.share_percent));
+                        return (
+                          <button
+                            key={family.code}
+                            type="button"
+                            className="family-share-item"
+                            aria-label={`${family.display_name ?? displayFamilyName(family.name)} ${family.item_count.toLocaleString("ko-KR")}개, 전체의 ${share.toFixed(1)}%`}
+                            onClick={() => onNavigate(`/standard-prices?family=${encodeURIComponent(family.code)}`)}
+                          >
+                            <span className="family-share-rank">{String(familyPageStart + index + 1).padStart(2, "0")}</span>
+                            <span className="family-share-copy">
+                              <strong>{family.display_name ?? displayFamilyName(family.name)}</strong>
+                              <small>{family.item_count.toLocaleString("ko-KR")}개</small>
+                            </span>
+                            <span className="family-share-chart" style={{ "--family-share": `${Math.min(share, 100)}` } as React.CSSProperties} aria-hidden="true">
+                              <svg viewBox="0 0 42 42">
+                                <circle cx="21" cy="21" r="16" />
+                                <motion.circle
+                                  className="is-share"
+                                  cx="21"
+                                  cy="21"
+                                  r="16"
+                                  pathLength="100"
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: Math.min(share, 100) / 100 }}
+                                  transition={{ delay: index * 0.045, duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
+                                />
+                              </svg>
+                              <b>{share.toFixed(1)}%</b>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+                {familyPageCount > 1 ? (
+                  <div className="family-share-controls">
+                    <span>{resolvedFamilyPage + 1} / {familyPageCount}</span>
+                    <div className="family-share-progress" aria-hidden="true"><i key={resolvedFamilyPage} /></div>
+                    <button type="button" aria-label="이전 품목 구성비" onClick={() => setFamilyPage((current) => (current - 1 + familyPageCount) % familyPageCount)}><ChevronLeft size={15} /></button>
+                    <button type="button" aria-label="다음 품목 구성비" onClick={() => setFamilyPage((current) => (current + 1) % familyPageCount)}><ChevronRight size={15} /></button>
+                  </div>
+                ) : null}
+              </div>
+            )}
             {data.families.length > 12 ? (
               <button
                 type="button"
@@ -231,7 +355,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             <header>
               <div>
                 <span>ACTUAL / FORECAST</span>
-                <h2 id="performance-title">월별 견적 분석 현황</h2>
+                <h2 id="performance-title">월별 품의 현황</h2>
               </div>
               <div className="performance-year-switch" aria-label="현황 연도">
                 {availableYears.map((year) => (
@@ -248,12 +372,12 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
                   <Tooltip content={<PerformanceTooltip />} cursor={{ fill: "rgba(0,40,122,.04)" }} />
                   <Bar name="설비구매" dataKey="equipment_purchase" stackId="volume" animationDuration={950}>
                     {performanceSeries.map((entry) => (
-                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#00287a" : "rgba(0,40,122,.24)"} stroke="#00287a" strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
+                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "var(--accent-readable)" : "var(--accent-soft)"} stroke="var(--accent-readable)" strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
                     ))}
                   </Bar>
                   <Bar name="통합구매" dataKey="integrated_purchase" stackId="volume" radius={[2, 2, 0, 0]} animationDuration={950}>
                     {performanceSeries.map((entry) => (
-                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "#5f86d5" : "rgba(95,134,213,.22)"} stroke="#5f86d5" strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
+                      <Cell key={entry.month} fill={entry.kind === "ACTUAL" ? "var(--info)" : "var(--info-surface)"} stroke="var(--info)" strokeDasharray={entry.kind === "FORECAST" ? "3 3" : undefined} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -327,7 +451,12 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
               <Gauge aria-hidden="true" />
             </header>
             {data.alerts.length === 0 ? (
-              <div className="alert-empty"><Sparkles size={17} /> 신규 반영 가격의 이상징후가 없습니다.</div>
+              <div className="alert-demo" aria-label="시연용 가격 변동 알림 예시">
+                <div className="alert-demo-heading"><Sparkles aria-hidden="true" size={16} /><span>시연 예시</span></div>
+                <strong>서보모터 감속기</strong>
+                <p>신규 견적 단가가 최근 표준가격보다 높습니다.</p>
+                <em>+18.7%</em>
+              </div>
             ) : (
               <ol>
                 {data.alerts.slice(0, 4).map((alert) => (
@@ -359,12 +488,17 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
   );
 }
 
-function FunnelLine({ label, value, max, unit = "", accent = false, warning = false }: { label: string; value: number; max: number; unit?: string; accent?: boolean; warning?: boolean }) {
+function FunnelLine({ label, value, max, unit = "", meta, delay = 0, accent = false, warning = false }: { label: string; value: number; max: number; unit?: string; meta: string; delay?: number; accent?: boolean; warning?: boolean }) {
   const width = max === 0 ? 0 : Math.max(1.2, value / max * 100);
   return (
-    <div className={accent ? "is-accent" : warning ? "is-warning" : ""}>
-      <span>{label}</span><AnimatedNumber value={value} suffix={unit} className="funnel-number" />
-      <i><motion.b initial={{ width: 0 }} animate={{ width: `${width}%` }} transition={{ duration: 0.9, ease: "easeOut" }} /></i>
+    <div
+      className={accent ? "is-accent" : warning ? "is-warning" : ""}
+    >
+      <span>{label}<small>{meta}</small></span><AnimatedNumber value={value} suffix={unit} className="funnel-number" />
+      <div className="catalog-flow-track">
+        <motion.b initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ delay: delay + 0.12, duration: 0.88, ease: [0.22, 1, 0.36, 1] }} style={{ width: `${width}%` }} />
+        <motion.i initial={{ left: 0, opacity: 0 }} animate={{ left: `${width}%`, opacity: 1 }} transition={{ delay: delay + 0.12, duration: 0.88, ease: [0.22, 1, 0.36, 1] }} />
+      </div>
     </div>
   );
 }
@@ -419,7 +553,13 @@ function MarketSignalTile({ indicator, index, selected, onSelect }: { indicator:
         {available ? <em>
           {rising ? "+" : ""}{difference.toFixed(1)} ({rising ? "+" : ""}{delta.toFixed(1)}%)
         </em> : <em>{indicator.source_status === "STALE" ? "갱신 지연" : "연결 중"}</em>}
-        <small className="market-source-period">{indicator.latest_period ?? "—"} · {indicator.source_status === "STALE" ? "저장 자료" : indicator.source_status === "UNAVAILABLE" ? "자료 없음" : "최신 자료"}</small>
+        <small className="market-source-period">
+          {indicator.latest_period ?? "—"} · {indicator.source_status === "STALE"
+            ? "저장 자료"
+            : indicator.source_status === "UNAVAILABLE"
+              ? "자료 없음"
+              : `${indicatorFrequencyLabel(indicator.source_frequency)} 최신`}
+        </small>
       </div>
     </motion.button>
   );
@@ -432,4 +572,10 @@ function PerformanceTooltip({ active, payload, label }: { active?: boolean; payl
 
 function displayFamilyName(value: string) {
   return value.replace(/류$/, "");
+}
+
+function indicatorFrequencyLabel(frequency?: "DAILY" | "MONTHLY" | "ANNUAL") {
+  if (frequency === "DAILY") return "일별";
+  if (frequency === "ANNUAL") return "연간";
+  return "월별";
 }

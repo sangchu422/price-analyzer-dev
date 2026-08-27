@@ -138,7 +138,8 @@ it("presents the command center and three primary workflow destinations", () => 
   expect(screen.getByRole("link", { name: "종합현황" })).toBeVisible();
   expect(
     screen.getAllByRole("link", { name: /종합현황|정제 검토|표준 DB|신규 견적 분석/ }),
-  ).toHaveLength(4);
+  ).toHaveLength(3);
+  expect(screen.getByRole("button", { name: "신규 견적 분석 메뉴" })).toBeVisible();
   expect(navigation).toHaveTextContent("정제 검토");
   expect(navigation).toHaveTextContent("표준 DB");
   expect(navigation).toHaveTextContent("신규 견적 분석");
@@ -147,7 +148,7 @@ it("presents the command center and three primary workflow destinations", () => 
   expect(navigation).not.toHaveTextContent("견적 비교");
   expect(navigation).not.toHaveTextContent("LOCAL MODE");
   expect(
-    Array.from(navigation.querySelectorAll(".navigation-links > a, .navigation-links > .navigation-menu > a"), (link) => link.textContent),
+    Array.from(navigation.querySelectorAll(".navigation-links > a, .navigation-menu-trigger"), (link) => link.textContent),
   ).toEqual(["종합현황", "표준 DB", "신규 견적 분석", "정제 검토", "설정"]);
 });
 
@@ -156,8 +157,13 @@ it("opens analysis history from the animated analysis menu", async () => {
   vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ items: [], total: 0, next_cursor: null, limit: 30 })));
   renderApp("/unknown");
 
-  await user.hover(screen.getByRole("link", { name: "신규 견적 분석" }));
-  const historyLink = await screen.findByRole("link", { name: /분석 이력 관리/ });
+  const analysisMenuTrigger = screen.getByRole("button", { name: "신규 견적 분석 메뉴" });
+  expect(analysisMenuTrigger.querySelectorAll(".navigation-menu-chevron")).toHaveLength(1);
+  await user.hover(analysisMenuTrigger);
+  const historyLink = await screen.findByRole("menuitem", { name: /분석 이력 관리/ });
+  await user.hover(historyLink);
+  await new Promise((resolve) => window.setTimeout(resolve, 260));
+  expect(historyLink).toBeVisible();
   await user.click(historyLink);
 
   expect(await screen.findByRole("heading", { name: "분석 이력 관리" })).toBeVisible();

@@ -100,6 +100,22 @@ def test_indicator_sync_uses_public_series_and_persists_cache(
         if "fredgraph.csv" in url:
             series = params["id"]
             return _IndicatorResponse(text=f"DATE,{series}\n2026-07-01,100\n2026-08-01,110\n")
+        if "query1.finance.yahoo.com" in url:
+            return _IndicatorResponse(payload={
+                "chart": {
+                    "result": [{
+                        "timestamp": [1788134400, 1788220800],
+                        "indicators": {"quote": [{"close": [100, 110]}]},
+                    }],
+                    "error": None,
+                },
+            })
+        if params["tblId"] == "DT_1J22003":
+            return _IndicatorResponse(payload=[{
+                "ITM_ID": "T",
+                "PRD_DE": "202607",
+                "DT": "119.77",
+            }])
         item_id = params["itmId"]
         value = "160" if item_id.endswith("_7") else "4000000"
         return _IndicatorResponse(payload=[{
@@ -113,12 +129,24 @@ def test_indicator_sync_uses_public_series_and_persists_cache(
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert len(payload) == 5
+    assert len(payload) == 6
     assert all(item["source_status"] == "LIVE_CACHE" for item in payload)
     wage = next(item for item in payload if item["code"] == "WAGE")
     assert wage["points"][-1]["value"] == "25000.000000"
     exchange = next(item for item in payload if item["code"] == "USD_KRW")
-    assert exchange["points"][-1] == {"period": "2026-08", "value": "110.000000"}
+    assert exchange["source_frequency"] == "DAILY"
+    assert exchange["points"][-1] == {"period": "2026-08-01", "value": "110.000000"}
+    assert all(
+        item["source_frequency"] == "DAILY"
+        for item in payload
+        if item["code"] in {"USD_KRW", "COPPER", "STEEL", "SEMICON"}
+    )
+    cpi = next(item for item in payload if item["code"] == "CPI_ALL")
+    assert cpi["source_frequency"] == "MONTHLY"
+    assert cpi["latest_period"] == "202607"
+    assert cpi["points"][-1]["value"] == "119.770000"
+    copper = next(item for item in payload if item["code"] == "COPPER")
+    assert copper["points"][-1]["value"] == "242508.488404"
 
 
 def test_monthly_performance_uses_supplied_department_counts(
