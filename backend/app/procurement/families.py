@@ -23,8 +23,6 @@ from app.catalog.models import (
 )
 from app.cleansing.models import CleanDecision
 from app.matching.normalization import normalize_search_text
-from app.procurement.categories import current_category_subquery
-from app.procurement.models import ItemCategory
 from app.standard_database.models import (
     StandardBuildStatus,
     StandardDatabaseBuildProjection,
@@ -145,7 +143,6 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
     )
     if run_id is None:
         return []
-    categories = current_category_subquery(name="family_current_categories")
     item_rows = session.execute(
         select(
             StandardDatabaseBuildProjection.standard_item_id,
@@ -157,13 +154,9 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
             StandardPriceVersion.average_price,
             StandardPriceVersion.maximum_price,
             StandardPriceVersion.observation_count,
-            ItemCategory.code,
-            ItemCategory.name,
         )
         .join(StandardItemVersion, StandardItemVersion.id == StandardDatabaseBuildProjection.standard_item_version_id)
         .join(StandardPriceVersion, StandardPriceVersion.id == StandardDatabaseBuildProjection.standard_price_version_id)
-        .outerjoin(categories, categories.c.standard_item_id == StandardDatabaseBuildProjection.standard_item_id)
-        .outerjoin(ItemCategory, ItemCategory.id == categories.c.category_id)
         .where(
             StandardDatabaseBuildProjection.build_run_id == run_id,
             StandardDatabaseBuildProjection.operational_status == StandardOperationalStatus.ACTIVE,
@@ -172,8 +165,9 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
 
     families: dict[str, dict[str, object]] = {}
     item_to_family: dict[int, str] = {}
+    member_context: dict[int, dict[str, object]] = {}
     for row in item_rows:
-        match = classify_item_family(row.canonical_name, row.canonical_spec, row.code)
+        match = classify_item_family(row.canonical_name, row.canonical_spec, None)
         item_to_family[row.standard_item_id] = match.code
         family = families.setdefault(match.code, {
             "code": match.code,
@@ -188,10 +182,6 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
             "years": defaultdict(list),
             "undated_observation_count": 0,
         })
-        if row.code:
-            family["category_codes"].add(row.code)
-        if row.name:
-            family["category_names"].add(row.name)
         family["members"].append({
             "standard_item_id": row.standard_item_id,
             "name": row.canonical_name,
@@ -205,12 +195,19 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
                 "maximum": str(row.maximum_price),
             },
         })
+        member_context[row.standard_item_id] = {
+            "makers": set(),
+            "suppliers": set(),
+            "dates": [],
+            "undated_observation_count": 0,
+        }
 
     observations = session.execute(
         select(
             StandardDatabaseBuildProjection.standard_item_id,
             StandardPriceObservation.raw_item_id,
             CleanDecision.unit_price,
+            CleanDecision.maker_norm,
             DocumentMetadataVersion.quote_date,
             DocumentMetadataVersion.supplier_name,
         )
@@ -228,18 +225,36 @@ def item_family_projection(session: Session) -> list[dict[str, object]]:
             continue
         seen_raw_ids.add(row.raw_item_id)
         family = families[item_to_family[row.standard_item_id]]
+        context = member_context[row.standard_item_id]
         family["prices"].append(row.unit_price)
+        if row.maker_norm:
+            context["makers"].add(row.maker_norm.strip())
         if row.supplier_name:
             family["suppliers"].add(normalize_search_text(row.supplier_name))
+            context["suppliers"].add(row.supplier_name.strip())
         if row.quote_date is None:
             family["undated_observation_count"] += 1
+            context["undated_observation_count"] += 1
         else:
             family["dates"].append(row.quote_date)
             family["years"][row.quote_date.year].append(row.unit_price)
+            context["dates"].append(row.quote_date)
 
     output: list[dict[str, object]] = []
     for family in families.values():
-        members = sorted(family["members"], key=lambda row: (normalize_search_text(row["name"]), normalize_search_text(row["spec"])))
+        members = []
+        for member in family["members"]:
+            context = member_context[member["standard_item_id"]]
+            member_dates: list[date] = context["dates"]
+            members.append({
+                **member,
+                "maker_summary": sorted(context["makers"], key=normalize_search_text),
+                "supplier_summary": sorted(context["suppliers"], key=normalize_search_text),
+                "quote_date_start": min(member_dates).isoformat() if member_dates else None,
+                "quote_date_end": max(member_dates).isoformat() if member_dates else None,
+                "undated_observation_count": context["undated_observation_count"],
+            })
+        members.sort(key=lambda row: (normalize_search_text(row["name"]), normalize_search_text(row["spec"])))
         dates: list[date] = family["dates"]
         trend = [
             {"year": year, **(_price_payload(values) or {}), "observation_count": len(values)}

@@ -782,7 +782,7 @@ def test_target_price_export_reads_stored_run_without_side_effects(
     rows = list(sheet.iter_rows(values_only=True))
     assert rows[0] == (
         "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
-        "협상 목표 단가(개당)", "협상 목표금액", "네고 가능금액", "산정 상태",
+        "구매 목표 단가(개당)", "구매 목표금액", "목표 인하 금액", "산정 상태",
     )
     assert len(rows) == 4
     assert {row[0] for row in rows[1:-1]} == {"CUSTOM ITEM 1", "CUSTOM ITEM 2"}

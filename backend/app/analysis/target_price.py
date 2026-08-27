@@ -935,7 +935,7 @@ def _target_line_from_cpi(
     reason = (
         f"서로 다른 원본 견적의 과거 단가 {len(evidence)}건을 "
         f"{latest_confirmed_year}년 확정 소비자물가로 보정한 뒤 "
-        "가장 낮은 금액을 협상 목표로 채택했습니다."
+        "가장 낮은 금액을 구매 목표로 채택했습니다."
     )
     if rate_gap_count:
         reason += " 필요한 연간 등락률이 누락된 과거 근거는 계산에서 제외했습니다."

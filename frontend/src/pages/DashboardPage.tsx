@@ -123,7 +123,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
             </div>
             <div className="catalog-funnel" aria-label="표준 DB 단계별 현황">
               <FunnelLine label="전체 표준 품목" value={data.catalog.total_standard_items} max={data.catalog.total_standard_items} />
-              <FunnelLine label="카테고리 분류" value={data.catalog.categorized_items} max={data.catalog.total_standard_items} />
+              <FunnelLine label="품목류 분류" value={data.catalog.family_classified_items} max={data.catalog.total_standard_items} />
               <FunnelLine label="가격 즉시 활용" value={data.catalog.active_price_items} max={data.catalog.total_standard_items} accent />
               <FunnelLine label="근거 보완 필요" value={data.catalog.no_evidence_items + data.catalog.rebuild_required_items} max={data.catalog.total_standard_items} warning />
             </div>
@@ -135,25 +135,25 @@ export function DashboardPage({ onNavigate }: { onNavigate: (path: string) => vo
           <section className="category-spectrum" aria-labelledby="category-spectrum-title">
             <header>
               <div>
-                <span>CATEGORY SPECTRUM</span>
-                <h2 id="category-spectrum-title">품목군 분포</h2>
+                <span>ITEM FAMILY DISTRIBUTION</span>
+                <h2 id="category-spectrum-title">품목류 분포</h2>
               </div>
-              <small>동일 카테고리는 가격을 합치지 않고 탐색 축으로만 사용합니다.</small>
+              <small>가격 근거가 많은 상위 12개 품목류입니다.</small>
             </header>
             <div className="category-spectrum-list">
-              {data.categories.map((category, index) => (
+              {(data.families ?? []).slice(0, 12).map((family, index) => (
                 <motion.button
-                  key={category.code}
+                  key={family.code}
                   type="button"
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(index * 0.035, 0.3) }}
-                  onClick={() => onNavigate(`/standard-prices?category=${category.code}`)}
+                  onClick={() => onNavigate(`/standard-prices?family=${encodeURIComponent(family.code)}`)}
                 >
                   <span>{String(index + 1).padStart(2, "0")}</span>
-                  <strong>{category.name}</strong>
-                  <AnimatedNumber value={category.count} className="category-count" />
-                  <i style={{ "--share": `${Math.max(Number(category.share_percent), 2)}%` } as React.CSSProperties} />
+                  <strong>{family.name}</strong>
+                  <AnimatedNumber value={family.item_count} className="category-count" />
+                  <i style={{ "--share": `${Math.max(Number(family.share_percent), 2)}%` } as React.CSSProperties} />
                 </motion.button>
               ))}
             </div>

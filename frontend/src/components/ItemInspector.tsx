@@ -269,25 +269,7 @@ function AmountMismatchEvidence({
         <p className="section-kicker">계산 근거</p>
         <h2 id="amount-mismatch-title">표시 금액 대 계산 금액</h2>
       </div>
-      <dl>
-        {evidence.factors?.map((factor) => (
-          <div key={factor.coordinate}>
-            <dt>{factor.label}</dt>
-            <dd>{factor.value}</dd>
-          </div>
-        ))}
-        <div>
-          <dt>원본 수량</dt>
-          <dd>{rawValue(evidence.original_quantity)}</dd>
-        </div>
-        <div>
-          <dt>원본 단위</dt>
-          <dd>{rawValue(evidence.original_unit)}</dd>
-        </div>
-        <div>
-          <dt>원본 단가</dt>
-          <dd>{rawValue(evidence.original_unit_price)}</dd>
-        </div>
+      <dl className="amount-summary-grid">
         <div>
           <dt>표시 금액</dt>
           <dd>{rawValue(evidence.displayed_amount)}</dd>
@@ -300,18 +282,30 @@ function AmountMismatchEvidence({
           <dt>차액</dt>
           <dd>{formatSignedWon(evidence.difference_amount)}</dd>
         </div>
+        <div className="is-difference">
+          <dt>차이율</dt>
+          <dd>{differencePercent ?? "확인 필요"}</dd>
+        </div>
       </dl>
       <p>
         계산 금액 − 표시 금액
-        {differencePercent ? <> · 차이율 {differencePercent}</> : null}
         {evidence.tolerance_amount ? <> · 허용오차 ±{tolerance}</> : null}
       </p>
-      {evidence.formula && (
-        <details className="calculation-detail">
-          <summary>계산 세부 정보</summary>
-          <p className="calculation-formula">원본 계산식: <code>{evidence.formula}</code></p>
-        </details>
-      )}
+      <details className="calculation-detail">
+        <summary>수량·단가 등 계산 인자 보기</summary>
+        <dl className="calculation-factor-grid">
+          {evidence.factors?.map((factor) => (
+            <div key={factor.coordinate}>
+              <dt>{factor.label}</dt>
+              <dd>{factor.value}</dd>
+            </div>
+          ))}
+          <div><dt>원본 수량</dt><dd>{rawValue(evidence.original_quantity)}</dd></div>
+          <div><dt>원본 단위</dt><dd>{rawValue(evidence.original_unit)}</dd></div>
+          <div><dt>원본 단가</dt><dd>{rawValue(evidence.original_unit_price)}</dd></div>
+        </dl>
+        {evidence.formula ? <p className="calculation-formula">원본 계산식: <code>{evidence.formula}</code></p> : null}
+      </details>
     </section>
   );
 }

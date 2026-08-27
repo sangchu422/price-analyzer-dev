@@ -30,8 +30,8 @@ it("groups exact standard items into an item family and opens its trend modal", 
     const url = String(input);
     if (url.includes("/api/dashboard/item-families/SENSOR")) {
       return jsonResponse({ ...family, members: [
-        { standard_item_id: 12, name: "PHOTO SENSOR", spec: "E3Z", unit: "EA", observation_count: 3, price: family.price },
-        { standard_item_id: 13, name: "PROXIMITY SENSOR", spec: "E2E", unit: "EA", observation_count: 2, price: family.price },
+        { standard_item_id: 12, name: "PHOTO SENSOR", spec: "E3Z", unit: "EA", observation_count: 3, price: family.price, maker_summary: ["OMRON"], supplier_summary: ["SUPPLIER A"], quote_date_start: "2024-01-01", quote_date_end: "2025-01-01", undated_observation_count: 0 },
+        { standard_item_id: 13, name: "PROXIMITY SENSOR", spec: "E2E", unit: "EA", observation_count: 2, price: family.price, maker_summary: ["OMRON"], supplier_summary: ["SUPPLIER B"], quote_date_start: "2025-01-01", quote_date_end: "2025-01-01", undated_observation_count: 0 },
       ] });
     }
     if (url.includes("/api/dashboard/item-families")) {
@@ -49,8 +49,10 @@ it("groups exact standard items into an item family and opens its trend modal", 
   expect(screen.getByText("1개 품목류 · 2개 품목")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: /센서류/ }));
   const dialog = await screen.findByRole("dialog", { name: "센서류" });
-  expect(within(dialog).getByText("2개 정확 품목 · 5건 가격 근거 · 2개 견적 제출사")).toBeVisible();
+  expect(within(dialog).getByText("2개 상세 품목 · 5건 가격 근거 · 2개 견적 제출사")).toBeVisible();
   expect(within(dialog).getByText("PHOTO SENSOR")).toBeVisible();
+  expect(within(dialog).getAllByText("OMRON").length).toBeGreaterThan(0);
+  expect(within(dialog).getByText("SUPPLIER A")).toBeVisible();
   expect(within(dialog).getByLabelText("센서류 연도별 가격 변화")).toBeVisible();
 });
 

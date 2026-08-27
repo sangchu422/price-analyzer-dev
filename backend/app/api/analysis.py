@@ -66,6 +66,7 @@ from app.analysis.family_analysis import family_analysis_payload
 from app.procurement.equipment import (
     create_equipment_projection,
     equipment_group_payloads,
+    equipment_group_payloads_from_result,
 )
 from app.standard_database.models import (
     QuoteDocumentPurpose,
@@ -490,7 +491,12 @@ def post_analysis_run(
         session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     payload = _analysis_run_payload(result, body.review_percent, body.high_percent)
-    payload["equipment_groups"] = equipment_group_payloads(session, result.run_id)
+    equipment_groups = equipment_group_payloads(session, result.run_id)
+    payload["equipment_groups"] = (
+        equipment_groups
+        if equipment_groups
+        else equipment_group_payloads_from_result(result)
+    )
     payload["family_analysis"] = family_analysis_payload(
         session,
         result,
@@ -737,7 +743,7 @@ def export_target_price_run(
 
     headers = [
         "품명", "규격", "단위", "수량", "개당 단가", "구매 금액",
-        "협상 목표 단가(개당)", "협상 목표금액", "네고 가능금액", "산정 상태",
+        "구매 목표 단가(개당)", "구매 목표금액", "목표 인하 금액", "산정 상태",
     ]
     rows = []
     total_negotiable = Decimal("0")
@@ -790,7 +796,7 @@ def export_target_price_run(
         None,
         overall_target,
         total_negotiable,
-        "전체 견적 - 네고 가능금액",
+        "전체 견적 - 목표 인하 금액",
     ])
     return build_xlsx_response(
         sheet_title="구매 목표가 분석 결과",

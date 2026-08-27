@@ -46,7 +46,9 @@ export function StandardPricesPage() {
   const [modalPhase, setModalPhase] = useState<"closed" | "open" | "closing">(
     () => positiveIntegerParam("item_id") ? "open" : "closed",
   );
-  const [selectedFamilyCode, setSelectedFamilyCode] = useState<string | null>(null);
+  const [selectedFamilyCode, setSelectedFamilyCode] = useState<string | null>(
+    queryParam("family"),
+  );
   const attemptedCatalogCursors = useRef(new Set<number>());
   const closeTimerRef = useRef<number | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -293,7 +295,7 @@ export function StandardPricesPage() {
         <div>
           <p className="section-kicker">과거 견적 기준</p>
           <h1>표준 DB</h1>
-            <p>과거 견적에서 묶은 품목류별 단가 범위와 정확 품목의 원본 근거를 확인합니다.</p>
+            <p>과거 견적에서 묶은 품목류별 단가 범위와 상세 품목의 원본 근거를 확인합니다.</p>
         </div>
         <div className="build-status" aria-label="최근 갱신 상태">
           <span>최근 갱신</span>
@@ -397,8 +399,8 @@ export function StandardPricesPage() {
         onSelect={setSelectedFamilyCode}
         totalItems={families.data?.item_count ?? 0}
       />
-      {requestedItemFetchFailed && <p className="inline-state is-error">요청한 정확 품목을 불러오지 못했습니다.</p>}
-      {requestedItemExhausted && <p className="inline-state">요청한 정확 품목을 찾을 수 없습니다.</p>}
+      {requestedItemFetchFailed && <p className="inline-state is-error">요청한 상세 품목을 불러오지 못했습니다.</p>}
+      {requestedItemExhausted && <p className="inline-state">요청한 상세 품목을 찾을 수 없습니다.</p>}
       {selected && modalPhase !== "closed" && (
         <div
           className={`standard-detail-overlay ${modalPhase === "open" ? "is-open" : "is-closing"}`}
@@ -541,7 +543,7 @@ function FamilyCatalog({
       <header>
         <div>
           <strong>품목류 가격 기준</strong>
-          <small>전 품목을 용도와 명칭 기준으로 묶고 정확 품명·규격은 하위 근거로 보존합니다.</small>
+          <small>전 품목을 용도와 명칭 기준으로 묶고 상세 품목의 원본 근거를 보존합니다.</small>
         </div>
         <span>{pending ? "묶는 중…" : `${data.length.toLocaleString("ko-KR")}개 품목류 · ${totalItems.toLocaleString("ko-KR")}개 품목`}</span>
       </header>
@@ -551,10 +553,17 @@ function FamilyCatalog({
       {data.length > 0 && (
         <div className="table-scroll standard-family-scroll">
           <table className="data-table standard-family-table">
+            <colgroup>
+              <col className="family-column-name" />
+              <col className="family-column-count" />
+              <col className="family-column-count" />
+              <col className="family-column-year" />
+              <col className="family-column-price" span={4} />
+            </colgroup>
             <thead>
               <tr>
                 <th>품목류</th>
-                <th className="numeric">정확 품목</th>
+                <th className="numeric">상세 품목</th>
                 <th className="numeric">가격 근거</th>
                 <th className="numeric">관측 연도</th>
                 <th className="numeric">최저</th>
@@ -569,7 +578,7 @@ function FamilyCatalog({
                   <td>
                     <button type="button" className="family-name-button" onClick={() => onSelect(family.code)}>
                       <strong>{family.name}</strong>
-                      <small>{family.item_count.toLocaleString("ko-KR")}개 정확 품목 · 상세 보기</small>
+                      <small>{family.item_count.toLocaleString("ko-KR")}개 상세 품목 · 상세 보기</small>
                     </button>
                   </td>
                   <td className="numeric">{family.item_count.toLocaleString("ko-KR")}개</td>
@@ -602,7 +611,7 @@ function FamilyDetail({
         <div>
           <p className="section-kicker">품목류 가격 분석</p>
           <h2 id="family-detail-title">{family.name}</h2>
-          <p>{family.item_count.toLocaleString("ko-KR")}개 정확 품목 · {family.observation_count.toLocaleString("ko-KR")}건 가격 근거 · {family.supplier_count.toLocaleString("ko-KR")}개 견적 제출사</p>
+          <p>{family.item_count.toLocaleString("ko-KR")}개 상세 품목 · {family.observation_count.toLocaleString("ko-KR")}건 가격 근거 · {family.supplier_count.toLocaleString("ko-KR")}개 견적 제출사</p>
         </div>
         <span>{family.year_count ? `${family.year_count}개년 추이` : "견적일 확인 필요"}</span>
       </header>
@@ -634,16 +643,27 @@ function FamilyDetail({
       <section className="family-members" aria-labelledby="family-members-title">
         <div className="section-title">
           <p className="section-kicker">하위 가격 근거</p>
-          <h3 id="family-members-title">정확 품명·규격</h3>
+          <h3 id="family-members-title">상세 품목</h3>
         </div>
         <div className="table-scroll">
-          <table className="data-table">
-            <thead><tr><th>품명</th><th>규격</th><th>단위</th><th className="numeric">근거</th><th className="numeric">중앙값</th></tr></thead>
+          <table className="data-table family-member-table">
+            <colgroup>
+              <col className="member-column-item" />
+              <col className="member-column-maker" />
+              <col className="member-column-supplier" />
+              <col className="member-column-date" />
+              <col className="member-column-unit" />
+              <col className="member-column-count" />
+              <col className="member-column-price" />
+            </colgroup>
+            <thead><tr><th>품명·규격</th><th>제품 제조사</th><th>견적 제출사</th><th>견적일 범위</th><th>단위</th><th className="numeric">근거</th><th className="numeric">중앙값</th></tr></thead>
             <tbody>
               {family.members.map((member) => (
                 <tr key={member.standard_item_id}>
-                  <td><button type="button" className="family-member-button" onClick={() => onSelectMember(member.standard_item_id)}><strong>{member.name}</strong><small>원본 근거 보기</small></button></td>
-                  <td>{member.spec || "원문에 규격 없음"}</td>
+                  <td><button type="button" className="family-member-button" onClick={() => onSelectMember(member.standard_item_id)}><strong>{member.name}</strong><span>{member.spec || "원문에 규격 없음"}</span><small>원본 근거 보기</small></button></td>
+                  <td>{summarizeValues(member.maker_summary)}</td>
+                  <td>{summarizeValues(member.supplier_summary)}</td>
+                  <td>{formatDateRange(member.quote_date_start ?? null, member.quote_date_end ?? null)}</td>
                   <td>{member.unit || "—"}</td>
                   <td className="numeric">{member.observation_count.toLocaleString("ko-KR")}건</td>
                   <td className="numeric is-emphasis">{formatWon(member.price.median)}</td>
@@ -1079,6 +1099,12 @@ function formatDateRange(
   return `${start} – ${formatQuoteDate(end, endQuality)}`;
 }
 
+function summarizeValues(values: string[] | undefined, limit = 2) {
+  if (!values?.length) return "원본에서 확인되지 않음";
+  const visible = values.slice(0, limit).join(", ");
+  return values.length > limit ? `${visible} 외 ${values.length - limit}곳` : visible;
+}
+
 function sourceLocation(source: {
   logical_name: string;
   path?: string;
@@ -1149,4 +1175,9 @@ function uniqueById<T extends { id: number }>(items: T[]) {
 function positiveIntegerParam(name: string) {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function queryParam(name: string) {
+  const value = new URLSearchParams(window.location.search).get(name)?.trim();
+  return value || null;
 }

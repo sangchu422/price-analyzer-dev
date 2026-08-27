@@ -246,8 +246,13 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(
     await screen.findByRole("heading", { name: "신규견적.xlsx" }),
   ).toBeVisible();
-  expect(screen.getByRole("row", { name: /신규 설비/ })).toBeVisible();
-  expect(screen.getByText("전체 협상 목표금액")).toBeVisible();
+  const equipmentRow = screen.getByRole("row", { name: /신규 설비/ });
+  expect(equipmentRow).toBeVisible();
+  expect(screen.getByText("전체 구매 목표금액")).toBeVisible();
+  await user.click(within(equipmentRow).getByRole("button", { name: "상세" }));
+  const equipmentDialog = screen.getByRole("dialog", { name: "신규 설비" });
+  expect(within(equipmentDialog).getAllByText("목표 인하 금액").length).toBeGreaterThan(0);
+  await user.click(within(equipmentDialog).getByRole("button", { name: "설비 상세 닫기" }));
   await user.click(screen.getByRole("tab", { name: /가격 적정성/ }));
   expect(
     await screen.findByText("시장가 자동 조회 완료 0건 · 불가 1건"),
@@ -293,10 +298,10 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
 
   await user.click(screen.getByRole("tab", { name: /구매 목표가/ }));
   expect(
-    screen.getByRole("columnheader", { name: "협상 목표 단가(개당)" }),
+    screen.getByRole("columnheader", { name: "구매 목표 단가(개당)" }),
   ).toBeVisible();
   expect(
-    screen.getByRole("columnheader", { name: "네고 가능금액" }),
+    screen.getByRole("columnheader", { name: "목표 인하 금액" }),
   ).toBeVisible();
   const targetTable = document.querySelector(".target-price-table");
   expect(targetTable).not.toBeNull();
@@ -312,7 +317,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
   expect(totalRow).toHaveTextContent("560원");
   expect(screen.queryByText("물가보정 기준")).not.toBeInTheDocument();
   await user.click(screen.getByText("구매 목표가 산정 방식 보기"));
-  expect(screen.getByText(/실제 확인된 최저 단가를 물가 보정해 협상 목표/)).toBeVisible();
+  expect(screen.getByText(/실제 확인된 최저 단가를 물가 보정해 구매 목표/)).toBeVisible();
   expect(screen.getByText(/2025년 확정 소비자물가까지 보정한 뒤 가장 낮은 단가/)).toBeVisible();
   expect(screen.getByText("전체 품목의 77.8%")).toBeVisible();
   expect(screen.getByRole("link", { name: "KOSIS 공식 통계 보기" })).toHaveAttribute(
@@ -320,7 +325,7 @@ it("uploads a new bid first and renders the complete assessment workspace", asyn
     expect.stringContaining("DT_1J22041"),
   );
   await user.click(screen.getAllByText("최저가 근거 · 독립 원본 2건")[0]);
-  expect(screen.getByText("협상 목표로 채택")).toBeVisible();
+  expect(screen.getByText("구매 목표로 채택")).toBeVisible();
   expect(screen.getByText(/보정계수 ×1.034285/)).toBeVisible();
   expect(document.querySelector(".inflation-evidence-detail")).toHaveTextContent(
     "2017년 1.9% · 2018년 1.5% · 누적 +3.43%",

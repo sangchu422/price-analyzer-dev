@@ -96,7 +96,7 @@ def family_analysis_payload(
                     "variance_amount": variance_amount,
                     "variance_percent": variance_percent.quantize(PERCENT, rounding=ROUND_HALF_UP),
                     "canonical_name": family["name"],
-                    "canonical_spec": f"정확 품목 {family['item_count']}개",
+                    "canonical_spec": f"상세 품목 {family['item_count']}개",
                     "canonical_unit": source_line.unit,
                     "standard_observation_count": len(sorted_prices),
                     "evidence_quality": "MULTI_OBSERVATION" if family["supplier_count"] > 1 else "SINGLE_OBSERVATION",
@@ -127,7 +127,7 @@ def family_analysis_payload(
                 "used_observation_count": len(sorted_prices),
                 "excluded_observation_count": 0,
                 "reason": (
-                    f"{family['name']} 동일 단위·유사 가격대 정확 품목 "
+                    f"{family['name']} 동일 단위·유사 가격대 상세 품목 "
                     f"{len(sorted_prices)}개 중 최저 중앙값"
                     if lower_prices
                     else f"{family['name']} 비교군보다 현재 단가가 낮아 현 견적 유지"

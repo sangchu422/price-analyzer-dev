@@ -211,7 +211,7 @@ def test_cpi_purchase_target_uses_lowest_adjusted_historical_price() -> None:
     assert result.target_unit_price == Decimal("1216544")
     assert result.target_amount == Decimal("2433088")
     assert [item.raw_item_id for item in result.evidence] == [1, 2]
-    assert "가장 낮은 금액을 협상 목표로 채택" in result.reason
+    assert "가장 낮은 금액을 구매 목표로 채택" in result.reason
 
 
 def test_cpi_target_counts_repeated_rows_from_one_quote_once() -> None:

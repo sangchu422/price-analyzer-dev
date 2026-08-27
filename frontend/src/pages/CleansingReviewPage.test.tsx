@@ -170,13 +170,12 @@ describe("CleansingReviewPage", () => {
     expect(screen.getByRole("heading", { name: "금액 불일치" })).toBeVisible();
     expect(screen.getByText("수량 × 단가로 계산한 값과 견적서 금액이 일치하지 않습니다.")).toBeVisible();
     expect(screen.getByRole("heading", { name: "표시 금액 대 계산 금액" })).toBeVisible();
-    expect(screen.getByText("3,000")).toBeVisible();
     expect(screen.getByText("5,600")).toBeVisible();
     expect(screen.getByText("6,000원")).toBeVisible();
     expect(screen.getByText("+400원")).toBeVisible();
-    expect(document.querySelector(".amount-mismatch-evidence > p")).toHaveTextContent(
-      "차이율 +7.1%",
-    );
+    expect(screen.getByText("+7.1%")).toBeVisible();
+    await userEvent.click(screen.getByText("수량·단가 등 계산 인자 보기"));
+    expect(screen.getByText("3,000")).toBeVisible();
     expect(document.querySelector(".amount-mismatch-evidence > p")).toHaveTextContent(
       "허용오차 ±56원",
     );

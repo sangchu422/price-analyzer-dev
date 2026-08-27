@@ -62,7 +62,7 @@ export function DecisionBar({
             aria-describedby={detailError ? "detail-error detail-count" : "detail-count"}
             onChange={(event) => setDetail(event.target.value)}
             placeholder="원본과 판단 근거를 구체적으로 기록하세요."
-            rows={2}
+            rows={1}
           />
           {detailError && <small id="detail-error">{detailError}</small>}
           <small className="character-count" id="detail-count">

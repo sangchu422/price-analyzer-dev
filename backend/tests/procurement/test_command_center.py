@@ -353,4 +353,14 @@ def test_equipment_projection_sums_detail_sheet_and_ignores_empty_cover_group(
         assert len(
             session.scalars(select(QuoteAnalysisEquipmentGroup)).all()
         ) == 1
+        fallback = equipment.equipment_group_payloads_from_result(result)
+        assert [(row["name"], row["quote_amount"]) for row in fallback] == [
+            ("백래쉬시험기", Decimal("1300")),
+        ]
+        assert fallback[0]["target_amount"] == Decimal("1000")
+        assert fallback[0]["negotiation_amount"] == Decimal("300")
+
+        monkeypatch.setattr(equipment, "_equipment_tables_available", lambda _session: False)
+        assert equipment.create_equipment_projection(session, result) == ()
+        assert equipment.equipment_group_payloads(session, run.id) == []
     engine.dispose()

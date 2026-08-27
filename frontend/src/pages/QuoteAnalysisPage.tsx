@@ -14,6 +14,7 @@ import {
   type AnalysisAssessment,
   type AnalysisLine,
   type MarketLookupResult,
+  type EquipmentAnalysisGroup,
   type QuoteAnalysisRun,
   type SubmissionResponse,
 } from "../api/client";
@@ -270,7 +271,7 @@ export function QuoteAnalysisPage({
           <h1>신규 견적 분석</h1>
         </div>
         <p>
-          품목류 또는 정확 품목 기준으로 표준 DB와 비교합니다. 신뢰할 비교군이
+          품목류 또는 상세 품목 기준으로 표준 DB와 비교합니다. 신뢰할 비교군이
           없는 품목은 가격을 만들지 않고 판정대기로 남깁니다.
         </p>
       </header>
@@ -516,7 +517,7 @@ function AnalysisResults({
           <small>{family ? `${family.matched_count}개 품목 분석` : "품목류 결과 준비 중"}</small>
         </button>
         <button type="button" className={analysisBasis === "EXACT" ? "is-active" : ""} aria-pressed={analysisBasis === "EXACT"} onClick={() => setAnalysisBasis("EXACT")}>
-          <span>정확 품목 기준</span>
+          <span>상세 품목 기준</span>
           <small>품명·사양·단위가 같은 근거</small>
         </button>
       </div>
@@ -540,7 +541,7 @@ function AnalysisResults({
           onClick={() => setActiveTab("THRESHOLD")}
         >
           가격 적정성
-          <small>{analysisBasis === "FAMILY" ? "동일 단위·유사 가격대 품목류 비교" : "정확 품명·사양의 기준가와 비교"}</small>
+          <small>{analysisBasis === "FAMILY" ? "동일 단위·유사 가격대 품목류 비교" : "상세 품명·사양의 기준가와 비교"}</small>
         </button>
         <button
           type="button"
@@ -683,7 +684,9 @@ function EquipmentResults({
   submittedBy: string;
   analysisBasis: "FAMILY" | "EXACT";
 }) {
-  const [openGroups, setOpenGroups] = useState<Set<number>>(() => new Set());
+  const [selectedEquipmentId, setSelectedEquipmentId] = useState<number | null>(null);
+  const equipmentModalRef = useRef<HTMLDivElement>(null);
+  const equipmentReturnFocusRef = useRef<HTMLElement | null>(null);
   const [activationOpen, setActivationOpen] = useState(false);
   const [activatedBy, setActivatedBy] = useState(submittedBy === "익명" ? "" : submittedBy);
   const [reason, setReason] = useState("신규 견적 검토 완료 및 표준 DB 반영");
@@ -701,6 +704,7 @@ function EquipmentResults({
     [analysis.target_lines],
   );
   const equipmentGroups = analysis.equipment_groups ?? [];
+  const selectedEquipment = equipmentGroups.find((group) => group.id === selectedEquipmentId) ?? null;
   const totals = equipmentGroups.reduce(
     (sum, group) => ({
       quote: sum.quote + Number(group.quote_amount),
@@ -709,6 +713,34 @@ function EquipmentResults({
     }),
     { quote: 0, target: 0, negotiation: 0 },
   );
+
+  const closeEquipmentModal = () => {
+    setSelectedEquipmentId(null);
+    window.setTimeout(() => equipmentReturnFocusRef.current?.focus(), 0);
+  };
+
+  const openEquipmentModal = (group: EquipmentAnalysisGroup) => {
+    equipmentReturnFocusRef.current = document.activeElement as HTMLElement | null;
+    setSelectedEquipmentId(group.id);
+  };
+
+  useEffect(() => {
+    if (selectedEquipmentId === null) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    equipmentModalRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedEquipmentId(null);
+        window.setTimeout(() => equipmentReturnFocusRef.current?.focus(), 0);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selectedEquipmentId]);
 
   const activate = async () => {
     setActivationState({ kind: "pending", message: "표준 DB 반영 이력을 생성하는 중입니다." });
@@ -739,8 +771,8 @@ function EquipmentResults({
     <section className="equipment-results" role="tabpanel">
       <div className="equipment-summary-band">
         <div><span>상세 시트 견적 합계</span><strong>{formatMoney(String(totals.quote))}</strong></div>
-        <div><span>전체 협상 목표금액</span><strong>{formatMoney(String(totals.target))}</strong></div>
-        <div className="is-negotiation"><span>네고 가능금액</span><strong>{formatMoney(String(totals.negotiation))}</strong></div>
+        <div><span>전체 구매 목표금액</span><strong>{formatMoney(String(totals.target))}</strong></div>
+        <div className="is-negotiation"><span>목표 인하 금액</span><strong>{formatMoney(String(totals.negotiation))}</strong></div>
         {analysisBasis === "EXACT" ? (
           <button type="button" onClick={() => setActivationOpen((open) => !open)}>
             검토 완료 · 표준 DB 반영
@@ -771,59 +803,68 @@ function EquipmentResults({
       ) : null}
 
       <div className="result-toolbar equipment-toolbar">
-        <div><h3>설비별 협상 목표</h3><span>상세 시트 기준 {equipmentGroups.length}개 설비</span></div>
+        <div><h3>설비별 구매 목표</h3><span>상세 시트 기준 {equipmentGroups.length}개 설비</span></div>
         <small>시트별 품목 금액을 직접 합산하고 갑지 설비명으로 표시합니다.</small>
       </div>
       <div className="analysis-table-scroll equipment-table-scroll">
         <table className="analysis-result-table equipment-summary-table" aria-label="갑지 설비별 견적 분석">
-          <thead><tr><th>설비명</th><th>견적가</th><th>협상 목표금액</th><th>네고 가능금액</th><th>분석 상태</th><th>상세</th></tr></thead>
+          <thead><tr><th>설비명</th><th>견적가</th><th>구매 목표금액</th><th>목표 인하 금액</th><th>분석 상태</th><th>상세</th></tr></thead>
           <tbody>
             {equipmentGroups.length === 0 ? (
               <tr><td colSpan={6} className="equipment-empty-state">이 분석 이력에는 설비 갑지 연결 정보가 없습니다. 가격 적정성 탭에서 품목별 결과를 확인해 주세요.</td></tr>
             ) : null}
-            {equipmentGroups.map((group) => {
-              const open = openGroups.has(group.id);
-              return (
-                <Fragment key={group.id}>
-                  <tr className="equipment-group-row">
+            {equipmentGroups.map((group) => (
+                  <tr className="equipment-group-row" key={group.id}>
                     <td><strong>{group.name}</strong><small>{group.line_count}개 품목 · {group.source_kind === "COVER_SHEET" ? "갑지 설비명" : "시트명"}</small></td>
                     <td className="numeric">{formatMoney(group.quote_amount)}</td>
                     <td className="numeric is-emphasis">{formatMoney(group.target_amount)}</td>
                     <td className="numeric is-negotiation">{formatMoney(group.negotiation_amount)}</td>
                     <td><span className={group.target_available_count === group.line_count ? "equipment-status is-complete" : "equipment-status"}>{group.target_available_count === group.line_count ? "분석 완료" : `근거 보완 ${group.line_count - group.target_available_count}건`}</span></td>
-                    <td><button type="button" aria-expanded={open} onClick={() => setOpenGroups((current) => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? "접기" : "상세"}</button></td>
+                    <td><button type="button" aria-haspopup="dialog" onClick={() => openEquipmentModal(group)}>상세</button></td>
                   </tr>
-                  {open ? (
-                    <tr className="equipment-detail-row"><td colSpan={6}>
-                      <div className="equipment-detail-grid">
-                        <header><span>품목 / 사양</span><span>수량·단위</span><span>구매 금액</span><span>협상 목표금액</span><span>네고 가능금액</span></header>
-                        {group.lines.map((groupLine) => {
-                          const line = lineById.get(groupLine.raw_item_id);
-                          const target = targetById.get(groupLine.raw_item_id);
-                          return (
-                            <div key={groupLine.raw_item_id}>
-                              <span><strong>{line?.item_name ?? `품목 #${groupLine.raw_item_id}`}</strong><small>{line?.spec || "원문 규격 없음"}</small></span>
-                              <span>{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</span>
-                              <span>{formatMoney(groupLine.quote_amount)}</span>
-                              <span>{formatMoney(groupLine.target_amount)}</span>
-                              <span className="is-negotiation">{formatMoney(groupLine.negotiation_amount)}</span>
-                              {target?.status !== "AVAILABLE" ? <em>{target?.reason ?? "산정 근거 확인 필요"}</em> : null}
-                            </div>
-                          );
-                        })}
-                        {Number(group.unallocated_amount) > 0 ? (
-                          <footer>공통 전기비·경비 등 품목 외 금액 <strong>{formatMoney(group.unallocated_amount)}</strong>은 갑지 금액에 유지했습니다.</footer>
-                        ) : null}
-                      </div>
-                    </td></tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
+            ))}
           </tbody>
           <tfoot><tr className="target-total-row"><td>합계</td><td className="numeric"><strong>{formatMoney(String(totals.quote))}</strong></td><td className="numeric"><strong>{formatMoney(String(totals.target))}</strong></td><td className="numeric is-negotiation"><strong>{formatMoney(String(totals.negotiation))}</strong></td><td colSpan={2}>설비 상세에서 품목별 근거 확인</td></tr></tfoot>
         </table>
       </div>
+      {selectedEquipment ? (
+        <div className="equipment-detail-overlay is-open" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEquipmentModal(); }}>
+          <div ref={equipmentModalRef} className="equipment-detail-modal t-modal is-open" role="dialog" aria-modal="true" aria-labelledby="equipment-detail-title" tabIndex={-1}>
+            <header className="equipment-detail-modal-bar">
+              <div><span>설비별 구매 목표</span><strong id="equipment-detail-title">{selectedEquipment.name}</strong><small>{selectedEquipment.line_count}개 품목 · {selectedEquipment.source_kind === "COVER_SHEET" ? "갑지 설비명" : "시트명"}</small></div>
+              <button type="button" onClick={closeEquipmentModal} aria-label="설비 상세 닫기">닫기</button>
+            </header>
+            <div className="equipment-detail-modal-scroll">
+              <dl className="equipment-detail-summary">
+                <div><dt>설비 견적가</dt><dd>{formatMoney(selectedEquipment.quote_amount)}</dd></div>
+                <div><dt>구매 목표금액</dt><dd>{formatMoney(selectedEquipment.target_amount)}</dd></div>
+                <div className="is-negotiation"><dt>목표 인하 금액</dt><dd>{formatMoney(selectedEquipment.negotiation_amount)}</dd></div>
+                <div><dt>분석 완료</dt><dd>{selectedEquipment.target_available_count} / {selectedEquipment.line_count}개</dd></div>
+              </dl>
+              <div className="equipment-detail-grid">
+                <header><span>품목 / 사양</span><span>수량·단위</span><span>구매 금액</span><span>구매 목표금액</span><span>목표 인하 금액</span></header>
+                {selectedEquipment.lines.map((groupLine) => {
+                  const line = lineById.get(groupLine.raw_item_id);
+                  const target = targetById.get(groupLine.raw_item_id);
+                  return (
+                    <div key={groupLine.raw_item_id}>
+                      <span><strong>{line?.item_name ?? `품목 #${groupLine.raw_item_id}`}</strong><small>{line?.spec || "원문 규격 없음"}</small></span>
+                      <span>{formatUnitQuantity(line?.unit ?? null, line?.quantity ?? null)}</span>
+                      <span>{formatMoney(groupLine.quote_amount)}</span>
+                      <span>{formatMoney(groupLine.target_amount)}</span>
+                      <span className="is-negotiation">{formatMoney(groupLine.negotiation_amount)}</span>
+                      {target?.status !== "AVAILABLE" ? <em>{target?.reason ?? "산정 근거 확인 필요"}</em> : null}
+                    </div>
+                  );
+                })}
+                {Number(selectedEquipment.unallocated_amount) > 0 ? (
+                  <footer>공통 전기비·경비 등 품목 외 금액 <strong>{formatMoney(selectedEquipment.unallocated_amount)}</strong>은 갑지 금액에 유지했습니다.</footer>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -872,14 +913,14 @@ function TargetPriceResults({ analysis, analysisBasis }: { analysis: QuoteAnalys
           <small>{analysisBasis === "FAMILY" ? "동일 단위·유사 가격대 비교군 부족" : "날짜·지수·표준 DB 근거 부족"}</small>
         </div>
         <div>
-          <span>네고 가능금액</span>
+          <span>목표 인하 금액</span>
           <strong>{formatMoney(String(totalNegotiableAmount))}</strong>
           <small>제시가가 목표가보다 높은 품목만 합산</small>
         </div>
         <div className={totalNegotiableAmount > 0 ? "is-saving" : ""}>
-          <span>전체 협상 목표금액</span>
+          <span>전체 구매 목표금액</span>
           <strong>{formatMoney(String(overallNegotiationTarget))}</strong>
-          <small>전체 견적에서 네고 가능금액을 차감</small>
+          <small>전체 견적에서 목표 인하 금액을 차감</small>
         </div>
       </div>
 
@@ -888,14 +929,14 @@ function TargetPriceResults({ analysis, analysisBasis }: { analysis: QuoteAnalys
         <div>
           <strong>
             {analysisBasis === "FAMILY"
-              ? "같은 품목류 중 동일 단위·유사 가격대의 낮은 가격을 협상 목표로 사용합니다."
+              ? "같은 품목류 중 동일 단위·유사 가격대의 낮은 가격을 구매 목표로 사용합니다."
               : isLegacyPpi
               ? "이 결과는 과거 목표가 정책으로 계산된 기록입니다."
-              : "서로 다른 과거 견적에서 실제 확인된 최저 단가를 물가 보정해 협상 목표로 사용합니다."}
+              : "서로 다른 과거 견적에서 실제 확인된 최저 단가를 물가 보정해 구매 목표로 사용합니다."}
           </strong>
           <p>
             {analysisBasis === "FAMILY"
-              ? "현재 단가의 ±30% 범위에 있는 정확 품목 중앙값만 비교해, 단위나 가격대가 다른 품목의 최저가가 섞이지 않도록 제한합니다."
+              ? "현재 단가의 ±30% 범위에 있는 상세 품목 중앙값만 비교해, 단위나 가격대가 다른 품목의 최저가가 섞이지 않도록 제한합니다."
               : isLegacyPpi
               ? "이 결과는 과거 실행 당시 저장된 생산자물가지수 기준으로 재현한 기록입니다."
               : analysis.target_period
@@ -906,7 +947,7 @@ function TargetPriceResults({ analysis, analysisBasis }: { analysis: QuoteAnalys
             ) : null}
           </p>
           <p>
-            현재 제시가가 이미 과거 최저가보다 낮으면 네고 가능금액은 0원으로 처리합니다.
+            현재 제시가가 이미 구매 목표가보다 낮으면 목표 인하 금액은 0원으로 처리합니다.
             중앙값과 가격 범위는 ‘가격 적정성’ 탭에서 별도로 확인할 수 있습니다.
           </p>
           {analysisBasis === "EXACT" && analysis.inflation_source_url ? (
@@ -919,7 +960,7 @@ function TargetPriceResults({ analysis, analysisBasis }: { analysis: QuoteAnalys
 
       <div className="result-toolbar target-price-toolbar">
         <div>
-          <h3>품목별 협상 목표가</h3>
+          <h3>품목별 구매 목표가</h3>
           <span>표시 {analysis.target_lines.length}건</span>
         </div>
         {analysisBasis === "EXACT" ? (
@@ -937,9 +978,9 @@ function TargetPriceResults({ analysis, analysisBasis }: { analysis: QuoteAnalys
               <th>수량</th>
               <th>개당 단가</th>
               <th>구매 금액</th>
-              <th>협상 목표 단가(개당)</th>
-              <th>협상 목표금액</th>
-              <th>네고 가능금액</th>
+              <th>구매 목표 단가(개당)</th>
+              <th>구매 목표금액</th>
+              <th>목표 인하 금액</th>
               <th>산정 근거</th>
             </tr>
           </thead>
@@ -1035,7 +1076,7 @@ function TargetPriceRow({
           )}
         </strong>
         {target.status === "AVAILABLE" && negotiableAmount === 0 ? (
-          <span>이미 목표 이하</span>
+          <span>구매 목표가 이하</span>
         ) : null}
       </td>
       <td className="target-evidence-trigger" ref={cellRef}>
@@ -1060,7 +1101,7 @@ function TargetPriceRow({
                 target="_blank"
                 rel="noreferrer"
               >
-                {usesAggressiveMinimum && index === 0 ? <strong className="target-selection-label">협상 목표로 채택</strong> : null}
+                {usesAggressiveMinimum && index === 0 ? <strong className="target-selection-label">구매 목표로 채택</strong> : null}
                 <span>{conciseSourceName(evidence.source_logical_name)}</span>
                 <small>{evidence.quote_date} · {formatMoney(evidence.original_unit_price)} → {formatMoney(evidence.adjusted_unit_price)}</small>
                 <small className="inflation-evidence-detail">

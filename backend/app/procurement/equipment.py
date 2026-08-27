@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from app.analysis.models import QuoteAnalysisLineResult
@@ -40,6 +40,8 @@ def create_equipment_projection(
     session: Session,
     result: AnalysisRunResult,
 ) -> tuple[QuoteAnalysisEquipmentGroup, ...]:
+    if not _equipment_tables_available(session):
+        return ()
     existing = tuple(
         session.scalars(
             select(QuoteAnalysisEquipmentGroup)
@@ -180,6 +182,8 @@ def equipment_group_payloads(
     session: Session,
     analysis_run_id: int,
 ) -> list[dict[str, object]]:
+    if not _equipment_tables_available(session):
+        return []
     groups = list(
         session.scalars(
             select(QuoteAnalysisEquipmentGroup)
@@ -220,6 +224,112 @@ def equipment_group_payloads(
         }
         for group in groups
     ]
+
+
+def equipment_group_payloads_from_result(
+    result: AnalysisRunResult,
+) -> list[dict[str, object]]:
+    """Build the same equipment view without requiring projection tables.
+
+    This keeps immutable pre-migration demo databases usable. Newer databases
+    still persist and read the projection through ``equipment_group_payloads``.
+    """
+    definitions = _equipment_definitions(result)
+    by_sheet = {definition.sheet: definition for definition in definitions}
+    has_structured_cover = bool(definitions)
+    source_lines = {
+        line.raw_item_id: line
+        for line in result.analysis.lines
+        if not has_structured_cover or line.source.sheet in by_sheet
+    }
+    target_by_raw = {line.raw_item_id: line for line in result.target_lines}
+    grouped: dict[str, list[int]] = defaultdict(list)
+    definitions_by_key = {definition.key: definition for definition in definitions}
+    for raw_id, line in source_lines.items():
+        definition = by_sheet.get(line.source.sheet or "")
+        if definition is None:
+            sheet_name = (line.source.sheet or "").strip()
+            key = f"sheet:{sheet_name or 'all-items'}"
+            definitions_by_key.setdefault(
+                key,
+                EquipmentDefinition(
+                    key,
+                    sheet_name or "전체 설비",
+                    sheet_name,
+                    None,
+                    "LINE_ITEM_FALLBACK",
+                ),
+            )
+            grouped[key].append(raw_id)
+        else:
+            grouped[definition.key].append(raw_id)
+
+    payloads: list[dict[str, object]] = []
+    for index, (key, raw_ids) in enumerate(grouped.items(), start=1):
+        definition = definitions_by_key[key]
+        quote_amount = sum(
+            (
+                max(source_lines[raw_id].quote_amount or Decimal("0"), Decimal("0"))
+                for raw_id in raw_ids
+            ),
+            Decimal("0"),
+        ).quantize(KRW, rounding=ROUND_HALF_UP)
+        if quote_amount <= 0:
+            continue
+        negotiation = min(
+            sum(
+                (
+                    _negotiation_amount(
+                        source_lines[raw_id].quote_amount,
+                        target_by_raw[raw_id].target_amount,
+                    )
+                    for raw_id in raw_ids
+                ),
+                Decimal("0"),
+            ).quantize(KRW, rounding=ROUND_HALF_UP),
+            quote_amount,
+        )
+        payloads.append(
+            {
+                "id": index,
+                "key": key,
+                "name": definition.name,
+                "source_kind": definition.source_kind,
+                "quote_amount": quote_amount,
+                "target_amount": (quote_amount - negotiation).quantize(
+                    KRW, rounding=ROUND_HALF_UP
+                ),
+                "negotiation_amount": negotiation,
+                "unallocated_amount": Decimal("0"),
+                "line_count": len(raw_ids),
+                "target_available_count": sum(
+                    target_by_raw[raw_id].status == "AVAILABLE" for raw_id in raw_ids
+                ),
+                "lines": [
+                    {
+                        "raw_item_id": raw_id,
+                        "quote_amount": max(
+                            source_lines[raw_id].quote_amount or Decimal("0"),
+                            Decimal("0"),
+                        ),
+                        "target_amount": target_by_raw[raw_id].target_amount,
+                        "negotiation_amount": _negotiation_amount(
+                            source_lines[raw_id].quote_amount,
+                            target_by_raw[raw_id].target_amount,
+                        ),
+                    }
+                    for raw_id in raw_ids
+                ],
+            }
+        )
+    return payloads
+
+
+def _equipment_tables_available(session: Session) -> bool:
+    inspector = inspect(session.get_bind())
+    return inspector.has_table(QuoteAnalysisEquipmentGroup.__tablename__) and inspector.has_table(
+        QuoteAnalysisEquipmentLine.__tablename__
+    )
 
 
 def _negotiation_amount(

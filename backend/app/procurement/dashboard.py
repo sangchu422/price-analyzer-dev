@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from statistics import median
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from app.analysis.target_price import latest_cpi_series
@@ -26,9 +26,8 @@ from app.cleansing.review_cases import (
     summarize_review_cases,
 )
 from app.documents.models import SourceDocument, SourceVariant
-from app.procurement.categories import current_category_subquery
+from app.procurement.families import item_family_projection
 from app.procurement.models import (
-    ItemCategory,
     ProcurementPriceAlert,
 )
 from app.parsing.projection import current_raw_item_ids
@@ -55,8 +54,6 @@ _INDICATORS = (
 def dashboard_overview(session: Session, *, today: date | None = None) -> dict[str, object]:
     today = today or date.today()
     total_standard = session.scalar(select(func.count(StandardItem.id))) or 0
-    current_categories = current_category_subquery(name="dashboard_current_categories")
-    categorized = session.scalar(select(func.count()).select_from(current_categories)) or 0
     latest_build_id = session.scalar(
         select(StandardDatabaseBuildRun.id)
         .where(StandardDatabaseBuildRun.status == StandardBuildStatus.SUCCEEDED)
@@ -98,14 +95,32 @@ def dashboard_overview(session: Session, *, today: date | None = None) -> dict[s
         for reason, count in grouped_reason_counts.most_common(6)
     ]
     unmatched = _unmatched_included_count(session, latest_clean, current_raw)
-    categories = _category_counts(session, current_categories, total_standard)
+    family_projection = item_family_projection(session)
+    family_classified = sum(int(family["item_count"]) for family in family_projection)
+    families = [
+        {
+            "code": family["code"],
+            "name": family["name"],
+            "item_count": family["item_count"],
+            "observation_count": family["observation_count"],
+            "share_percent": (
+                str((Decimal(int(family["item_count"])) * Decimal("100") / Decimal(family_classified)).quantize(Decimal("0.1")))
+                if family_classified
+                else "0.0"
+            ),
+        }
+        for family in family_projection
+    ]
     monthly = _monthly_performance(session, today)
     alerts = _recent_alerts(session)
     return {
         "as_of": today.isoformat(),
         "catalog": {
             "total_standard_items": total_standard,
-            "categorized_items": categorized,
+            # Kept for older clients. The retired 14-category layer is no
+            # longer calculated; item families are the sole classification.
+            "categorized_items": family_classified,
+            "family_classified_items": family_classified,
             "active_price_items": active,
             "rebuild_required_items": rebuild_required,
             "no_evidence_items": no_evidence,
@@ -113,7 +128,8 @@ def dashboard_overview(session: Session, *, today: date | None = None) -> dict[s
             "cleansing_todo_items": cleaning_todo,
             "latest_build_run_id": latest_build_id,
         },
-        "categories": categories,
+        "categories": [],
+        "families": families,
         "cleansing_todo": {"count": cleaning_todo, "top_reasons": reason_counts},
         "monthly_performance": monthly,
         "indicators": _indicator_payloads(session),
@@ -211,31 +227,6 @@ def _unmatched_included_count(
     ) or 0
 
 
-def _category_counts(session: Session, current_categories: object, total: int) -> list[dict[str, object]]:
-    rows = session.execute(
-        select(
-            ItemCategory.code,
-            ItemCategory.name,
-            ItemCategory.description,
-            ItemCategory.sort_order,
-            func.count(current_categories.c.standard_item_id),
-        )
-        .outerjoin(current_categories, current_categories.c.category_id == ItemCategory.id)
-        .group_by(ItemCategory.id)
-        .order_by(ItemCategory.sort_order)
-    ).all()
-    return [
-        {
-            "code": code,
-            "name": name,
-            "description": description,
-            "count": count,
-            "share_percent": Decimal("0") if not total else (Decimal(count) / Decimal(total) * 100).quantize(Decimal("0.1")),
-        }
-        for code, name, description, _, count in rows
-    ]
-
-
 def _monthly_performance(session: Session, today: date) -> dict[str, object]:
     # Activation appends a HISTORICAL_REFERENCE role, but the document must
     # remain part of received-quote performance.  Count documents that have
@@ -320,6 +311,10 @@ def _indicator_payloads(session: Session) -> list[dict[str, object]]:
 
 
 def _recent_alerts(session: Session) -> list[dict[str, object]]:
+    # Alert persistence was introduced after the first demo database. Keep the
+    # dashboard readable against that immutable snapshot until it is migrated.
+    if not inspect(session.get_bind()).has_table(ProcurementPriceAlert.__tablename__):
+        return []
     latest_versions = (
         select(StandardItemVersion.standard_item_id, func.max(StandardItemVersion.id).label("version_id"))
         .group_by(StandardItemVersion.standard_item_id)

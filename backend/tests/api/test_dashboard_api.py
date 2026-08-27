@@ -55,16 +55,10 @@ def test_dashboard_exposes_operational_counts_and_labels_demo_indicators(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["catalog"]["total_standard_items"] == 1
-    assert payload["catalog"]["categorized_items"] == 1
-    assert payload["categories"] == [
-        {
-            "code": "GENERAL_COMPONENT",
-            "name": "공통 설비·부품",
-            "description": "전문군이 불명확한 산업 설비·부품의 탐색 분류",
-            "count": 1,
-            "share_percent": "100.0",
-        }
-    ]
+    assert payload["catalog"]["categorized_items"] == 0
+    assert payload["catalog"]["family_classified_items"] == 0
+    assert payload["categories"] == []
+    assert payload["families"] == []
     assert len(payload["monthly_performance"]["series"]) == 12
     assert all(
         indicator["source_status"] == "DEMO"

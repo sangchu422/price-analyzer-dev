@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, inspect, or_, select
 from sqlalchemy.orm import Session
 
 from app.catalog.models import (
@@ -209,7 +209,9 @@ def list_standard_explorer_items(
             == StandardItemVersion.standard_item_id,
         )
     )
-    if category_code:
+    if category_code and inspect(session.get_bind()).has_table(
+        "standard_item_category_assignment"
+    ):
         current_categories = current_category_subquery(
             name="explorer_current_categories"
         )

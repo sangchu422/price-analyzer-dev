@@ -692,6 +692,11 @@ export interface ItemFamilyMember {
   unit: string | null;
   observation_count: number;
   price: PriceStatistics;
+  maker_summary: string[];
+  supplier_summary: string[];
+  quote_date_start: string | null;
+  quote_date_end: string | null;
+  undated_observation_count: number;
 }
 
 export interface ItemFamilySummary {
@@ -746,6 +751,7 @@ export interface DashboardOverview {
   catalog: {
     total_standard_items: number;
     categorized_items: number;
+    family_classified_items: number;
     active_price_items: number;
     rebuild_required_items: number;
     no_evidence_items: number;
@@ -758,6 +764,13 @@ export interface DashboardOverview {
     name: string;
     description: string;
     count: number;
+    share_percent: string;
+  }>;
+  families: Array<{
+    code: string;
+    name: string;
+    item_count: number;
+    observation_count: number;
     share_percent: string;
   }>;
   cleansing_todo: {

@@ -18,6 +18,7 @@ it("renders the procurement command center with honest data-source labels", asyn
       catalog: {
         total_standard_items: 7684,
         categorized_items: 7684,
+        family_classified_items: 7672,
         active_price_items: 7672,
         rebuild_required_items: 0,
         no_evidence_items: 12,
@@ -40,6 +41,10 @@ it("renders the procurement command center with honest data-source labels", asyn
           count: 2842,
           share_percent: "37.0",
         },
+      ],
+      families: [
+        { code: "MOTOR", name: "모터류", item_count: 619, observation_count: 1200, share_percent: "8.1" },
+        { code: "GENERAL", name: "공통 설비·부품류", item_count: 2842, observation_count: 3200, share_percent: "37.0" },
       ],
       cleansing_todo: {
         count: 1022,
@@ -88,7 +93,7 @@ it("renders the procurement command center with honest data-source labels", asyn
   expect(loadingLogo).toBeInTheDocument();
 
   releaseFetch();
-  expect(await screen.findByText("카테고리 분류", {}, { timeout: 3_000 })).toBeVisible();
+  expect(await screen.findByText("품목류 분류", {}, { timeout: 3_000 })).toBeVisible();
   expect(document.querySelector(".wia-vector-logo")).toBe(loadingLogo);
   expect(screen.getByRole("img", { name: "HYUNDAI WIA" })).toBeInTheDocument();
   expect(document.querySelector(".wia-hero-mark img")).not.toBeInTheDocument();
@@ -96,7 +101,8 @@ it("renders the procurement command center with honest data-source labels", asyn
   expect(document.querySelector(".performance-readhead")).toBeInTheDocument();
   expect(document.querySelector(".market-readhead")).toBeInTheDocument();
   expect(screen.getAllByLabelText("7,672").length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: /구동·모션/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /모터류/ })).toBeInTheDocument();
+  expect(screen.queryByText("품목군 분포")).not.toBeInTheDocument();
   expect(document.querySelector(".todo-command strong")).toHaveTextContent("미분류·검토 대기");
   expect(screen.getByLabelText("1,022건")).toBeInTheDocument();
   expect(screen.getByText("시연 인덱스 · 공식 데이터 연동 전")).toBeVisible();

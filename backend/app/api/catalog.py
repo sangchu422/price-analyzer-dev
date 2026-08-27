@@ -16,7 +16,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -695,7 +695,9 @@ def _category_payloads(
     session: Session,
     standard_item_ids: list[int],
 ) -> dict[int, dict[str, object]]:
-    if not standard_item_ids:
+    if not standard_item_ids or not inspect(session.get_bind()).has_table(
+        "standard_item_category_assignment"
+    ):
         return {}
     current_categories = current_category_subquery(name="api_current_categories")
     return {
